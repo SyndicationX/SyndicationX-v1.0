@@ -13,6 +13,24 @@ html {
   scroll-behavior: smooth;
 }
 
+/* Logged-in shell: one scroll container (`.app_main_section`), not the document. */
+html:has(.app_shell) {
+  height: 100%;
+  overflow: hidden;
+}
+
+html:has(.app_shell) body {
+  height: 100%;
+  overflow: hidden;
+}
+
+html:has(.app_shell) #root {
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
