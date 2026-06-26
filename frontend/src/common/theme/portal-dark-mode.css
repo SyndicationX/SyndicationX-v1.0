@@ -1,0 +1,315 @@
+/**
+ * Portal dark mode — shared polish for the logged-in shell.
+ * Uses portal-theme tokens; loaded globally after portal-theme.css.
+ */
+
+:root[data-theme="dark"] {
+  --portal-form-label-color: rgba(255, 255, 255, 0.55);
+  --portal-modal-overlay: rgba(4, 8, 15, 0.72);
+  --portal-modal-bg: color-mix(
+    in srgb,
+    var(--portal-page-bg, #0a0f1a) 88%,
+    rgba(255, 255, 255, 0.08)
+  );
+  --portal-modal-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+  --portal-dropdown-shell-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.35),
+    0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* —— Scrollbars —— */
+:root[data-theme="dark"] .app_shell,
+:root[data-theme="dark"] .app_shell * {
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+:root[data-theme="dark"] .app_shell ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+}
+
+:root[data-theme="dark"] .app_shell ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* —— Modals —— */
+:root[data-theme="dark"] .um_modal_overlay {
+  background: var(--portal-modal-overlay);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+:root[data-theme="dark"] .um_modal,
+:root[data-theme="dark"] .um_modal.um_modal_view {
+  background: var(--portal-modal-bg);
+  border: 1px solid var(--portal-border);
+  box-shadow: var(--portal-modal-shadow);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .um_modal_desc,
+:root[data-theme="dark"] .um_modal .um_hint {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .um_modal_close {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .um_modal_close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .modal_close_btn {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .modal_close_btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--portal-text);
+}
+
+/* —— Menus / dropdowns —— */
+:root[data-theme="dark"] .um_kebab_menu {
+  background: color-mix(
+    in srgb,
+    var(--portal-page-bg, #0a0f1a) 92%,
+    rgba(255, 255, 255, 0.1)
+  );
+  border-color: var(--portal-border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+:root[data-theme="dark"] .um_kebab_menuitem {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .um_kebab_menuitem_icon {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .um_kebab_menuitem:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .um_kebab_menuitem:hover:not(:disabled) .um_kebab_menuitem_icon {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .um_kebab_trigger:hover:not(:disabled),
+:root[data-theme="dark"] .um_kebab_trigger[aria-expanded="true"]:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--portal-text);
+}
+
+/* —— Toolbar + search —— */
+:root[data-theme="dark"] .um_btn_toolbar {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--portal-border);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .um_btn_toolbar:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 25%,
+    var(--portal-border)
+  );
+}
+
+:root[data-theme="dark"] .um_toolbar_export_btn:hover:not(:disabled) {
+  background: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 12%,
+    transparent
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 35%,
+    var(--portal-border)
+  );
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .um_search_input,
+:root[data-theme="dark"] .sponsor_dash_search_input,
+:root[data-theme="dark"] .deals_export_modal_search_input {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--portal-border);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .um_search_input::placeholder,
+:root[data-theme="dark"] .sponsor_dash_search_input::placeholder,
+:root[data-theme="dark"] .deals_export_modal_search_input::placeholder {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .um_search_icon,
+:root[data-theme="dark"] .sponsor_dash_search_icon {
+  color: var(--portal-text-muted);
+}
+
+/* —— Form controls —— */
+:root[data-theme="dark"] .app_shell input:hover:not(:disabled),
+:root[data-theme="dark"] .app_shell textarea:hover:not(:disabled),
+:root[data-theme="dark"] .app_shell select:hover:not(:disabled),
+:root[data-theme="dark"] select:hover:not(:disabled) {
+  border-color: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 22%,
+    var(--portal-border)
+  );
+}
+
+:root[data-theme="dark"] select option {
+  color: var(--portal-text);
+  background: var(--portal-page-bg);
+}
+
+:root[data-theme="dark"] select option:first-child,
+:root[data-theme="dark"] .select_input--placeholder {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .select_input:not(.select_input--placeholder) {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] body select {
+  background-color: rgba(255, 255, 255, 0.06);
+  border-color: var(--portal-border);
+  color: var(--portal-text);
+}
+
+/* —— Tables + links —— */
+:root[data-theme="dark"] .deals_table_name_link {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .deals_table_name_link:hover {
+  color: var(--portal-gold-accent, #d4af37);
+}
+
+:root[data-theme="dark"] .um_table_wrap.data_table_shell {
+  background: var(--portal-surface, rgba(255, 255, 255, 0.04));
+  border-color: var(--portal-table-border);
+}
+
+/* Table horizontal scroll — match app shell scroll chrome (gold-tinted thumb on hover). */
+:root[data-theme="dark"] .app_shell .data_table_scroll,
+:root[data-theme="dark"] .app_shell .data_table_scroll_region,
+:root[data-theme="dark"] .app_shell .um_table_wrap.data_table_shell,
+:root[data-theme="dark"] .app_shell .deals_list_table_panel .data_table_scroll_region,
+:root[data-theme="dark"] .app_shell .deal_inv_table_panel .data_table_scroll_region {
+  scrollbar-color: var(--portal-table-scroll-thumb, rgba(255, 255, 255, 0.14)) transparent;
+}
+
+:root[data-theme="dark"] .app_shell .data_table_scroll::-webkit-scrollbar-thumb,
+:root[data-theme="dark"] .app_shell .data_table_scroll_region::-webkit-scrollbar-thumb,
+:root[data-theme="dark"] .app_shell .um_table_wrap.data_table_shell::-webkit-scrollbar-thumb,
+:root[data-theme="dark"]
+  .app_shell
+  .deals_list_table_panel
+  .data_table_scroll_region::-webkit-scrollbar-thumb,
+:root[data-theme="dark"]
+  .app_shell
+  .deal_inv_table_panel
+  .data_table_scroll_region::-webkit-scrollbar-thumb {
+  background: var(--portal-table-scroll-thumb, rgba(255, 255, 255, 0.14));
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+:root[data-theme="dark"] .app_shell .data_table_scroll::-webkit-scrollbar-thumb:hover,
+:root[data-theme="dark"] .app_shell .data_table_scroll_region::-webkit-scrollbar-thumb:hover,
+:root[data-theme="dark"] .app_shell .um_table_wrap.data_table_shell::-webkit-scrollbar-thumb:hover,
+:root[data-theme="dark"]
+  .app_shell
+  .deals_list_table_panel
+  .data_table_scroll_region::-webkit-scrollbar-thumb:hover,
+:root[data-theme="dark"]
+  .app_shell
+  .deal_inv_table_panel
+  .data_table_scroll_region::-webkit-scrollbar-thumb:hover {
+  background: var(
+    --portal-table-scroll-thumb-hover,
+    color-mix(in srgb, var(--portal-gold-accent, #d4af37) 28%, rgba(255, 255, 255, 0.22))
+  );
+  background-clip: padding-box;
+}
+
+:root[data-theme="dark"] .app_shell .um_table_pagination {
+  background: var(--portal-surface, rgba(255, 255, 255, 0.04));
+  border-top-color: var(--portal-table-border);
+}
+
+:root[data-theme="dark"] .um_status_muted {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .um_membership_company {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .um_membership_sep {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .um_membership_role_tag,
+:root[data-theme="dark"] .um_role_badge {
+  background: rgba(255, 255, 255, 0.08);
+  color: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 55%,
+    var(--portal-text)
+  );
+}
+
+:root[data-theme="dark"] .um_role_badge_icon {
+  color: inherit;
+}
+
+/* —— Surfaces —— */
+:root[data-theme="dark"] .deals_list_card_surface,
+:root[data-theme="dark"] .deals_list_page .deals_list_card_surface {
+  background: var(--portal-panel-bg);
+  border-color: var(--portal-border);
+}
+
+:root[data-theme="dark"] .um_title,
+:root[data-theme="dark"] .um_title_with_icon {
+  color: var(--font-color-title);
+}
+
+:root[data-theme="dark"] .tool_style_card:not(.tool_style_card--metric) {
+  border-color: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 28%,
+    var(--portal-border)
+  );
+}
+
+:root[data-theme="dark"] .tool_style_card .tool_style_card_label,
+:root[data-theme="dark"] .tool_style_card .tool_style_card_subtitle {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .section_placeholder {
+  background: var(--portal-panel-bg);
+  border-color: var(--portal-border);
+  color: var(--portal-text);
+}
+
+/* Empty / dashed states */
+:root[data-theme="dark"] .sponsor_dash_empty,
+:root[data-theme="dark"] .sponsor_dash_deals_state,
+:root[data-theme="dark"] .data_table_empty {
+  background: var(--portal-table-empty-bg);
+  border-color: var(--portal-table-empty-border);
+  color: var(--portal-table-empty-text);
+}
