@@ -1,0 +1,1 @@
+# SyndicationX-v1.0
