@@ -414,6 +414,23 @@ export function investorRowShowsEsignStatusLink(
   return investorEsignWasSent(row)
 }
 
+export function investorRowInvestorPhaseSigned(row: DealInvestorRow): boolean {
+  const status = resolveInvestorRowEsignStatus(row)
+  return Boolean(status?.signedAt?.trim() || status?.completedAt?.trim())
+}
+
+/** All investors with eSign sent have finished the investor signing step. */
+export function allInvestorsInvestorPhaseComplete(
+  investors: DealInvestorRow[],
+): boolean {
+  const withEsign = investors.filter(
+    (inv) =>
+      investorEsignWasSent(inv) && investorRowCommittedNumeric(inv) > 0,
+  )
+  if (withEsign.length === 0) return false
+  return withEsign.every((inv) => investorRowInvestorPhaseSigned(inv))
+}
+
 /** Investor finished signing; sponsor counter-signature is still required. */
 export function investorRowAwaitingSponsorCounterSign(
   row: DealInvestorRow,
@@ -805,6 +822,20 @@ export function investorEsignIsFullyCompletedForRow(
   if (resolved) return investorEsignIsCompleted(resolved, row)
   if (row.esignStatus) return investorEsignIsCompleted(row.esignStatus, row)
   return String(row.signedDate ?? "").trim().toLowerCase() === "completed"
+}
+
+/**
+ * True when Invest Now is done for this profile (e-sign complete, or ETL
+ * rows that already have a calendar signed date and a commitment).
+ */
+export function investorInvestmentProfileIsComplete(
+  row: DealInvestorRow,
+): boolean {
+  if (investorEsignIsFullyCompletedForRow(row)) return true
+  const doc = String(row.docSignedDateIso ?? row.signedDate ?? "").trim()
+  if (!doc) return false
+  if (ESIGN_WORKFLOW_COLUMN_LABELS.has(doc.toLowerCase())) return false
+  return investorRowCommittedNumeric(row) > 0
 }
 
 /**

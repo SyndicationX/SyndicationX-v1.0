@@ -21,9 +21,14 @@ import type { DealDetailApi } from "../../api/dealsApi"
 import { OFFERING_DETAILS_ASSETS_RETURN } from "../../utils/offeringDetailsSectionNav"
 import {
   computeDealAssetRowsFromClientStorage,
+  getDealAssetPersisted,
   persistDealAssetRowArchiveState,
   type DealAssetRow,
 } from "../../types/deal-asset.types"
+import {
+  persistDealAssetArchiveToServer,
+  syncDealAssetsFromServer,
+} from "../../utils/dealAssetsServerSync"
 import { AssetRowActions } from "../../components/AssetRowActions"
 import { ExportSelectableRowsModal } from "../../components/ExportSelectableRowsModal"
 import { downloadDealAssetsExportCsv } from "../../utils/offeringDetailsSectionExportCsv"
@@ -102,17 +107,26 @@ export function AssetsSection({ detail }: AssetsSectionProps) {
     computeDealAssetRowsFromClientStorage(detail),
   )
   const [viewRow, setViewRow] = useState<DealAssetRow | null>(null)
+  const [viewTab, setViewTab] = useState<"details" | "additional">("details")
   const [query, setQuery] = useState("")
   const [exportModalOpen, setExportModalOpen] = useState(false)
 
   useEffect(() => {
-    setRows((prev) =>
-      mergeArchivedFromPrevious(
-        computeDealAssetRowsFromClientStorage(detail),
-        prev,
-      ),
-    )
-  }, [detail.id, location.pathname])
+    let cancelled = false
+    void (async () => {
+      await syncDealAssetsFromServer(detail.id)
+      if (cancelled) return
+      setRows((prev) =>
+        mergeArchivedFromPrevious(
+          computeDealAssetRowsFromClientStorage(detail),
+          prev,
+        ),
+      )
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [detail.id, detail.assetImagePath, detail.propertyName, location.pathname])
 
   const filteredRows = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -132,6 +146,37 @@ export function AssetsSection({ detail }: AssetsSectionProps) {
     return () => window.removeEventListener("keydown", onKey)
   }, [viewRow])
 
+  useEffect(() => {
+    if (viewRow) setViewTab("details")
+  }, [viewRow?.id])
+
+  const openViewRow = useCallback(
+    (row: DealAssetRow) => {
+      setViewTab("details")
+      const persisted = getDealAssetPersisted(detail.id, row.id)
+      const additionalInfo =
+        persisted?.row.additionalInfo ??
+        row.additionalInfo ??
+        []
+      setViewRow({
+        ...row,
+        ...(persisted?.row.assetType
+          ? { assetType: persisted.row.assetType }
+          : {}),
+        additionalInfo,
+      })
+    },
+    [detail.id],
+  )
+
+  const closeViewRow = useCallback(() => {
+    setViewRow(null)
+    setViewTab("details")
+  }, [])
+
+  const viewAdditionalInfo = viewRow?.additionalInfo ?? []
+  const hasAdditionalInfo = viewAdditionalInfo.length > 0
+
   const archiveAsset = useCallback(
     (id: string) => {
       setRows((prev) => {
@@ -139,7 +184,16 @@ export function AssetsSection({ detail }: AssetsSectionProps) {
           r.id === id ? { ...r, archived: true } : r,
         )
         const updated = next.find((r) => r.id === id)
-        if (updated) persistDealAssetRowArchiveState(detail.id, updated)
+        if (updated) {
+          persistDealAssetRowArchiveState(detail.id, updated)
+          void persistDealAssetArchiveToServer({
+            dealId: detail.id,
+            row: updated,
+          }).then((res) => {
+            if (!res.ok)
+              toast.error(res.message || "Could not archive asset on server.")
+          })
+        }
         return next
       })
     },
@@ -153,7 +207,16 @@ export function AssetsSection({ detail }: AssetsSectionProps) {
           r.id === id ? { ...r, archived: false } : r,
         )
         const updated = next.find((r) => r.id === id)
-        if (updated) persistDealAssetRowArchiveState(detail.id, updated)
+        if (updated) {
+          persistDealAssetRowArchiveState(detail.id, updated)
+          void persistDealAssetArchiveToServer({
+            dealId: detail.id,
+            row: updated,
+          }).then((res) => {
+            if (!res.ok)
+              toast.error(res.message || "Could not activate asset on server.")
+          })
+        }
         return next
       })
     },
@@ -207,7 +270,7 @@ export function AssetsSection({ detail }: AssetsSectionProps) {
           <button
             type="button"
             className="deals_table_name_link deal_assets_name_btn"
-            onClick={() => setViewRow(row)}
+            onClick={() => openViewRow(row)}
           >
             {row.name || "—"}
           </button>
@@ -273,7 +336,7 @@ export function AssetsSection({ detail }: AssetsSectionProps) {
           <AssetRowActions
             rowName={row.name}
             archived={Boolean(row.archived)}
-            onView={() => setViewRow(row)}
+            onView={() => openViewRow(row)}
             onEdit={
               row.archived
                 ? undefined
@@ -289,7 +352,7 @@ export function AssetsSection({ detail }: AssetsSectionProps) {
         ),
       },
     ],
-    [detail.id, navigate, archiveAsset, activateAsset],
+    [activateAsset, archiveAsset, detail.id, navigate, openViewRow],
   )
 
   const emptyLabel =
@@ -385,57 +448,122 @@ export function AssetsSection({ detail }: AssetsSectionProps) {
                   <button
                     type="button"
                     className="um_modal_close"
-                    onClick={() => setViewRow(null)}
+                    onClick={closeViewRow}
                     aria-label="Close"
                   >
                     <X size={20} strokeWidth={2} aria-hidden />
                   </button>
                 </div>
                 <div className="deals_add_inv_modal_scroll deal_assets_view_body">
-                  <dl className="deal_offering_dl">
-                    <div className="deal_offering_dl_row">
-                      <dt>Name</dt>
-                      <dd>{viewRow.name}</dd>
+                  <div
+                    className="um_members_tabs_outer deals_tabs_outer um_segmented_tabs_outer deal_assets_view_tabs_outer"
+                    role="presentation"
+                  >
+                    <div
+                      className="um_members_tabs_row deals_tabs_row um_segmented_tabs_row deal_assets_view_tabs_row"
+                      role="tablist"
+                      aria-label="Asset details sections"
+                    >
+                      <button
+                        type="button"
+                        role="tab"
+                        id="deal-asset-view-tab-details"
+                        className={`um_members_tab deals_tabs_tab um_segmented_tab${
+                          viewTab === "details" ? " um_members_tab_active" : ""
+                        }`}
+                        aria-selected={viewTab === "details"}
+                        aria-controls="deal-asset-view-panel-details"
+                        onClick={() => setViewTab("details")}
+                      >
+                        <span className="deals_tabs_label um_segmented_tab_label">
+                          Details
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        id="deal-asset-view-tab-additional"
+                        className={`um_members_tab deals_tabs_tab um_segmented_tab${
+                          viewTab === "additional"
+                            ? " um_members_tab_active"
+                            : ""
+                        }`}
+                        aria-selected={viewTab === "additional"}
+                        aria-controls="deal-asset-view-panel-additional"
+                        onClick={() => setViewTab("additional")}
+                      >
+                        <span className="deals_tabs_label um_segmented_tab_label">
+                          Additional information
+                        </span>
+                      </button>
                     </div>
-                    <div className="deal_offering_dl_row">
-                      <dt>Address</dt>
-                      <dd>{viewRow.address}</dd>
-                    </div>
-                    <div className="deal_offering_dl_row">
-                      <dt>Asset type</dt>
-                      <dd>{viewRow.assetType}</dd>
-                    </div>
-                    <div className="deal_offering_dl_row">
-                      <dt>Images</dt>
-                      <dd>
-                        {viewRow.imageCount}{" "}
-                        {viewRow.imageCount === 1 ? "image" : "images"}
-                      </dd>
-                    </div>
-                    {viewRow.archived ? (
-                      <div className="deal_offering_dl_row">
-                        <dt>Status</dt>
-                        <dd>Archived</dd>
-                      </div>
-                    ) : null}
-                    {viewRow.additionalInfo && viewRow.additionalInfo.length > 0
-                      ? viewRow.additionalInfo.map((pair, i) => (
-                          <div
-                            key={`${pair.label}-${i}`}
-                            className="deal_offering_dl_row"
-                          >
-                            <dt>{pair.label}</dt>
-                            <dd>{pair.value}</dd>
+                  </div>
+
+                  {viewTab === "details" ? (
+                    <div
+                      id="deal-asset-view-panel-details"
+                      role="tabpanel"
+                      aria-labelledby="deal-asset-view-tab-details"
+                    >
+                      <dl className="deal_offering_dl">
+                        <div className="deal_offering_dl_row">
+                          <dt>Name</dt>
+                          <dd>{viewRow.name}</dd>
+                        </div>
+                        <div className="deal_offering_dl_row">
+                          <dt>Address</dt>
+                          <dd>{viewRow.address}</dd>
+                        </div>
+                        <div className="deal_offering_dl_row">
+                          <dt>Asset type</dt>
+                          <dd>{viewRow.assetType}</dd>
+                        </div>
+                        <div className="deal_offering_dl_row">
+                          <dt>Images</dt>
+                          <dd>
+                            {viewRow.imageCount}{" "}
+                            {viewRow.imageCount === 1 ? "image" : "images"}
+                          </dd>
+                        </div>
+                        {viewRow.archived ? (
+                          <div className="deal_offering_dl_row">
+                            <dt>Status</dt>
+                            <dd>Archived</dd>
                           </div>
-                        ))
-                      : null}
-                  </dl>
+                        ) : null}
+                      </dl>
+                    </div>
+                  ) : (
+                    <div
+                      id="deal-asset-view-panel-additional"
+                      role="tabpanel"
+                      aria-labelledby="deal-asset-view-tab-additional"
+                    >
+                      {hasAdditionalInfo ? (
+                        <dl className="deal_offering_dl">
+                          {viewAdditionalInfo.map((pair, i) => (
+                            <div
+                              key={`${pair.label}-${i}`}
+                              className="deal_offering_dl_row"
+                            >
+                              <dt>{pair.label}</dt>
+                              <dd>{pair.value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      ) : (
+                        <p className="deal_assets_view_empty">
+                          No additional information for this asset.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="um_modal_actions">
                   <button
                     type="button"
                     className="um_btn_primary"
-                    onClick={() => setViewRow(null)}
+                    onClick={closeViewRow}
                   >
                     <X size={16} strokeWidth={2} aria-hidden />
                     Close

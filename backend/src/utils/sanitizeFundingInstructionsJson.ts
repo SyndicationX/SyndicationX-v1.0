@@ -1,5 +1,10 @@
 /** Validates and normalizes Funding Info JSON for `add_deal_form.funding_instructions_json`. */
 
+import {
+  abaRoutingNumberValidationMessage,
+  digitsFromAbaRoutingInput,
+} from "./usAbaRoutingNumber.js";
+
 export class FundingInstructionsJsonInvalidError extends Error {
   constructor(message = "Invalid funding instructions payload") {
     super(message);
@@ -50,11 +55,22 @@ function readObj(v: unknown): Record<string, unknown> {
   return v as Record<string, unknown>;
 }
 
+function clipRoutingNumber(v: unknown): string {
+  return digitsFromAbaRoutingInput(clipStr(v));
+}
+
 function readSectionObj(v: unknown): Record<string, unknown> {
   if (v == null || typeof v !== "object" || Array.isArray(v)) {
     return {};
   }
   return v as Record<string, unknown>;
+}
+
+function assertValidRoutingIfPresent(routing: string, label: string): void {
+  const msg = abaRoutingNumberValidationMessage(routing);
+  if (msg) {
+    throw new FundingInstructionsJsonInvalidError(`${label}: ${msg}`);
+  }
 }
 
 export function sanitizeFundingInstructionsJson(raw: string): string {
@@ -83,7 +99,7 @@ export function sanitizeFundingInstructionsJson(raw: string): string {
       enabled: clipBool(ach.enabled),
       receivingBank: clipStr(ach.receivingBank),
       bankAddress: clipStr(ach.bankAddress),
-      routingNumber: clipStr(ach.routingNumber),
+      routingNumber: clipRoutingNumber(ach.routingNumber),
       accountNumber: clipStr(ach.accountNumber),
       accountType: clipAccountType(ach.accountType),
       beneficiaryAccountName: clipStr(ach.beneficiaryAccountName),
@@ -96,7 +112,7 @@ export function sanitizeFundingInstructionsJson(raw: string): string {
       enabled: clipBool(wire.enabled),
       receivingBank: clipStr(wire.receivingBank),
       bankAddress: clipStr(wire.bankAddress),
-      routingNumber: clipStr(wire.routingNumber),
+      routingNumber: clipRoutingNumber(wire.routingNumber),
       accountNumber: clipStr(wire.accountNumber),
       accountType: clipAccountType(wire.accountType),
       beneficiaryAccountName: clipStr(wire.beneficiaryAccountName),
@@ -120,6 +136,13 @@ export function sanitizeFundingInstructionsJson(raw: string): string {
       amount: clipStr(investmentFee.amount),
     },
   };
+
+  if (out.ach.enabled) {
+    assertValidRoutingIfPresent(out.ach.routingNumber, "ACH routing number");
+  }
+  if (out.wire.enabled) {
+    assertValidRoutingIfPresent(out.wire.routingNumber, "Wire routing number");
+  }
 
   const s = JSON.stringify(out);
   if (s.length > MAX_BYTES) {

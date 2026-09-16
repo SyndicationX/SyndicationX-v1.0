@@ -8,15 +8,21 @@ import {
   ContactInvalidPhoneError,
   ContactScopeConflictError,
   countDealInvestmentsByContactIdForViewer,
+  getContactForViewer,
   getUserDisplayNameById,
   insertContact,
   isSelfRegisteredInvestorContactRow,
   listContactsForViewer,
   loadContactCreatorUsersById,
+  patchContactShowOfferingsForViewer,
+  patchContactAccreditationStatusForViewer,
+  patchContactKnownSinceForViewer,
   patchContactStatusForViewer,
   resolveContactDisplayFields,
   updateContactFieldsForViewer,
+  type ContactOfferingVisibility,
 } from "../services/contact/contact.service.js";
+import { normalizeContactOfferingVisibility } from "../services/contact/contactOfferingVisibility.service.js";
 import {
   deleteContactEmailTemplateForViewer,
   insertContactEmailTemplate,
@@ -28,6 +34,11 @@ import {
   listOrganizationContactListNames,
   listOrganizationContactTagNames,
 } from "../services/contact/organizationContactLabels.service.js";
+import {
+  allowedOwnerNamesFromSponsors,
+  filterOwnersToAllowedNames,
+  listContactOwnerSponsorsForViewer,
+} from "../services/contact/contactOwnerSponsors.service.js";
 import type {
   ContactEmailTemplateRow,
   ContactRow,
@@ -68,6 +79,8 @@ async function resolveOrganizationIdForContactLabels(
   const selfOrg = row?.organizationId ? String(row.organizationId).trim() : "";
   if (isPlatformAdminRole(role)) {
     if (fromQuery && ORG_UUID_RE.test(fromQuery)) return fromQuery;
+    const requested = requestedOrganizationIdFromRequest(req);
+    if (requested && ORG_UUID_RE.test(requested)) return requested;
     return null;
   }
   const requested = requestedOrganizationIdFromRequest(req);
@@ -134,13 +147,43 @@ function dedupeOwnersPreserveOrder(items: string[]): string[] {
   return out;
 }
 
+function normalizeShowOfferingsVisibility(
+  row: ContactRow,
+): ContactOfferingVisibility | null {
+  return normalizeContactOfferingVisibility(row.showOfferingsVisibility);
+}
+
+function formatKnownSince(raw: unknown): string | null {
+  if (raw == null || raw === "") return null;
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) {
+    return raw.toISOString().slice(0, 10);
+  }
+  const s = String(raw).trim();
+  if (!s) return null;
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(s);
+  return m ? m[1]! : null;
+}
+
 function mapContactToJson(row: ContactRow) {
+  const showOfferingsVisibility = normalizeShowOfferingsVisibility(row);
+  const accreditationStatus =
+    row.accreditationStatus != null &&
+    String(row.accreditationStatus).trim() !== ""
+      ? String(row.accreditationStatus).trim()
+      : null;
+  const knownSince = formatKnownSince(row.knownSince);
   return {
     id: row.id,
     organizationId: row.organizationId ?? null,
     organization_id: row.organizationId ?? null,
     firstName: row.firstName,
     lastName: row.lastName,
+    fullName:
+      String(row.fullName ?? "").trim() ||
+      [row.firstName, row.lastName]
+        .map((s) => String(s ?? "").trim())
+        .filter(Boolean)
+        .join(" "),
     email: row.email,
     phone: row.phone,
     note: row.note,
@@ -154,6 +197,12 @@ function mapContactToJson(row: ContactRow) {
         ? row.createdAt.toISOString()
         : String(row.createdAt),
     status: row.status ?? "active",
+    showOfferingsVisibility,
+    show_offerings_visibility: showOfferingsVisibility,
+    accreditationStatus,
+    accreditation_status: accreditationStatus,
+    knownSince,
+    known_since: knownSince,
     lastEditReason: row.lastEditReason?.trim() || undefined,
   };
 }
@@ -271,6 +320,39 @@ export async function getOrganizationContactTags(
   }
 }
 
+/** GET /contacts/owner-sponsors — scoped sponsor options for the Owners dropdown. */
+export async function getContactOwnerSponsors(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  try {
+    const orgId = await resolveOrganizationIdForContactLabels(req, user.id);
+    const [actor] = await db
+      .select({ role: users.role })
+      .from(users)
+      .where(eq(users.id, user.id))
+      .limit(1);
+    const contactId = paramStr(
+      (req.query.contactId ?? req.query.contact_id) as string | string[] | undefined,
+    );
+    const { sponsors, lockToListed } = await listContactOwnerSponsorsForViewer({
+      viewerUserId: user.id,
+      viewerRole: actor?.role ?? user.userRole,
+      organizationId: orgId,
+      contactId,
+    });
+    res.status(200).json({ sponsors, lockToListed });
+  } catch (err) {
+    console.error("getContactOwnerSponsors:", err);
+    res.status(500).json({ message: "Could not load contact owners" });
+  }
+}
+
 /** GET /contacts/organization-lists — names from `organization_contact_list`. */
 export async function getOrganizationContactLists(
   req: Request,
@@ -328,11 +410,52 @@ export async function getContacts(
       actorUserId: user.id,
       resultCount: contacts.length,
     });
-    console.log("Fetched Contacts:", contacts);
     res.status(200).json({ contacts });
   } catch (err) {
     console.error("getContacts:", err);
     res.status(500).json({ message: "Could not load contacts" });
+  }
+}
+
+/** GET /contacts/:contactId */
+export async function getContact(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const contactId = paramStr(req.params.contactId);
+  if (!contactId) {
+    res.status(400).json({ message: "Contact id required" });
+    return;
+  }
+  try {
+    const requestedOrg = requestedOrganizationIdFromRequest(req);
+    const row = await getContactForViewer(
+      user.id,
+      contactId,
+      user.userRole,
+      requestedOrg,
+    );
+    if (!row) {
+      res.status(404).json({ message: "Contact not found or access denied" });
+      return;
+    }
+    const dealCounts = await countDealInvestmentsByContactIdForViewer({
+      viewerUserId: user.id,
+      jwtUserRole: user.userRole,
+      contactIds: [String(row.id)],
+      requestedOrganizationId: requestedOrg,
+    });
+    res.status(200).json({
+      contact: await mapContactToJsonWithNames(row, dealCounts),
+    });
+  } catch (err) {
+    console.error("getContact:", err);
+    res.status(500).json({ message: "Could not load contact" });
   }
 }
 
@@ -371,10 +494,29 @@ export async function postContact(req: Request, res: Response): Promise<void> {
     const fallback =
       user.email?.trim() || creatorLabel || "User";
     const primaryOwner = creatorLabel || fallback;
-    const owners = dedupeOwnersPreserveOrder([
-      primaryOwner,
-      ...ownersFromClient,
-    ]);
+    const orgId = await resolveOrganizationIdForContactLabels(req, user.id);
+    const [actor] = await db
+      .select({ role: users.role })
+      .from(users)
+      .where(eq(users.id, user.id))
+      .limit(1);
+    const { sponsors, lockToListed } = await listContactOwnerSponsorsForViewer({
+      viewerUserId: user.id,
+      viewerRole: actor?.role ?? user.userRole,
+      organizationId: orgId,
+    });
+    const allowed = allowedOwnerNamesFromSponsors(
+      sponsors,
+      lockToListed ? [] : [primaryOwner],
+    );
+    const filtered = filterOwnersToAllowedNames(ownersFromClient, allowed);
+    const owners = lockToListed
+      ? dedupeOwnersPreserveOrder(
+          filtered.length > 0
+            ? filtered
+            : sponsors.map((s) => s.displayName).filter(Boolean),
+        )
+      : dedupeOwnersPreserveOrder([primaryOwner, ...filtered]);
 
     const row = await insertContact({
       input: {
@@ -459,13 +601,38 @@ export async function patchContact(req: Request, res: Response): Promise<void> {
   }
 
   try {
-    const creatorLabel = (await getUserDisplayNameById(user.id)).trim();
-    const fallback = user.email?.trim() || creatorLabel || "User";
-    const primaryOwner = creatorLabel || fallback;
-    const owners = dedupeOwnersPreserveOrder([
-      primaryOwner,
-      ...ownersFromClient,
-    ]);
+    const existing = await getContactForViewer(
+      user.id,
+      contactId,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    if (!existing) {
+      res.status(404).json({ message: "Contact not found or access denied" });
+      return;
+    }
+    const orgId = await resolveOrganizationIdForContactLabels(req, user.id);
+    const [actor] = await db
+      .select({ role: users.role })
+      .from(users)
+      .where(eq(users.id, user.id))
+      .limit(1);
+    const { sponsors, lockToListed } = await listContactOwnerSponsorsForViewer({
+      viewerUserId: user.id,
+      viewerRole: actor?.role ?? user.userRole,
+      organizationId: orgId,
+      contactId,
+    });
+    const allowed = allowedOwnerNamesFromSponsors(
+      sponsors,
+      lockToListed ? [] : (existing.owners ?? []),
+    );
+    const filtered = filterOwnersToAllowedNames(ownersFromClient, allowed);
+    const owners = dedupeOwnersPreserveOrder(
+      lockToListed && filtered.length === 0
+        ? sponsors.map((s) => s.displayName).filter(Boolean)
+        : filtered,
+    );
 
     const updated = await updateContactFieldsForViewer(
       user.id,
@@ -482,6 +649,7 @@ export async function patchContact(req: Request, res: Response): Promise<void> {
         lastEditReason: editReason,
       },
       user.userRole,
+      requestedOrganizationIdFromRequest(req),
     );
     if (!updated) {
       res.status(404).json({ message: "Contact not found or access denied" });
@@ -539,6 +707,7 @@ export async function patchContactStatus(
       contactId,
       status,
       user.userRole,
+      requestedOrganizationIdFromRequest(req),
     );
     if (!updated) {
       res.status(404).json({ message: "Contact not found or access denied" });
@@ -565,10 +734,207 @@ export async function patchContactStatus(
   }
 }
 
+function parseShowOfferingsVisibility(
+  raw: unknown,
+): ContactOfferingVisibility | null | undefined {
+  if (raw === null) return null;
+  if (raw === undefined) return undefined;
+  const s = bodyString(raw).trim();
+  if (!s) return null;
+  return normalizeContactOfferingVisibility(s);
+}
+
+function parseKnownSinceInput(raw: unknown): string | null | undefined {
+  if (raw === null) return null;
+  if (raw === undefined) return undefined;
+  const s = bodyString(raw).trim();
+  if (!s) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return undefined;
+  const t = Date.parse(`${s}T00:00:00Z`);
+  if (Number.isNaN(t)) return undefined;
+  return s;
+}
+
+/** PATCH /contacts/:contactId/show-offerings */
+export async function patchContactShowOfferings(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const contactId = paramStr(req.params.contactId);
+  if (!contactId) {
+    res.status(400).json({ message: "Contact id required" });
+    return;
+  }
+  const b = req.body as Record<string, unknown>;
+  const showOfferingsVisibility = parseShowOfferingsVisibility(
+    b.showOfferingsVisibility ?? b.show_offerings_visibility,
+  );
+  if (showOfferingsVisibility === undefined) {
+    res.status(400).json({
+      message:
+        "showOfferingsVisibility must be one of: ALL_OFFERINGS, HIDE_OFFERINGS, 506C_ONLY (or empty/null to clear)",
+    });
+    return;
+  }
+
+  try {
+    const updated = await patchContactShowOfferingsForViewer(
+      user.id,
+      contactId,
+      showOfferingsVisibility,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    if (!updated) {
+      res.status(404).json({ message: "Contact not found or access denied" });
+      return;
+    }
+    const dealCounts = await countDealInvestmentsByContactIdForViewer({
+      viewerUserId: user.id,
+      jwtUserRole: user.userRole,
+      contactIds: [String(updated.id)],
+    });
+    logSocContactWrite({
+      operation: "update",
+      actorUserId: user.id,
+      contactId: String(updated.id),
+    });
+    res.status(200).json({
+      message: "Contact offerings visibility updated",
+      contact: await mapContactToJsonWithNames(updated, dealCounts),
+    });
+  } catch (err) {
+    console.error("patchContactShowOfferings:", err);
+    res.status(500).json({
+      message: "Could not update contact offerings visibility",
+    });
+  }
+}
+
+/** PATCH /contacts/:contactId/accreditation-status */
+export async function patchContactAccreditationStatus(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const contactId = paramStr(req.params.contactId);
+  if (!contactId) {
+    res.status(400).json({ message: "Contact id required" });
+    return;
+  }
+  const b = req.body as Record<string, unknown>;
+  const raw = b.accreditationStatus ?? b.accreditation_status;
+  if (raw === undefined) {
+    res.status(400).json({ message: "accreditationStatus is required" });
+    return;
+  }
+  const accreditationStatus =
+    raw === null || String(raw).trim() === ""
+      ? null
+      : String(raw).trim().slice(0, 500);
+  try {
+    const updated = await patchContactAccreditationStatusForViewer(
+      user.id,
+      contactId,
+      accreditationStatus,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    if (!updated) {
+      res.status(404).json({ message: "Contact not found or access denied" });
+      return;
+    }
+    const dealCounts = await countDealInvestmentsByContactIdForViewer({
+      viewerUserId: user.id,
+      jwtUserRole: user.userRole,
+      contactIds: [String(updated.id)],
+    });
+    logSocContactWrite({
+      operation: "update",
+      actorUserId: user.id,
+      contactId: String(updated.id),
+    });
+    res.status(200).json({
+      message: "Contact accreditation status updated",
+      contact: await mapContactToJsonWithNames(updated, dealCounts),
+    });
+  } catch (err) {
+    console.error("patchContactAccreditationStatus:", err);
+    res
+      .status(500)
+      .json({ message: "Could not update accreditation status" });
+  }
+}
+
+/** PATCH /contacts/:contactId/known-since */
+export async function patchContactKnownSince(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const contactId = paramStr(req.params.contactId);
+  if (!contactId) {
+    res.status(400).json({ message: "Contact id required" });
+    return;
+  }
+  const b = req.body as Record<string, unknown>;
+  const knownSince = parseKnownSinceInput(b.knownSince ?? b.known_since);
+  if (knownSince === undefined) {
+    res.status(400).json({
+      message: "knownSince must be YYYY-MM-DD or null/empty to clear",
+    });
+    return;
+  }
+  try {
+    const updated = await patchContactKnownSinceForViewer(
+      user.id,
+      contactId,
+      knownSince,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    if (!updated) {
+      res.status(404).json({ message: "Contact not found or access denied" });
+      return;
+    }
+    const dealCounts = await countDealInvestmentsByContactIdForViewer({
+      viewerUserId: user.id,
+      jwtUserRole: user.userRole,
+      contactIds: [String(updated.id)],
+    });
+    logSocContactWrite({
+      operation: "update",
+      actorUserId: user.id,
+      contactId: String(updated.id),
+    });
+    res.status(200).json({
+      message: "Contact known since updated",
+      contact: await mapContactToJsonWithNames(updated, dealCounts),
+    });
+  } catch (err) {
+    console.error("patchContactKnownSince:", err);
+    res.status(500).json({ message: "Could not update known since" });
+  }
+}
+
 const EMAIL_TEMPLATE_SUBJECT_MAX = 255;
 const EMAIL_TEMPLATE_NAME_MAX = 255;
 const EMAIL_TEMPLATE_BODY_HTML_MAX = 200_000;
-const EMAIL_TEMPLATE_ATTACHMENT_BASE64_MAX = 1_400_000;
+/** Base64 of a 30 MB file is ~40 MB (4/3). */
+const EMAIL_TEMPLATE_ATTACHMENT_BASE64_MAX = 42_000_000;
 
 /** GET /contacts/email-templates */
 export async function getContactEmailTemplates(

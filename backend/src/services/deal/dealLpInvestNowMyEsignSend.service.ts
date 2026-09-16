@@ -14,8 +14,10 @@ import {
 } from "./dealEsignTemplates.service.js";
 import {
   normalizeInvestorQuestionnaireAnswersInput,
+  saveInvestorQuestionnaireAnswersForTarget,
 } from "./investorQuestionnaireAnswers.service.js";
 import { normalizeInvestorW9FormInput } from "./investorW9Form.service.js";
+import { enrichQuestionnaireAnswersFromInvestorProfile } from "./investorProfileQuestionnairePrefill.service.js";
 import {
   findInvestorEsignTargetForInvestNowCommitment,
   markDealInvestorEsignPending,
@@ -80,6 +82,38 @@ async function ensureInvestmentSignatureTracked(params: {
     dropboxResponse: params.dropboxResponse,
   });
   return investmentId;
+}
+
+async function resolveInvestNowEsignTarget(
+  dealId: string,
+  params: {
+    email: string;
+    viewerUserId: string;
+    profileId: string;
+    userInvestorProfileId?: string | null;
+    investmentId?: string | null;
+  },
+) {
+  const scoped = {
+    email: params.email,
+    userId: params.viewerUserId,
+    profileId: params.profileId,
+    userInvestorProfileId: params.userInvestorProfileId,
+    investmentId: params.investmentId,
+  };
+  let target = await findInvestorEsignTargetForInvestNowCommitment(
+    dealId,
+    scoped,
+  );
+  if (!target && params.investmentId?.trim()) {
+    target = await findInvestorEsignTargetForInvestNowCommitment(dealId, {
+      email: params.email,
+      userId: params.viewerUserId,
+      profileId: params.profileId,
+      userInvestorProfileId: params.userInvestorProfileId,
+    });
+  }
+  return target;
 }
 
 /**
@@ -158,9 +192,9 @@ export async function sendMyInvestNowEsignIfNeeded(params: {
 
   const sendCategoryId = selectedFiles[0]!.categoryId.trim() || categoryId;
 
-  const target = await findInvestorEsignTargetForInvestNowCommitment(dealId, {
+  const target = await resolveInvestNowEsignTarget(dealId, {
     email,
-    userId: params.viewerUserId,
+    viewerUserId: params.viewerUserId,
     profileId: params.profileId,
     userInvestorProfileId: params.userInvestorProfileId,
     investmentId: params.investmentId,
@@ -214,6 +248,26 @@ export async function sendMyInvestNowEsignIfNeeded(params: {
   const dealName = deal?.dealName?.trim() || "Deal";
   const rosterId = target.id;
 
+  const questionnaireAnswers = await enrichQuestionnaireAnswersFromInvestorProfile({
+    viewerUserId: params.viewerUserId,
+    userInvestorProfileId: params.userInvestorProfileId,
+    answers: normalizeInvestorQuestionnaireAnswersInput(
+      params.questionnaireAnswers,
+    ),
+    dealId,
+  });
+  if (questionnaireAnswers) {
+    try {
+      await saveInvestorQuestionnaireAnswersForTarget(
+        dealId,
+        target,
+        questionnaireAnswers,
+      );
+    } catch (err) {
+      console.warn("saveInvestorQuestionnaireAnswersForTarget (Invest Now eSign):", err);
+    }
+  }
+
   let signatureRequestId: string | undefined;
   let signatureId: string | undefined;
   let investorPreviewRelativePath: string | undefined;
@@ -230,9 +284,7 @@ export async function sendMyInvestNowEsignIfNeeded(params: {
       selectedFiles,
       esignTarget: target,
       commitmentProfileId: params.profileId,
-      questionnaireAnswers: normalizeInvestorQuestionnaireAnswersInput(
-        params.questionnaireAnswers,
-      ),
+      questionnaireAnswers,
       w9FormData: normalizeInvestorW9FormInput(params.w9Form) ?? undefined,
       investmentId: investmentIdForTarget ?? undefined,
       investorId: params.viewerUserId,
@@ -277,6 +329,15 @@ export async function sendMyInvestNowEsignIfNeeded(params: {
     signatureRequestId,
     signatureId,
   });
+
+  try {
+    const { notifySequentialInvestorsSignTurnAvailable } = await import(
+      "./dealEsignStageNotificationEmail.service.js"
+    );
+    await notifySequentialInvestorsSignTurnAvailable(dealId);
+  } catch (err) {
+    console.warn("notifySequentialInvestorsSignTurnAvailable (Invest Now send):", err);
+  }
 
   let trackedInvestmentId = investmentIdForTarget;
   if (signatureRequestId) {

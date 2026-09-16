@@ -36,6 +36,19 @@ export function targetAmountNumberForDeal(
 }
 
 /**
+ * Sum of completed distribution cash amounts (prior distribution records).
+ */
+export function sumPriorDistributionsAmount(
+  priors: Array<{ amount?: string | null }> | undefined | null,
+): number {
+  if (!priors?.length) return 0
+  return priors.reduce((acc, row) => {
+    const n = parseMoneyDigits(String(row.amount ?? ""))
+    return acc + (Number.isFinite(n) ? n : 0)
+  }, 0)
+}
+
+/**
  * Sum of accepted investments for a deal: KPI committed when present, else sum of row committed amounts.
  */
 export function acceptedAmountForPayload(payload: DealInvestorsPayload): number {

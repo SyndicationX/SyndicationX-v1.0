@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  IDLE_LOGOUT_MS,
   markIdleSessionTimeoutNotice,
   msUntilIdleLogout,
+  SESSION_LAST_ACTIVITY_KEY,
   touchSessionActivity,
 } from "./idleSession";
 import { performPortalLogout } from "./portalLogout";
@@ -13,15 +13,20 @@ const ACTIVITY_THROTTLE_MS = 1000;
 const ACTIVITY_EVENTS: (keyof WindowEventMap)[] = [
   "mousemove",
   "mousedown",
+  "pointerdown",
+  "pointermove",
   "keydown",
+  "keyup",
+  "input",
   "scroll",
   "touchstart",
   "click",
   "wheel",
+  "focusin",
 ];
 
 /**
- * Signs the user out after {@link IDLE_LOGOUT_MS} with no pointer/keyboard/scroll activity.
+ * Signs the user out after {@link IDLE_LOGOUT_MS} with no pointer/keyboard/scroll/API activity.
  * Mount once inside authenticated shell (RequireAuth).
  */
 export function useIdleLogout(): void {
@@ -40,6 +45,11 @@ export function useIdleLogout(): void {
 
     async function logoutForIdle() {
       if (loggingOutRef.current) return;
+      // Timer may have been scheduled before recent activity — verify still idle.
+      if (msUntilIdleLogout() > 0) {
+        scheduleLogout();
+        return;
+      }
       loggingOutRef.current = true;
       clearTimer();
       markIdleSessionTimeoutNotice();
@@ -70,6 +80,11 @@ export function useIdleLogout(): void {
       scheduleLogout();
     }
 
+    function onStorage(event: StorageEvent) {
+      if (event.key !== SESSION_LAST_ACTIVITY_KEY) return;
+      scheduleLogout();
+    }
+
     function onVisibilityChange() {
       if (document.visibilityState !== "visible") return;
       if (msUntilIdleLogout() <= 0) {
@@ -79,12 +94,13 @@ export function useIdleLogout(): void {
       }
     }
 
-    touchSessionActivity();
+    // Honor elapsed idle time on mount; activity listeners extend the window.
     scheduleLogout();
 
     for (const event of ACTIVITY_EVENTS) {
       window.addEventListener(event, onActivity, { passive: true });
     }
+    window.addEventListener("storage", onStorage);
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
@@ -92,6 +108,7 @@ export function useIdleLogout(): void {
       for (const event of ACTIVITY_EVENTS) {
         window.removeEventListener(event, onActivity);
       }
+      window.removeEventListener("storage", onStorage);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [navigate]);

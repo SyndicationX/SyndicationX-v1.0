@@ -5,6 +5,7 @@ import {
   isInvestorOfferingDocumentSectionExcluded,
   offeringPreviewDocumentExcludedFromInvestorOffering,
   readDealDocumentSectionsForWorkspace,
+  resolveFlatDocumentSharedWithScope,
   sectionDisplayLabel,
   sectionSharedWithDisplay,
   sectionVisibleOnOfferingPreview,
@@ -23,6 +24,8 @@ export type InvestmentDetailDocumentRow = {
   name: string
   url: string | null
   dateAdded: string
+  /** ISO time Shared With was last set, when known. */
+  sharedAt?: string
   sectionLabel: string
   /** How this file is exposed on the deal Documents tab. */
   visibilityLabel: string
@@ -103,6 +106,7 @@ function pushRow(
     name: string
     url: string | null
     dateAdded: string
+    sharedAt?: string
     sectionLabel: string
     scope: SectionSharedWithScope
   },
@@ -115,6 +119,7 @@ function pushRow(
     name: args.name,
     url: args.url,
     dateAdded: args.dateAdded,
+    ...(args.sharedAt ? { sharedAt: args.sharedAt } : {}),
     sectionLabel: args.sectionLabel,
     visibilityLabel: sectionSharedWithDisplay(scope),
     source,
@@ -170,6 +175,7 @@ export function listInvestmentDetailDocumentSectionGroups(
         name: d.name,
         url: d.url,
         dateAdded: d.dateAdded?.trim() || "—",
+        ...(d.sharedAt ? { sharedAt: d.sharedAt } : {}),
         sectionLabel: sl,
         scope,
       })
@@ -190,8 +196,7 @@ export function listInvestmentDetailDocumentSectionGroups(
     for (const d of readOfferingPreviewDocuments(id)) {
       if (seenLegacyIds.has(d.id)) continue
       if (offeringPreviewDocumentExcludedFromInvestorOffering(d, sections)) continue
-      const scope: SectionSharedWithScope =
-        d.sharedWithScope === "lp_investor" ? "lp_investor" : "offering_page"
+      const scope = resolveFlatDocumentSharedWithScope(d.sharedWithScope)
       if (!sectionVisibleOnOfferingPreview(scope, LP_PORTAL_DOCUMENT_CTX)) continue
       const legacyDoc: NestedPreviewDocument = {
         id: d.id,

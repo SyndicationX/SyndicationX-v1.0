@@ -1,6 +1,11 @@
 import { portalAuthHeaders, organizationIdQueryParam } from "@/common/auth/portalAuthHeaders"
 import { getApiV1Base } from "@/common/utils/apiBaseUrl"
-import type { ContactRow, ContactStatus } from "../types/contact.types"
+import type {
+  ContactOfferingVisibility,
+  ContactOwnerSponsorOption,
+  ContactRow,
+  ContactStatus,
+} from "../types/contact.types"
 
 function authHeaders(): HeadersInit {
   return portalAuthHeaders()
@@ -11,10 +16,56 @@ function normalizeStatus(raw: unknown): ContactRow["status"] {
   return s === "suspended" ? "suspended" : "active"
 }
 
+function normalizeOfferingVisibility(
+  raw: unknown,
+): ContactOfferingVisibility | null {
+  if (raw == null || String(raw).trim() === "") return null
+  const s = String(raw)
+    .trim()
+    .toUpperCase()
+    .replace(/[\s()-]+/g, "_")
+  if (
+    s === "ALL_OFFERINGS" ||
+    s === "ALL" ||
+    s === "SHOW" ||
+    s === "SHOW_OFFERINGS"
+  )
+    return "ALL_OFFERINGS"
+  if (s === "HIDE_OFFERINGS" || s === "HIDE" || s === "HIDDEN")
+    return "HIDE_OFFERINGS"
+  if (
+    s === "506C_ONLY" ||
+    s === "506C" ||
+    s === "506_C" ||
+    s === "506_C_ONLY" ||
+    s === "506C_OFFERINGS_ONLY"
+  )
+    return "506C_ONLY"
+  return null
+}
+
+function normalizeKnownSince(raw: unknown): string | null {
+  if (raw == null || raw === "") return null
+  const s = String(raw).trim()
+  if (!s) return null
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(s)
+  return m ? m[1]! : null
+}
+
 function normalizeContact(raw: Record<string, unknown>): ContactRow {
   const tags = raw.tags
   const lists = raw.lists
   const owners = raw.owners
+  const showOfferingsVisibility = normalizeOfferingVisibility(
+    raw.showOfferingsVisibility ?? raw.show_offerings_visibility,
+  )
+  const accreditationRaw =
+    raw.accreditationStatus ?? raw.accreditation_status
+  const accreditationStatus =
+    accreditationRaw == null || String(accreditationRaw).trim() === ""
+      ? null
+      : String(accreditationRaw).trim()
+  const knownSince = normalizeKnownSince(raw.knownSince ?? raw.known_since)
   return {
     id: String(raw.id ?? ""),
     firstName: String(raw.firstName ?? raw.first_name ?? ""),
@@ -26,6 +77,9 @@ function normalizeContact(raw: Record<string, unknown>): ContactRow {
     lists: Array.isArray(lists) ? lists.map((x) => String(x)) : [],
     owners: Array.isArray(owners) ? owners.map((x) => String(x)) : [],
     status: normalizeStatus(raw.status),
+    showOfferingsVisibility,
+    accreditationStatus,
+    knownSince,
     lastEditReason:
       raw.lastEditReason != null || raw.last_edit_reason != null
         ? String(raw.lastEditReason ?? raw.last_edit_reason).trim() ||
@@ -55,7 +109,11 @@ export async function fetchContacts(): Promise<ContactRow[]> {
   const base = getApiV1Base()
   if (!base) return []
   try {
-    const res = await fetch(`${base}/contacts`, {
+    const params = new URLSearchParams()
+    const oid = organizationIdQueryParam()
+    if (oid) params.set("organizationId", oid)
+    const q = params.toString()
+    const res = await fetch(`${base}/contacts${q ? `?${q}` : ""}`, {
       headers: { ...authHeaders() },
       credentials: "include",
     })
@@ -70,6 +128,33 @@ export async function fetchContacts(): Promise<ContactRow[]> {
       .map(normalizeContact)
   } catch {
     return []
+  }
+}
+
+export async function fetchContact(id: string): Promise<ContactRow | null> {
+  const base = getApiV1Base()
+  if (!base || !id.trim()) return null
+  try {
+    const params = new URLSearchParams()
+    const oid = organizationIdQueryParam()
+    if (oid) params.set("organizationId", oid)
+    const q = params.toString()
+    const res = await fetch(
+      `${base}/contacts/${encodeURIComponent(id)}${q ? `?${q}` : ""}`,
+      {
+        headers: { ...authHeaders() },
+        credentials: "include",
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as {
+      contact?: Record<string, unknown>
+    }
+    if (!res.ok) return null
+    const c = data.contact
+    if (!c || typeof c !== "object") return null
+    return normalizeContact(c)
+  } catch {
+    return null
   }
 }
 
@@ -188,6 +273,108 @@ export async function patchContactStatus(
   return normalizeContact(c as Record<string, unknown>)
 }
 
+export async function patchContactShowOfferings(
+  id: string,
+  showOfferingsVisibility: ContactOfferingVisibility | null,
+): Promise<ContactRow> {
+  const base = getApiV1Base()
+  if (!base) {
+    throw new Error("API is not configured (VITE_BASE_URL).")
+  }
+  const res = await fetch(
+    `${base}/contacts/${encodeURIComponent(id)}/show-offerings`,
+    {
+      method: "PATCH",
+      headers: {
+        ...authHeaders(),
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ showOfferingsVisibility }),
+    },
+  )
+  const data = (await res.json().catch(() => ({}))) as {
+    message?: unknown
+    contact?: Record<string, unknown>
+  }
+  if (!res.ok) {
+    const msg =
+      data?.message != null ? String(data.message) : `Error ${res.status}`
+    throw new Error(msg)
+  }
+  const c = data.contact
+  if (!c || typeof c !== "object") throw new Error("Invalid response")
+  return normalizeContact(c as Record<string, unknown>)
+}
+
+export async function patchContactAccreditationStatus(
+  id: string,
+  accreditationStatus: string | null,
+): Promise<ContactRow> {
+  const base = getApiV1Base()
+  if (!base) {
+    throw new Error("API is not configured (VITE_BASE_URL).")
+  }
+  const res = await fetch(
+    `${base}/contacts/${encodeURIComponent(id)}/accreditation-status`,
+    {
+      method: "PATCH",
+      headers: {
+        ...authHeaders(),
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ accreditationStatus }),
+    },
+  )
+  const data = (await res.json().catch(() => ({}))) as {
+    message?: unknown
+    contact?: Record<string, unknown>
+  }
+  if (!res.ok) {
+    const msg =
+      data?.message != null ? String(data.message) : `Error ${res.status}`
+    throw new Error(msg)
+  }
+  const c = data.contact
+  if (!c || typeof c !== "object") throw new Error("Invalid response")
+  return normalizeContact(c as Record<string, unknown>)
+}
+
+export async function patchContactKnownSince(
+  id: string,
+  knownSince: string | null,
+): Promise<ContactRow> {
+  const base = getApiV1Base()
+  if (!base) {
+    throw new Error("API is not configured (VITE_BASE_URL).")
+  }
+  const res = await fetch(
+    `${base}/contacts/${encodeURIComponent(id)}/known-since`,
+    {
+      method: "PATCH",
+      headers: {
+        ...authHeaders(),
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ knownSince }),
+    },
+  )
+  const data = (await res.json().catch(() => ({}))) as {
+    message?: unknown
+    contact?: Record<string, unknown>
+  }
+  if (!res.ok) {
+    const msg =
+      data?.message != null ? String(data.message) : `Error ${res.status}`
+    throw new Error(msg)
+  }
+  const c = data.contact
+  if (!c || typeof c !== "object") throw new Error("Invalid response")
+  return normalizeContact(c as Record<string, unknown>)
+}
+
 /** Notify configured inbox that contacts were exported (Excel/CSV). Best-effort; failures are ignored by callers. */
 export async function notifyContactsExportAudit(params: {
   rowCount: number
@@ -265,5 +452,64 @@ export async function fetchOrganizationContactLists(options?: {
       : []
   } catch {
     return []
+  }
+}
+
+function normalizeOwnerSponsor(
+  raw: Record<string, unknown>,
+): ContactOwnerSponsorOption | null {
+  const displayName = String(raw.displayName ?? raw.display_name ?? "").trim()
+  const userId = String(raw.userId ?? raw.user_id ?? "").trim()
+  if (!displayName) return null
+  return {
+    userId,
+    displayName,
+    email: String(raw.email ?? "").trim(),
+  }
+}
+
+/** Org / role-scoped sponsors for the contact Owners dropdown. */
+export async function fetchContactOwnerSponsors(options?: {
+  contactId?: string
+}): Promise<{
+  sponsors: ContactOwnerSponsorOption[]
+  lockToListed: boolean
+}> {
+  const empty = { sponsors: [] as ContactOwnerSponsorOption[], lockToListed: false }
+  const base = getApiV1Base()
+  if (!base) return empty
+  try {
+    const params = new URLSearchParams()
+    const oid = organizationIdQueryParam()
+    if (oid) params.set("organizationId", oid)
+    const contactId = options?.contactId?.trim()
+    if (contactId) params.set("contactId", contactId)
+    const q = params.toString()
+    const res = await fetch(
+      `${base}/contacts/owner-sponsors${q ? `?${q}` : ""}`,
+      {
+        headers: { ...authHeaders() },
+        credentials: "include",
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as {
+      sponsors?: unknown
+      lockToListed?: unknown
+    }
+    if (!res.ok) return empty
+    const list = data.sponsors
+    if (!Array.isArray(list)) return empty
+    return {
+      sponsors: list
+        .filter(
+          (x): x is Record<string, unknown> =>
+            x != null && typeof x === "object" && !Array.isArray(x),
+        )
+        .map(normalizeOwnerSponsor)
+        .filter((x): x is ContactOwnerSponsorOption => x != null),
+      lockToListed: data.lockToListed === true,
+    }
+  } catch {
+    return empty
   }
 }

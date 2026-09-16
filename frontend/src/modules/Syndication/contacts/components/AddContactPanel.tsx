@@ -1,5 +1,7 @@
 import {
   ArrowLeft,
+  Check,
+  ChevronDown,
   ChevronRight,
   FileText,
   List,
@@ -26,7 +28,6 @@ import {
   type Dispatch,
   type FormEvent,
   type KeyboardEvent,
-  type MouseEvent,
   type RefObject,
   type SetStateAction,
 } from "react"
@@ -37,10 +38,14 @@ import {
   nationalDigitsFromStoredPhone,
   nationalTenDigitsFromRawInput,
 } from "../../../../common/phone/usPhoneNumber"
-import { focusFirstFormErrorAfterUpdate } from "../../../../common/utils/scrollToFirstFormError"
+import { focusFirstFormErrorAfterUpdate, scrollMultiStepFormToTopAfterUpdate } from "../../../../common/utils/scrollToFirstFormError"
 import { fetchMyProfile } from "../../../myaccount/accountApi"
 import { getSessionUserDisplayName } from "../../../../common/auth/sessionUserDisplayName"
-import type { ContactRow } from "../types/contact.types"
+import { fetchContactOwnerSponsors } from "../api/contactsApi"
+import type {
+  ContactOwnerSponsorOption,
+  ContactRow,
+} from "../types/contact.types"
 import "../../Deals/tabs/deal_members/add-investment/add_deal_modal.css"
 import "../../usermanagement/user_management.css"
 import "../contacts.css"
@@ -226,6 +231,11 @@ type SearchableMultiSelectFieldProps = {
   placeholder: string
   emptyHint: string
   onFocusOpen: () => void
+  /** When false, only catalog options can be selected (no free-text create). */
+  allowCreate?: boolean
+  /** Extra text per option (e.g. email) used for search and shown as a hint. */
+  optionHints?: Record<string, string>
+  fieldClassName?: string
 }
 
 function SearchableMultiSelectField({
@@ -245,16 +255,22 @@ function SearchableMultiSelectField({
   placeholder,
   emptyHint,
   onFocusOpen,
+  allowCreate = true,
+  optionHints,
+  fieldClassName,
 }: SearchableMultiSelectFieldProps) {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return options
-    return options.filter((o) => o.toLowerCase().includes(q))
-  }, [options, search])
+    return options.filter((o) => {
+      const hint = (optionHints?.[o] ?? "").toLowerCase()
+      return o.toLowerCase().includes(q) || hint.includes(q)
+    })
+  }, [options, search, optionHints])
 
   const qTrim = search.trim()
   const exactInPool = options.some((o) => o.toLowerCase() === qTrim.toLowerCase())
-  const showCreate = qTrim.length > 0 && !exactInPool
+  const showCreate = allowCreate && qTrim.length > 0 && !exactInPool
 
   useEffect(() => {
     if (!open) return
@@ -281,7 +297,9 @@ function SearchableMultiSelectField({
         return
       }
       const exact = options.find((o) => o.toLowerCase() === qTrim.toLowerCase())
-      onAddUnique(exact ?? qTrim)
+      const pick = exact ?? (filtered.length === 1 ? filtered[0] : undefined)
+      if (!pick) return
+      onAddUnique(pick)
       onSearchChange("")
     }
     if (e.key === "Escape") {
@@ -291,33 +309,61 @@ function SearchableMultiSelectField({
   }
 
   return (
-    <div className="um_field add_contact_multiselect_field" ref={fieldRef}>
+    <div
+      className={["um_field add_contact_multiselect_field", fieldClassName]
+        .filter(Boolean)
+        .join(" ")}
+      ref={fieldRef}
+    >
       <label htmlFor={inputId} className="um_field_label_row">
         <Icon className="um_field_label_icon" size={17} strokeWidth={2} aria-hidden />
         <span>{label}</span>
       </label>
-      <ChipRow
-        items={selected}
-        onRemove={(i) => onToggle(selected[i] ?? "")}
-        ariaLabel={`Selected ${label.toLowerCase()}`}
-      />
+      {fieldClassName ? null : (
+        <ChipRow
+          items={selected}
+          onRemove={(i) => onToggle(selected[i] ?? "")}
+          ariaLabel={`Selected ${label.toLowerCase()}`}
+        />
+      )}
       <div className="add_contact_multiselect_dropdown_wrap">
-        <div className="add_contact_multiselect_control">
-          <Search
-            className="add_contact_multiselect_search_icon"
-            size={18}
-            strokeWidth={2}
-            aria-hidden
-          />
+        <div
+          className={[
+            "add_contact_multiselect_control",
+            fieldClassName ? "is_select" : "",
+            open ? "is_open" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
+          {fieldClassName ? (
+            <ChipRow
+              className="add_contact_multiselect_inline_chips"
+              items={selected}
+              onRemove={(i) => onToggle(selected[i] ?? "")}
+              ariaLabel={`Selected ${label.toLowerCase()}`}
+            />
+          ) : (
+            <Search
+              className="add_contact_multiselect_search_icon"
+              size={18}
+              strokeWidth={2}
+              aria-hidden
+            />
+          )}
           <input
             id={inputId}
             type="search"
-            className="add_contact_multiselect_search_input deals_add_inv_input"
+            className="add_contact_multiselect_search_input"
             role="combobox"
             aria-expanded={open}
             aria-controls={listboxId}
             aria-autocomplete="list"
-            placeholder={placeholder}
+            placeholder={
+              fieldClassName && selected.length > 0
+                ? "Search…"
+                : placeholder
+            }
             value={search}
             onChange={(e) => {
               onSearchChange(e.target.value)
@@ -330,6 +376,14 @@ function SearchableMultiSelectField({
             onKeyDown={handleSearchKeyDown}
             autoComplete="off"
           />
+          {fieldClassName ? (
+            <ChevronDown
+              className="add_contact_multiselect_chevron"
+              size={18}
+              strokeWidth={2}
+              aria-hidden
+            />
+          ) : null}
         </div>
         {open ? (
           <div
@@ -360,17 +414,36 @@ function SearchableMultiSelectField({
               return (
                 <label
                   key={opt}
-                  className="add_contact_multiselect_row"
+                  className={[
+                    "add_contact_multiselect_row",
+                    checked ? "is_selected" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   role="option"
                   aria-selected={checked}
                 >
+                  <span className="add_contact_multiselect_check" aria-hidden>
+                    {checked ? (
+                      <Check size={11} strokeWidth={3} />
+                    ) : null}
+                  </span>
                   <input
                     type="checkbox"
                     className="add_contact_multiselect_checkbox"
                     checked={checked}
                     onChange={() => onToggle(opt)}
                   />
-                  <span className="add_contact_multiselect_row_label">{opt}</span>
+                  <span className="add_contact_multiselect_row_label">
+                    <span className="add_contact_multiselect_row_name">
+                      {opt}
+                    </span>
+                    {optionHints?.[opt] ? (
+                      <span className="add_contact_multiselect_row_hint">
+                        {optionHints[opt]}
+                      </span>
+                    ) : null}
+                  </span>
                 </label>
               )
             })}
@@ -396,8 +469,10 @@ export function AddContactPanel({
   const titleId = useId()
   const tagListboxId = useId()
   const listListboxId = useId()
+  const ownerListboxId = useId()
   const tagFieldRef = useRef<HTMLDivElement>(null)
   const listFieldRef = useRef<HTMLDivElement>(null)
+  const ownerFieldRef = useRef<HTMLDivElement>(null)
   const [firstName, setFirstName] = useState("")
   const [lastName, setLastName] = useState("")
   const [email, setEmail] = useState("")
@@ -410,9 +485,14 @@ export function AddContactPanel({
   const [listInput, setListInput] = useState("")
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
   const [listPickerOpen, setListPickerOpen] = useState(false)
+  const [ownerPickerOpen, setOwnerPickerOpen] = useState(false)
+  const [ownerSponsors, setOwnerSponsors] = useState<
+    ContactOwnerSponsorOption[]
+  >([])
+  const [ownerListLocked, setOwnerListLocked] = useState(false)
   const [ownerInput, setOwnerInput] = useState("")
-  const ownerComboboxRef = useRef<HTMLInputElement>(null)
   const contactFormRef = useRef<HTMLFormElement>(null)
+  const stepScrollBootRef = useRef(true)
   const [editReason, setEditReason] = useState("")
   const [fieldError, setFieldError] = useState<{
     firstName?: string
@@ -436,9 +516,10 @@ export function AddContactPanel({
     setOwners([])
     setTagInput("")
     setListInput("")
+    setOwnerInput("")
     setTagPickerOpen(false)
     setListPickerOpen(false)
-    setOwnerInput("")
+    setOwnerPickerOpen(false)
     setEditReason("")
     setFieldError({})
     setSubmitError(null)
@@ -461,36 +542,65 @@ export function AddContactPanel({
       setNote(contactToEdit.note)
       setTags([...contactToEdit.tags])
       setLists([...contactToEdit.lists])
-      setOwners(
-        contactToEdit.owners.length > 0
-          ? [...contactToEdit.owners]
-          : defaultOwnerChips(),
-      )
+      setOwners([...contactToEdit.owners])
       setTagInput("")
       setListInput("")
+      setOwnerInput("")
       setTagPickerOpen(false)
       setListPickerOpen(false)
-      setOwnerInput("")
+      setOwnerPickerOpen(false)
       setEditReason("")
       setFieldError({})
       setSubmitError(null)
       setSubmitting(false)
       setStep(1)
+      stepScrollBootRef.current = true
     } else {
       reset()
     }
   }, [open, contactToEdit?.id, reset, contactToEdit])
 
   useEffect(() => {
-    if (!open || contactToEdit) return
+    if (stepScrollBootRef.current) {
+      stepScrollBootRef.current = false
+      return
+    }
+    scrollMultiStepFormToTopAfterUpdate({ container: contactFormRef.current })
+  }, [step])
+
+  useEffect(() => {
+    if (!open) return
     let cancelled = false
     void (async () => {
-      const profile = await fetchMyProfile()
+      const [profile, ownerResult] = await Promise.all([
+        contactToEdit ? Promise.resolve(null) : fetchMyProfile(),
+        fetchContactOwnerSponsors({
+          contactId: contactToEdit?.id,
+        }),
+      ])
       if (cancelled) return
-      const name = profile
+      const sponsors = ownerResult.sponsors
+      setOwnerSponsors(sponsors)
+      setOwnerListLocked(ownerResult.lockToListed)
+      const names = sponsors
+        .map((s) => s.displayName.trim())
+        .filter(Boolean)
+      if (contactToEdit) {
+        const keep = contactToEdit.owners.filter((o) =>
+          names.some((n) => n.toLowerCase() === o.trim().toLowerCase()),
+        )
+        setOwners(keep.length > 0 ? keep : names.length === 1 ? names : keep)
+        return
+      }
+      const profileName = profile
         ? displayNameFromProfileUser(profile).trim()
         : ""
-      setOwners(name ? [name] : defaultOwnerChips())
+      const sessionName = defaultOwnerChips()[0] ?? ""
+      const preferred = profileName || sessionName
+      const canonical = names.find(
+        (n) => n.toLowerCase() === preferred.toLowerCase(),
+      )
+      setOwners(canonical ? [canonical] : names.length === 1 ? names : [])
     })()
     return () => {
       cancelled = true
@@ -519,6 +629,39 @@ export function AddContactPanel({
     const t = canonical.trim()
     if (!t) return
     setTags((prev) => {
+      const i = prev.findIndex((x) => x.toLowerCase() === t.toLowerCase())
+      if (i >= 0) return prev.filter((_, idx) => idx !== i)
+      return [...prev, t]
+    })
+  }, [])
+
+  const ownerOptionPool = useMemo(() => {
+    const byLower = new Map<string, string>()
+    for (const s of ownerSponsors) {
+      const t = s.displayName.trim()
+      if (!t) continue
+      const lk = t.toLowerCase()
+      if (!byLower.has(lk)) byLower.set(lk, t)
+    }
+    return Array.from(byLower.values()).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" }),
+    )
+  }, [ownerSponsors])
+
+  const ownerOptionHints = useMemo(() => {
+    const hints: Record<string, string> = {}
+    for (const s of ownerSponsors) {
+      const name = s.displayName.trim()
+      const email = s.email.trim()
+      if (name && email) hints[name] = email
+    }
+    return hints
+  }, [ownerSponsors])
+
+  const toggleOwnerValue = useCallback((canonical: string) => {
+    const t = canonical.trim()
+    if (!t) return
+    setOwners((prev) => {
       const i = prev.findIndex((x) => x.toLowerCase() === t.toLowerCase())
       if (i >= 0) return prev.filter((_, idx) => idx !== i)
       return [...prev, t]
@@ -560,14 +703,6 @@ export function AddContactPanel({
     const v = value.trim()
     if (!v) return
     setter((prev) => (prev.includes(v) ? prev : [...prev, v]))
-  }
-
-  function handleOwnerKeyDown(e: KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter") {
-      e.preventDefault()
-      addFromInput(ownerInput, setOwners)
-      setOwnerInput("")
-    }
   }
 
   function validateStep1(): boolean {
@@ -656,7 +791,11 @@ export function AddContactPanel({
         note: note.trim(),
         tags: [...tags],
         lists: [...lists],
-        owners: owners.length > 0 ? [...owners] : defaultOwnerChips(),
+        owners: contactToEdit
+          ? [...owners]
+          : owners.length > 0
+            ? [...owners]
+            : defaultOwnerChips(),
       }
       if (contactToEdit) {
         if (!onUpdate) throw new Error("Update handler is not configured.")
@@ -989,7 +1128,10 @@ export function AddContactPanel({
               fieldRef={tagFieldRef}
               placeholder="Search or add a tag…"
               emptyHint="No matches. Type a new name and press Enter, or use Create. Names from the Tags tab appear here."
-              onFocusOpen={() => setListPickerOpen(false)}
+              onFocusOpen={() => {
+                setListPickerOpen(false)
+                setOwnerPickerOpen(false)
+              }}
             />
 
             <SearchableMultiSelectField
@@ -1008,53 +1150,42 @@ export function AddContactPanel({
               fieldRef={listFieldRef}
               placeholder="Search or add a list…"
               emptyHint="No matches. Type a new name and press Enter, or use Create. Names from the Lists tab appear here."
-              onFocusOpen={() => setTagPickerOpen(false)}
+              onFocusOpen={() => {
+                setTagPickerOpen(false)
+                setOwnerPickerOpen(false)
+              }}
             />
 
-            <div className="um_field add_contact_owners_field">
-              <label
-                htmlFor="contact-owners-input"
-                className="um_field_label_row"
-              >
-                <Users className="um_field_label_icon" size={17} aria-hidden />
-                <span>Owners</span>
-              </label>
-              <p id="contact-owners-hint" className="add_contact_owners_hint">
-                Team members responsible for this contact.
-              </p>
-              <div
-                className="contacts_chips_combobox add_contact_owners_combobox"
-                role="group"
-                aria-label="Owners"
-                onMouseDown={(e: MouseEvent<HTMLDivElement>) => {
-                  const t = e.target as HTMLElement
-                  if (t.closest("button") || t.closest("input")) return
-                  ownerComboboxRef.current?.focus()
-                }}
-              >
-                <ChipRow
-                  className="contacts_chips_combobox_chips"
-                  items={owners}
-                  onRemove={(i) =>
-                    setOwners((prev) => prev.filter((_, j) => j !== i))
-                  }
-                  ariaLabel="Selected owners"
-                />
-                <input
-                  ref={ownerComboboxRef}
-                  id="contact-owners-input"
-                  type="text"
-                  className="contacts_chips_combobox_input"
-                  placeholder={
-                    owners.length === 0 ? "Type a name to add" : "Add another"
-                  }
-                  value={ownerInput}
-                  onChange={(e) => setOwnerInput(e.target.value)}
-                  onKeyDown={handleOwnerKeyDown}
-                  autoComplete="off"
-                  aria-describedby="contact-owners-hint"
-                />
-              </div>
+            <div className="add_contact_owners_field">
+            <SearchableMultiSelectField
+              label="Owners"
+              Icon={Users}
+              inputId="contact-owners-search"
+              listboxId={ownerListboxId}
+              selected={owners}
+              onToggle={toggleOwnerValue}
+              onAddUnique={(v) => addFromInput(v, setOwners)}
+              options={ownerOptionPool}
+              search={ownerInput}
+              onSearchChange={setOwnerInput}
+              open={ownerPickerOpen}
+              onOpenChange={setOwnerPickerOpen}
+              fieldRef={ownerFieldRef}
+              placeholder="Search Lead or Admin sponsors…"
+              emptyHint="No matching Lead or Admin sponsors."
+              onFocusOpen={() => {
+                setTagPickerOpen(false)
+                setListPickerOpen(false)
+              }}
+              allowCreate={false}
+              optionHints={ownerOptionHints}
+              fieldClassName="add_contact_owners_multiselect"
+            />
+            <p id="contact-owners-hint" className="add_contact_owners_hint">
+              {ownerListLocked
+                ? "Co-sponsor investors can only have that Co-sponsor as owner."
+                : "Choose Lead or Admin sponsors for this organization. Search by name or email."}
+            </p>
             </div>
 
             {contactToEdit ? (

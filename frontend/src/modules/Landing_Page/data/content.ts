@@ -41,7 +41,7 @@ export const navLinks: NavLinkItem[] = [
 
 /** Navbar CTA — swap for Calendly or another booking URL when ready. */
 export const scheduleDemoUrl =
-  "mailto:sales@syndicationx.com?subject=Schedule%20a%20demo%20%E2%80%93%20SyndicationX"
+  "mailto:support@syndicationx.com?subject=Schedule%20a%20demo%20%E2%80%93%20SyndicationX"
 
 export const hero = {
   headline: "The Ultimate Capital Raising Machine",

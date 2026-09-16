@@ -1,7 +1,11 @@
 /* Investing Profiles add modals — width + extras on top of Add investment / Add contact shell */
 
-.investing_add_profile_form_panel.um_modal.um_modal_view {
+.investing_add_profile_form_panel.um_modal.um_modal_view:not(
+    .investing_add_profile_form_panel--inline
+  ) {
   max-width: min(40rem, 100%);
+  max-height: min(90dvh, calc(100dvh - 2rem));
+  overflow: hidden;
 }
 
 .investing_add_address_form_panel.um_modal.um_modal_view {
@@ -85,6 +89,21 @@
   grid-column: 1 / -1;
 }
 
+/* Routing + account stay on one even row (digits don't wrap or look staggered). */
+.add_profile_account_number {
+  white-space: nowrap;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+    monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  letter-spacing: 0.02em;
+}
+
+.investing_add_profile_form_panel .add_contact_name_grid .um_field_label_with_suffix {
+  flex-wrap: nowrap;
+}
+
 /* Add address: zip spans full row (was half-width in the two-column grid) */
 .investing_add_address_form_panel .add_address_zip_field {
   width: 100%;
@@ -125,6 +144,34 @@
 }
 
 /* Add profile uses same `um_modal_actions` / add_contact footer pattern as Add contact. */
+.investing_add_profile_form_panel .add_contact_modal_actions,
+.investing_add_address_form_panel .add_contact_modal_actions,
+.investing_add_beneficiary_form_panel .add_contact_modal_actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  box-sizing: border-box;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.investing_add_profile_form_panel .add_contact_modal_actions_leading,
+.investing_add_address_form_panel .add_contact_modal_actions_leading,
+.investing_add_beneficiary_form_panel .add_contact_modal_actions_leading {
+  margin-right: auto;
+}
+
+.investing_add_profile_form_panel .add_contact_modal_actions_trailing,
+.investing_add_address_form_panel .add_contact_modal_actions_trailing,
+.investing_add_beneficiary_form_panel .add_contact_modal_actions_trailing {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
 
 /* Info (i) directly after the label text (with icon row: field icon | text | (i)) */
 .investing_field_hint {

@@ -1,6 +1,6 @@
 import { ChevronDown, CircleHelp } from "lucide-react"
 import { useState } from "react"
-import { formatSsnItinInput } from "@/common/tax/usSsnItin"
+import { SsnItinMaskedInput } from "@/common/components/SsnItinMaskedInput"
 import { formatInvestNowW9AddressLine } from "./investNowW9FormUtils"
 import type { InvestNowW9FormValues } from "./investNowW9.types"
 import {
@@ -189,20 +189,21 @@ export function InvestNowW9Form({
 
       <InvestNowFormField
         id={ssnId}
-        label="Social security number"
+        label="Social Security Number"
         required
         error={fieldErrors["w9-ssn"]}
       >
-        <input
+        <SsnItinMaskedInput
           id={ssnId}
-          type="text"
           className="deals_create_input"
           value={values.ssn}
           disabled={disabled}
-          inputMode="numeric"
-          autoComplete="off"
+          showToggle
+          allowReveal
+          revealLabel="Show SSN"
+          hideLabel="Hide SSN"
           aria-invalid={Boolean(fieldErrors["w9-ssn"]) || undefined}
-          onChange={(e) => patch({ ssn: formatSsnItinInput(e.target.value) })}
+          onValueChange={(ssn) => patch({ ssn })}
         />
       </InvestNowFormField>
     </div>

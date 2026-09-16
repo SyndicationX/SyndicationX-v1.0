@@ -117,7 +117,11 @@ html.light {
     var(--portal-gold-accent, #d4af37) 10%,
     transparent
   );
-  --portal-tab-strip-border: color-mix(in srgb, var(--portal-border) 85%, transparent);
+  --portal-tab-strip-border: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 38%,
+    transparent
+  );
 
   /* Tables, panels, pagination */
   --portal-panel-bg: #f8f8f8;
@@ -151,6 +155,30 @@ html.light {
     in srgb,
     var(--portal-gold-accent, #d4af37) 18%,
     #94a3b8
+  );
+  /* App-wide scroll chrome */
+  --portal-scroll-size: 9px;
+  --portal-scroll-size-table: 10px;
+  --portal-scroll-track: transparent;
+  --portal-scroll-track-hover: color-mix(
+    in srgb,
+    var(--portal-border, #c6c6cd) 42%,
+    transparent
+  );
+  --portal-scroll-thumb: color-mix(
+    in srgb,
+    var(--portal-text-muted, #76777d) 48%,
+    transparent
+  );
+  --portal-scroll-thumb-hover: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 22%,
+    var(--portal-text-muted, #76777d)
+  );
+  --portal-scroll-thumb-active: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 38%,
+    var(--portal-text-secondary, #45464d)
   );
   --portal-table-sticky-edge-line: color-mix(
     in srgb,
@@ -243,7 +271,11 @@ html.dark {
     var(--portal-gold-accent, #d4af37) 15%,
     transparent
   );
-  --portal-tab-strip-border: rgba(255, 255, 255, 0.12);
+  --portal-tab-strip-border: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 42%,
+    transparent
+  );
 
   --portal-panel-bg: rgba(255, 255, 255, 0.06);
   --portal-table-border: rgba(255, 255, 255, 0.12);
@@ -278,6 +310,22 @@ html.dark {
     in srgb,
     var(--portal-gold-accent, #d4af37) 28%,
     rgba(255, 255, 255, 0.22)
+  );
+  /* App-wide scroll chrome */
+  --portal-scroll-size: 9px;
+  --portal-scroll-size-table: 10px;
+  --portal-scroll-track: transparent;
+  --portal-scroll-track-hover: rgba(255, 255, 255, 0.06);
+  --portal-scroll-thumb: rgba(255, 255, 255, 0.16);
+  --portal-scroll-thumb-hover: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 26%,
+    rgba(255, 255, 255, 0.28)
+  );
+  --portal-scroll-thumb-active: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 40%,
+    rgba(255, 255, 255, 0.34)
   );
   --portal-table-sticky-edge-line: color-mix(
     in srgb,
@@ -379,7 +427,7 @@ body:has(.authPage) {
 }
 
 .app_sidebar_link_active,
-.app_sidebar_link_active > span,
+.app_sidebar_link_active > span:not(.app_sidebar_sublink_badge):not(.app_sidebar_count_badge),
 .app_sidebar_link_active svg {
   color: var(--sidebar-active-text);
   /* font-weight: 600; */
@@ -395,7 +443,7 @@ body:has(.authPage) {
 }
 
 .app_sidebar_link_active:hover,
-.app_sidebar_link_active:hover > span,
+.app_sidebar_link_active:hover > span:not(.app_sidebar_sublink_badge):not(.app_sidebar_count_badge),
 .app_sidebar_link_active:hover svg {
   color: var(--sidebar-active-text);
 }

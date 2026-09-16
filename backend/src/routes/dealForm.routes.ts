@@ -16,10 +16,16 @@ import {
   getDealOfferingInvestorPreview,
   patchDealOfferingInvestorPreview,
   patchDealOfferingOverview,
+  patchDealArchived,
   postDeal,
   putDeal,
   deleteDeal,
 } from "../controllers/deal/add_deal.controller.js";
+import {
+  deleteDealPriorDistribution,
+  postDealDistributionComplete,
+  putDealPriorDistributions,
+} from "../controllers/distributionSetup/distributionSetup.controller.js";
 import {
   getDealCommitmentAmountByContact,
   getDealInvestors,
@@ -27,6 +33,7 @@ import {
   putDealInvestment,
 } from "../controllers/deal/dealInvestment.controller.js";
 import {
+  getDealLpInvestor,
   patchDealLpInvestorMyCommitment,
   postDealLpInvestor,
   putDealLpInvestor,
@@ -43,6 +50,8 @@ import {
 } from "../controllers/deal/dealEsignTemplates.controller.js";
 import {
   getDealEsignDropboxSignConfig,
+  getDealEsignInvestorDataFields,
+  postDealEsignAddInvestorDataField,
   postDealEsignCompleteEmbeddedTemplate,
   postDealEsignEmbeddedDraft,
 } from "../controllers/deal/dealEsignDropboxSign.controller.js";
@@ -56,9 +65,11 @@ import {
 } from "../controllers/deal/dealInvestorQuestionnaire.controller.js";
 import {
   deleteDealMember,
+  getDealCoSponsorEmailIntercept,
   getDealMemberEsignStatus,
   getDealMembers,
   getDealReferringSponsor,
+  patchDealCoSponsorEmailIntercept,
   postDealMemberInvitationEmail,
   postDealMemberSendEsign,
 } from "../controllers/deal/dealMember.controller.js";
@@ -119,6 +130,7 @@ router.post(
   postDealInvestorsExportNotify,
 );
 router.post("/deals/:dealId/lp-investors", postDealLpInvestor);
+router.get("/deals/:dealId/lp-investors/:lpInvestorId", getDealLpInvestor);
 router.put("/deals/:dealId/lp-investors/:lpInvestorId", putDealLpInvestor);
 router.patch(
   "/deals/:dealId/lp-investors/my-commitment",
@@ -150,6 +162,14 @@ router.delete(
 );
 router.get("/deals/:dealId/referring-sponsor", getDealReferringSponsor);
 router.get("/deals/:dealId/members", getDealMembers);
+router.get(
+  "/deals/:dealId/co-sponsor-email-intercept",
+  getDealCoSponsorEmailIntercept,
+);
+router.patch(
+  "/deals/:dealId/co-sponsor-email-intercept",
+  patchDealCoSponsorEmailIntercept,
+);
 router.post(
   "/deals/:dealId/members/export-notify",
   postDealMembersExportNotify,
@@ -199,6 +219,14 @@ router.post(
 router.post(
   "/deals/:dealId/esign-templates/:fileId/complete-embedded-template",
   postDealEsignCompleteEmbeddedTemplate,
+);
+router.get(
+  "/deals/:dealId/esign-templates/investor-data-fields",
+  getDealEsignInvestorDataFields,
+);
+router.post(
+  "/deals/:dealId/esign-templates/:fileId/add-investor-data-field",
+  postDealEsignAddInvestorDataField,
 );
 router.patch(
   "/deals/:dealId/esign-templates/:fileId",
@@ -252,11 +280,11 @@ router.post(
 );
 router.post(
   "/deals/:dealId/offering-document-uploads",
-  upload.array("documentFiles", 20),
   postDealOfferingDocumentUploads,
 );
 router.patch("/deals/:dealId/offering-gallery", patchDealOfferingGallery);
 router.patch("/deals/:dealId/offering-overview", patchDealOfferingOverview);
+router.patch("/deals/:dealId/archived", patchDealArchived);
 router.get(
   "/deals/:dealId/offering-preview-token",
   getOfferingPreviewToken,
@@ -268,6 +296,19 @@ router.post(
 router.get(
   "/deals/:dealId/offering-share-recipients",
   getDealOfferingShareRecipients,
+);
+/** Complete a distribution run (also on distributionSetup.routes — kept here so deals router always exposes it). */
+router.post(
+  "/deals/:dealId/distribution-setup/complete",
+  postDealDistributionComplete,
+);
+router.put(
+  "/deals/:dealId/distribution-setup/prior-distributions",
+  putDealPriorDistributions,
+);
+router.delete(
+  "/deals/:dealId/distributions/:distributionId",
+  deleteDealPriorDistribution,
 );
 router.get("/deals/:dealId", getDealById);
 router.put("/deals/:dealId", putDeal);

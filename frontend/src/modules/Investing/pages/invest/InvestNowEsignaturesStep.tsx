@@ -46,6 +46,10 @@ export interface InvestNowEsignaturesStepProps {
   esignDocuments: InvestNowEsignDocRow[]
   esignPending: boolean
   esignCompleted: boolean
+  /** Sequential workflow: true when this investor may open the sign session. */
+  sequentialSignTurnOpen?: boolean
+  /** Sequential workflow: documents sent but prior signers have not finished. */
+  awaitingSequentialSignTurn?: boolean
   /** Sent | Viewed | Signed | Completed — legacy bundle label (fallback). */
   esignWorkflowLabel?: string | null
   /** Webhook-backed status from `investment_signatures` (source of truth for step 5). */
@@ -81,6 +85,8 @@ export function InvestNowEsignaturesStep({
   esignDocuments,
   esignPending,
   esignCompleted,
+  sequentialSignTurnOpen = true,
+  awaitingSequentialSignTurn = false,
   esignWorkflowLabel,
   webhookSignStatus,
   fallbackSignatureRequestId,
@@ -144,6 +150,7 @@ export function InvestNowEsignaturesStep({
   const canStartSigning =
     needsSignature &&
     esignAwaitingSignature &&
+    sequentialSignTurnOpen &&
     (esignSendOk || esignDocuments.length > 0 || esignPending) &&
     (profileReady || esignDocuments.length > 0 || esignPending)
 
@@ -234,7 +241,15 @@ export function InvestNowEsignaturesStep({
           Preparing your documents…
         </p>
       ) : null}
-{/* 
+
+      {!esignLoading && awaitingSequentialSignTurn && !esignCompleted ? (
+        <p className="invest_now_esign_status" role="status">
+          Your documents will be ready to sign soon. We will email you and show
+          an alert when it is your turn.
+        </p>
+      ) : null}
+
+      {/* 
       {!esignLoading && webhookSignStatus ? (
         <div className="invest_now_esign_webhook_status" role="status">
           <p className="invest_now_esign_status">
@@ -279,15 +294,6 @@ export function InvestNowEsignaturesStep({
             Your subscription document is ready. Open the signing form to complete
             your signature.
           </p>
-          <button
-            type="button"
-            className="um_btn_primary invest_now_esign_sign_btn"
-            disabled={disabled}
-            onClick={() => openSignModal(firstPendingSignatureRequestId)}
-          >
-            <FileSignature size={18} strokeWidth={2} aria-hidden />
-            Sign
-          </button>
         </div>
       ) : null}
 

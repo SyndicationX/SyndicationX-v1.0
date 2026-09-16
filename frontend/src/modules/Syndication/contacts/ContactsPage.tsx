@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   AlignLeft,
+  Archive,
   Ban,
   CheckCircle2,
   ClipboardList,
@@ -13,6 +14,7 @@ import {
   Pencil,
   Loader2,
   Plus,
+  RefreshCw,
   Save,
   Search,
   Send,
@@ -23,6 +25,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -35,24 +38,39 @@ import {
   type DataTableColumn,
 } from "../../../common/components/data-table/DataTable"
 import {
+  DropdownSelect,
+  type DropdownSelectOption,
+} from "../../../common/components/dropdown-select"
+import {
+  displayEmail,
+  isDisplayableEmail,
+} from "../../../common/utils/displayEmail"
+import {
   formatUsPhoneStoredForUi,
   nationalDigitsFromStoredPhone,
 } from "../../../common/phone/usPhoneNumber"
-import { ActiveArchivedTabs } from "../../../common/components/active-archived-tabs/ActiveArchivedTabs"
+import { ViewReadonlyField } from "../../../common/components/ViewReadonlyField"
 import {
   UsageFilterTabs,
   type UsageFilterTab,
 } from "../../../common/components/usage-filter-tabs/UsageFilterTabs"
 import { TabsScrollStrip } from "../../../common/components/tabs-scroll-strip/TabsScrollStrip"
 import { toast } from "../../../common/components/Toast"
-import { ViewReadonlyField } from "../../../common/components/ViewReadonlyField"
+import {
+  TABLE_PAGE_SIZE_ID,
+  usePersistedTablePageSize,
+} from "@/common/hooks/usePersistedTablePageSize"
+import { PORTAL_ACTIVE_COMPANY_CHANGED_EVENT } from "../../../common/auth/setActiveCompany"
+import { getSessionOrganizationCompanyId } from "../../../common/auth/sessionOrganization"
 import "../usermanagement/user_management.css"
 import {
   createContact,
+  fetchContactOwnerSponsors,
   fetchContacts,
   fetchOrganizationContactLists,
   fetchOrganizationContactTags,
   notifyContactsExportAudit,
+  patchContactShowOfferings,
   patchContactStatus,
   updateContact,
 } from "./api/contactsApi"
@@ -76,19 +94,57 @@ import {
   loadEmailTemplates,
   type EmailTemplateRow,
 } from "./emailTemplatesStorage"
+import "../Deals/deals-list.css"
 import "./contacts.css"
 import "../Deals/deal-investors-tab.css"
-import "../Deals/deals-list.css"
-import type { ContactRow } from "./types/contact.types"
+import type {
+  ContactOfferingVisibility,
+  ContactRow,
+} from "./types/contact.types"
+import {
+  CONTACT_OFFERING_VISIBILITY_OPTIONS,
+} from "./types/contact.types"
 import {
   buildContactsCsv,
   downloadContactsCsv,
   exportAuditLinesForContacts,
-  formatContactSinceLabel,
 } from "./utils/contactCsv"
 import {
   buildTableExportFilename,
 } from "../../../common/utils/tableExportFilename"
+
+/** Full labels for the Offering Visibility cell dropdown. */
+const OFFERING_VISIBILITY_CELL_OPTIONS: DropdownSelectOption[] = [
+  { value: "", label: "—" },
+  ...CONTACT_OFFERING_VISIBILITY_OPTIONS.map((o) => ({
+    value: o.value,
+    label: o.label,
+  })),
+]
+
+const OFFERING_VISIBILITY_FILTER_OPTIONS: DropdownSelectOption[] = [
+  { value: "all", label: "All visibility" },
+  ...CONTACT_OFFERING_VISIBILITY_OPTIONS.map((o) => ({
+    value: o.value,
+    label: o.label,
+  })),
+  { value: "unset", label: "Unset" },
+]
+
+type OfferingVisibilityFilter =
+  | "all"
+  | ContactOfferingVisibility
+  | "unset"
+
+function offeringVisibilityLabel(
+  value: ContactOfferingVisibility | "" | null,
+): string {
+  if (!value) return "—"
+  return (
+    CONTACT_OFFERING_VISIBILITY_OPTIONS.find((o) => o.value === value)?.label ??
+    value
+  )
+}
 
 function contactRowIsSuspended(row: ContactRow): boolean {
   return row.status === "suspended"
@@ -100,6 +156,8 @@ type ContactsMainTab = "contacts" | "tags" | "lists"
 
 /** Wide enough for the “Actions” header on one line (see contacts.css). */
 const CONTACTS_ACTIONS_COL_WIDTH = "7rem" as const
+/** Name + email identity — keep compact so other columns get room. */
+const CONTACTS_USER_COL_WIDTH = "16rem" as const
 
 type CatalogUsageFilter = UsageFilterTab
 
@@ -129,6 +187,9 @@ function toContactUpdatePayload(
     lists: r.lists,
     owners: r.owners,
     status: r.status,
+    showOfferingsVisibility: r.showOfferingsVisibility ?? null,
+    accreditationStatus: r.accreditationStatus ?? null,
+    knownSince: r.knownSince ?? null,
     lastEditReason: r.lastEditReason,
   }
 }
@@ -172,6 +233,12 @@ function contactDisplayName(row: ContactRow): string {
   return n || "—"
 }
 
+function contactHasTag(row: ContactRow, tagName: string): boolean {
+  const target = tagName.trim().toLowerCase()
+  if (!target) return false
+  return row.tags.some((t) => t.trim().toLowerCase() === target)
+}
+
 function TagsCell({ items }: { items: string[] }) {
   if (!items.length)
     return <span className="um_status_muted">—</span>
@@ -188,8 +255,13 @@ function TagsCell({ items }: { items: string[] }) {
 
 function ContactsPage() {
   const navigate = useNavigate()
+  const suspendAllTitleId = useId()
+  const offeringVisibilityTitleId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const [rows, setRows] = useState<ContactRow[]>([])
+  const [orgScopeKey, setOrgScopeKey] = useState(
+    () => getSessionOrganizationCompanyId() ?? "",
+  )
   const [loading, setLoading] = useState(true)
   const [addOpen, setAddOpen] = useState(false)
   const [contactToEdit, setContactToEdit] = useState<ContactRow | null>(null)
@@ -202,13 +274,19 @@ function ContactsPage() {
   const [sendMailEmailPreview, setSendMailEmailPreview] =
     useState<SendMailEmailPreviewPayload | null>(null)
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = usePersistedTablePageSize(
+    TABLE_PAGE_SIZE_ID.contacts,
+  )
+  /** Bumps DataTable remount so sort state resets on Refresh. */
+  const [tableResetKey, setTableResetKey] = useState(0)
   const [searchQuery, setSearchQuery] = useState("")
   const [toolbarNotice, setToolbarNotice] = useState("")
   const [suspendRow, setSuspendRow] = useState<ContactRow | null>(null)
   const [suspendReason, setSuspendReason] = useState("")
   const [suspendSaving, setSuspendSaving] = useState(false)
   const [suspendErr, setSuspendErr] = useState("")
+  const [suspendAllOpen, setSuspendAllOpen] = useState(false)
+  const [suspendAllBusy, setSuspendAllBusy] = useState(false)
   const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(
     () => new Set(),
   )
@@ -216,6 +294,24 @@ function ContactsPage() {
   const [contactsListTab, setContactsListTab] =
     useState<ContactsListTab>("active")
   const [mainTab, setMainTab] = useState<ContactsMainTab>("contacts")
+  /** When set, Contact tab shows only contacts that include this tag. */
+  const [tagFilter, setTagFilter] = useState<string | null>(null)
+  /** `all` | `Accredited` | `Not Accredited` | `na` (no status) */
+  const [accreditationFilter, setAccreditationFilter] = useState<
+    "all" | "Accredited" | "Not Accredited" | "na"
+  >("all")
+  const [offeringVisibilityFilter, setOfferingVisibilityFilter] =
+    useState<OfferingVisibilityFilter>("all")
+  const [ownerFilter, setOwnerFilter] = useState("all")
+  const [ownerSponsorOptions, setOwnerSponsorOptions] = useState<
+    DropdownSelectOption[]
+  >([{ value: "all", label: "All owners" }])
+  const [offeringVisibilityPending, setOfferingVisibilityPending] = useState<{
+    row: ContactRow
+    next: ContactOfferingVisibility | null
+  } | null>(null)
+  const [offeringVisibilitySaving, setOfferingVisibilitySaving] =
+    useState(false)
   const [tagCatalog, setTagCatalog] = useState<ContactLabelRow[]>([])
   const [listCatalog, setListCatalog] = useState<ContactLabelRow[]>([])
   const [tagsSearchQuery, setTagsSearchQuery] = useState("")
@@ -340,9 +436,48 @@ function ContactsPage() {
   )
 
   const filteredRows = useMemo(
-    () => tabRows.filter((r) => contactRowMatchesSearch(r, searchQuery)),
-    [tabRows, searchQuery],
+    () =>
+      tabRows
+        .filter((r) => !tagFilter || contactHasTag(r, tagFilter))
+        .filter((r) => contactRowMatchesSearch(r, searchQuery))
+        .filter((r) => {
+          if (accreditationFilter === "all") return true
+          const status = (r.accreditationStatus ?? "").trim()
+          if (accreditationFilter === "na") return status === ""
+          return status.toLowerCase() === accreditationFilter.toLowerCase()
+        })
+        .filter((r) => {
+          if (offeringVisibilityFilter === "all") return true
+          const vis = r.showOfferingsVisibility ?? null
+          if (offeringVisibilityFilter === "unset") return vis == null
+          return vis === offeringVisibilityFilter
+        })
+        .filter((r) => {
+          if (ownerFilter === "all") return true
+          const want = ownerFilter.trim().toLowerCase()
+          return r.owners.some((o) => o.trim().toLowerCase() === want)
+        }),
+    [
+      tabRows,
+      searchQuery,
+      tagFilter,
+      accreditationFilter,
+      offeringVisibilityFilter,
+      ownerFilter,
+    ],
   )
+
+  const openContactsForTag = useCallback((tagName: string) => {
+    const name = tagName.trim()
+    if (!name) return
+    setTagFilter(name)
+    setMainTab("contacts")
+    setContactsListTab("active")
+    setSearchQuery("")
+    setPage(1)
+    setToolbarNotice("")
+    setSelectedContactIds(new Set())
+  }, [])
 
   const allContactsInFilterSelected = useMemo(
     () =>
@@ -430,20 +565,58 @@ function ContactsPage() {
   const loadContacts = useCallback(async () => {
     setLoading(true)
     try {
-      const [list, dbTags, dbLists] = await Promise.all([
+      const [list, dbTags, dbLists, ownerResult] = await Promise.all([
         fetchContacts(),
         fetchOrganizationContactTags(),
         fetchOrganizationContactLists(),
+        fetchContactOwnerSponsors(),
       ])
+      const sponsors = ownerResult.sponsors
       setRows(list)
       setDbCatalogTagNames(dbTags)
       setDbCatalogListNames(dbLists)
+      const seen = new Set<string>()
+      const sponsorOpts: DropdownSelectOption[] = [
+        { value: "all", label: "All owners" },
+      ]
+      for (const s of sponsors) {
+        const name = s.displayName.trim()
+        if (!name) continue
+        const key = name.toLowerCase()
+        if (seen.has(key)) continue
+        seen.add(key)
+        const email = s.email.trim()
+        sponsorOpts.push({
+          value: name,
+          label: email ? `${name} (${email})` : name,
+        })
+      }
+      setOwnerSponsorOptions(sponsorOpts)
     } finally {
       setLoading(false)
+    }
+  }, [orgScopeKey])
+
+  const handleRefreshContacts = useCallback(async () => {
+    setTableResetKey((k) => k + 1)
+    setPage(1)
+    setToolbarNotice("")
+    setSelectedContactIds(new Set())
+    await loadContacts()
+  }, [loadContacts])
+
+  useEffect(() => {
+    const syncOrgScope = () => {
+      setOrgScopeKey(getSessionOrganizationCompanyId() ?? "")
+    }
+    window.addEventListener(PORTAL_ACTIVE_COMPANY_CHANGED_EVENT, syncOrgScope)
+    return () => {
+      window.removeEventListener(PORTAL_ACTIVE_COMPANY_CHANGED_EVENT, syncOrgScope)
     }
   }, [])
 
   useEffect(() => {
+    setOwnerFilter("all")
     void loadContacts()
   }, [loadContacts])
 
@@ -458,7 +631,71 @@ function ContactsPage() {
   }, [searchParams, setSearchParams])
 
   function handleSuspendAll() {
-    setToolbarNotice("Bulk suspend is not available yet.")
+    if (contactsListTab !== "active" || tabRows.length === 0) return
+    setToolbarNotice("")
+    setSuspendAllOpen(true)
+  }
+
+  function closeSuspendAllModal() {
+    if (suspendAllBusy) return
+    setSuspendAllOpen(false)
+  }
+
+  function confirmSuspendAll() {
+    if (contactsListTab !== "active" || tabRows.length === 0) return
+    const targets = [...tabRows]
+    const n = targets.length
+    setSuspendAllBusy(true)
+    void (async () => {
+      try {
+        const results = await Promise.allSettled(
+          targets.map((row) => patchContactStatus(row.id, "suspended")),
+        )
+        const updatedById = new Map<string, ContactRow>()
+        let failed = 0
+        for (const result of results) {
+          if (result.status === "fulfilled") {
+            updatedById.set(result.value.id, result.value)
+          } else {
+            failed += 1
+          }
+        }
+        if (updatedById.size > 0) {
+          setRows((prev) =>
+            prev.map((r) => updatedById.get(r.id) ?? r),
+          )
+        }
+        setSelectedContactIds(new Set())
+        setSuspendAllOpen(false)
+        if (failed > 0) {
+          const succeeded = updatedById.size
+          toast.error(
+            "Could not suspend all contacts",
+            succeeded > 0
+              ? `Suspended ${succeeded} of ${n}; ${failed} failed. Refresh and try again for the rest.`
+              : "None of the contacts could be suspended. Try again.",
+          )
+          if (succeeded > 0) {
+            toast.success(
+              "Contacts suspended",
+              `Moved ${succeeded} contact${succeeded === 1 ? "" : "s"} to Archived.`,
+            )
+          }
+          return
+        }
+        toast.success(
+          "Contacts suspended",
+          `Moved ${n} contact${n === 1 ? "" : "s"} to Archived.`,
+        )
+      } catch (err) {
+        toast.error(
+          "Could not suspend contacts",
+          err instanceof Error ? err.message : "Please try again.",
+        )
+      } finally {
+        setSuspendAllBusy(false)
+      }
+    })()
   }
 
   const selectedContacts = useMemo(
@@ -563,6 +800,7 @@ function ContactsPage() {
       ccRaw: sendMailCc,
       templateSubject: template.subject,
       templateBodyHtml: template.body,
+      templateAttachment: template.attachment,
       senderEmail,
     })
     if (!result.ok) {
@@ -583,6 +821,10 @@ function ContactsPage() {
   async function handleSave(contact: Omit<ContactRow, "id" | "createdByDisplayName">) {
     const created = await createContact(contact)
     setRows((prev) => [created, ...prev])
+    toast.success(
+      "Contact added",
+      `${contactDisplayName(created)} is in your contact list.`,
+    )
   }
 
   const handleUpdate = useCallback(
@@ -622,8 +864,56 @@ function ContactsPage() {
   }, [rows, viewContactId])
 
   const openViewPanel = useCallback((row: ContactRow) => {
-    setViewContactId(row.id)
-  }, [])
+    navigate(`/contacts/${encodeURIComponent(row.id)}`)
+  }, [navigate])
+
+  const requestShowOfferingsChange = useCallback(
+    (row: ContactRow, value: ContactOfferingVisibility | "") => {
+      const next = value === "" ? null : value
+      const prev = row.showOfferingsVisibility ?? null
+      if (prev === next) return
+      setOfferingVisibilityPending({ row, next })
+    },
+    [],
+  )
+
+  const closeOfferingVisibilityConfirm = useCallback(() => {
+    if (offeringVisibilitySaving) return
+    setOfferingVisibilityPending(null)
+  }, [offeringVisibilitySaving])
+
+  useEffect(() => {
+    if (!offeringVisibilityPending) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && !offeringVisibilitySaving) {
+        setOfferingVisibilityPending(null)
+      }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [offeringVisibilityPending, offeringVisibilitySaving])
+
+  const confirmShowOfferingsChange = useCallback(async () => {
+    if (!offeringVisibilityPending) return
+    const { row, next } = offeringVisibilityPending
+    setOfferingVisibilitySaving(true)
+    try {
+      const updated = await patchContactShowOfferings(row.id, next)
+      setRows((list) => list.map((r) => (r.id === updated.id ? updated : r)))
+      toast.success(
+        "Offering visibility updated",
+        `${contactDisplayName(row)} is set to ${offeringVisibilityLabel(next)}.`,
+      )
+      setOfferingVisibilityPending(null)
+    } catch (err) {
+      toast.error(
+        "Could not update offering visibility",
+        err instanceof Error ? err.message : "Try again.",
+      )
+    } finally {
+      setOfferingVisibilitySaving(false)
+    }
+  }, [offeringVisibilityPending])
 
   const openSuspendContact = useCallback((row: ContactRow) => {
     setSuspendRow(row)
@@ -716,7 +1006,7 @@ function ContactsPage() {
   const tagCountInUse = useMemo(
     () =>
       tagCatalog.filter(
-        (t) => rows.filter((c) => c.tags.includes(t.name)).length > 0,
+        (t) => rows.filter((c) => contactHasTag(c, t.name)).length > 0,
       ).length,
     [tagCatalog, rows],
   )
@@ -734,7 +1024,7 @@ function ContactsPage() {
   const tagCatalogUsageFiltered = useMemo(() => {
     if (tagsUsageFilter === "all") return tagCatalog
     return tagCatalog.filter((t) => {
-      const n = rows.filter((c) => c.tags.includes(t.name)).length
+      const n = rows.filter((c) => contactHasTag(c, t.name)).length
       return tagsUsageFilter === "in_use" ? n > 0 : n === 0
     })
   }, [tagCatalog, rows, tagsUsageFilter])
@@ -979,7 +1269,16 @@ function ContactsPage() {
         id: "name",
         header: "Name",
         sortValue: (r) => r.name.toLowerCase(),
-        cell: (r) => r.name,
+        cell: (r) => (
+          <button
+            type="button"
+            className="deals_table_name_link contacts_catalog_name_btn"
+            onClick={() => openContactsForTag(r.name)}
+            aria-label={`View contacts with tag ${r.name}`}
+          >
+            {r.name}
+          </button>
+        ),
       },
       {
         id: "description",
@@ -991,8 +1290,20 @@ function ContactsPage() {
         id: "contacts",
         header: "Contacts",
         align: "center",
-        sortValue: (r) => rows.filter((c) => c.tags.includes(r.name)).length,
-        cell: (r) => rows.filter((c) => c.tags.includes(r.name)).length,
+        sortValue: (r) => rows.filter((c) => contactHasTag(c, r.name)).length,
+        cell: (r) => {
+          const count = rows.filter((c) => contactHasTag(c, r.name)).length
+          return (
+            <button
+              type="button"
+              className="deals_table_name_link contacts_catalog_count_btn"
+              onClick={() => openContactsForTag(r.name)}
+              aria-label={`View ${count} contact${count === 1 ? "" : "s"} with tag ${r.name}`}
+            >
+              {count}
+            </button>
+          )
+        },
       },
       {
         id: "actions",
@@ -1010,7 +1321,7 @@ function ContactsPage() {
         ),
       },
     ],
-    [rows],
+    [openContactsForTag, rows],
   )
 
   const listColumns: DataTableColumn<ContactLabelRow>[] = useMemo(
@@ -1090,13 +1401,15 @@ function ContactsPage() {
       {
         id: "user",
         header: "User",
+        colWidth: CONTACTS_USER_COL_WIDTH,
         sortValue: (row) =>
           `${row.firstName} ${row.lastName} ${row.email}`.toLowerCase(),
-        tdClassName: "um_td_user",
+        thClassName: "contacts_th_user",
+        tdClassName: "um_td_user contacts_td_user",
         cell: (row) => {
           const primary = contactDisplayName(row)
           const rawEmail = row.email.trim()
-          const emailShown = rawEmail || "—"
+          const emailShown = displayEmail(rawEmail)
           return (
             <div className="um_user_cell">
               <div className="um_user_avatar_ring" aria-hidden>
@@ -1105,22 +1418,34 @@ function ContactsPage() {
                 </span>
               </div>
               <div className="um_user_meta">
-                <span
-                  className={`um_user_meta_username${
-                    primary === "—" ? " um_user_meta_username--placeholder" : ""
-                  }`}
-                >
-                  {primary}
-                </span>
-                {rawEmail.includes("@") ? (
+                {primary === "—" ? (
+                  <span className="um_user_meta_username um_user_meta_username--placeholder">
+                    {primary}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="um_user_meta_username contacts_user_name_link"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      navigate(`/contacts/${encodeURIComponent(row.id)}`)
+                    }}
+                  >
+                    {primary}
+                  </button>
+                )}
+                {isDisplayableEmail(rawEmail) ? (
                   <a
                     href={`mailto:${encodeURIComponent(rawEmail)}`}
                     className="um_user_meta_email um_user_meta_email_link"
+                    onClick={(e) => e.stopPropagation()}
                   >
                     {rawEmail}
                   </a>
                 ) : (
-                  <span className="um_user_meta_email">{emailShown}</span>
+                  <span className="um_user_meta_email um_status_muted">
+                    {emailShown}
+                  </span>
                 )}
                 {/* {dealN > 0 ? (
                   <span
@@ -1154,7 +1479,7 @@ function ContactsPage() {
           return (
             <span
               className="contacts_deals_count_num contacts_deals_count_num--value"
-              // title="Count of deal_investment rows with contact_id = this contact (your visible deals only)."
+              title="Distinct deals where this contact id or a portal user with the same email has an investment (your visible deals only)."
             >
               {n}
             </span>
@@ -1165,7 +1490,82 @@ function ContactsPage() {
         id: "phone",
         header: "Phone",
         sortValue: (row) => nationalDigitsFromStoredPhone(String(row.phone ?? "")),
+        thClassName: "contacts_th_phone",
+        tdClassName: "contacts_td_phone",
         cell: (row) => formatUsPhoneStoredForUi(row.phone),
+      },
+      {
+        id: "showOfferingsVisibility",
+        header: "Offering Visibility",
+        sortValue: (row) => row.showOfferingsVisibility ?? "",
+        thClassName: "contacts_th_show_offerings",
+        tdClassName: "contacts_td_show_offerings",
+        cell: (row) => (
+          <div
+            className="contacts_show_offerings_dd"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <DropdownSelect
+              className="contacts_show_offerings_dropdown"
+              triggerClassName="contacts_show_offerings_dropdown_trigger"
+              panelClassName="contacts_show_offerings_dropdown_panel"
+              value={row.showOfferingsVisibility ?? ""}
+              options={OFFERING_VISIBILITY_CELL_OPTIONS}
+              disabled={loading || contactsListTab === "archived"}
+              ariaLabel={`Offering visibility for ${contactDisplayName(row)}`}
+              useFixedPanel
+              onChange={(v) => {
+                requestShowOfferingsChange(
+                  row,
+                  v as ContactOfferingVisibility | "",
+                )
+              }}
+            />
+          </div>
+        ),
+      },
+      {
+        id: "accreditationStatus",
+        header: "Accreditation Status",
+        align: "center",
+        sortValue: (row) => row.accreditationStatus ?? "",
+        thClassName: "contacts_th_accreditation",
+        tdClassName: "contacts_td_accreditation",
+        cell: (row) => {
+          const status = (row.accreditationStatus ?? "").trim()
+          const tone =
+            status.toLowerCase() === "accredited"
+              ? "accredited"
+              : status.toLowerCase() === "not accredited"
+                ? "not-accredited"
+                : "na"
+          const label =
+            tone === "accredited"
+              ? "Accredited"
+              : tone === "not-accredited"
+                ? "Not Accredited"
+                : "N/A"
+          return (
+            <span
+              className={`contacts_accreditation_badge contacts_accreditation_badge--${tone}`}
+            >
+              {label}
+            </span>
+          )
+        },
+      },
+      {
+        id: "knownSince",
+        header: "Known Since",
+        align: "center",
+        sortValue: (row) => row.knownSince ?? "",
+        thClassName: "contacts_th_known_since",
+        tdClassName: "contacts_td_known_since",
+        cell: (row) => {
+          const date = (row.knownSince ?? "").trim()
+          return <span>{date || "-"}</span>
+        },
       },
       // {
       //   id: "note",
@@ -1199,25 +1599,25 @@ function ContactsPage() {
         sortValue: (row) => row.owners.join(" "),
         cell: (row) => <TagsCell items={row.owners} />,
       },
-      {
-        id: "createdBy",
-        header: "Added by",
-        sortValue: (row) => row.createdByDisplayName ?? "",
-        cell: (row) => row.createdByDisplayName?.trim() || "—",
-      },
-      {
-        id: "since",
-        header: "Since",
-        sortValue: (row) => {
-          const t = row.createdAt
-            ? new Date(row.createdAt).getTime()
-            : NaN
-          return Number.isFinite(t) ? t : 0
-        },
-        cell: (row) => (
-          <span title={row.createdAt}>{formatContactSinceLabel(row.createdAt)}</span>
-        ),
-      },
+      // {
+      //   id: "createdBy",
+      //   header: "Added by",
+      //   sortValue: (row) => row.createdByDisplayName ?? "",
+      //   cell: (row) => row.createdByDisplayName?.trim() || "—",
+      // },
+      // {
+      //   id: "since",
+      //   header: "Since",
+      //   sortValue: (row) => {
+      //     const t = row.createdAt
+      //       ? new Date(row.createdAt).getTime()
+      //       : NaN
+      //     return Number.isFinite(t) ? t : 0
+      //   },
+      //   cell: (row) => (
+      //     <span title={row.createdAt}>{formatContactSinceLabel(row.createdAt)}</span>
+      //   ),
+      // },
       {
         id: "actions",
         header: "Actions",
@@ -1251,6 +1651,8 @@ function ContactsPage() {
       exportContactRow,
       filteredRows.length,
       loading,
+      navigate,
+      requestShowOfferingsChange,
       openEditPanel,
       openSuspendContact,
       openViewPanel,
@@ -1262,15 +1664,19 @@ function ContactsPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [searchQuery, contactsListTab])
+  }, [
+    searchQuery,
+    contactsListTab,
+    tagFilter,
+    accreditationFilter,
+    offeringVisibilityFilter,
+    ownerFilter,
+  ])
 
   useEffect(() => {
     const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize))
     if (page > totalPages) setPage(totalPages)
   }, [filteredRows.length, page, pageSize])
-
-  const archivedTabEmptyNoTable =
-    contactsListTab === "archived" && tabRows.length === 0
 
   const tagsTableEmptyLabel = useMemo(() => {
     if (tagCatalog.length === 0) {
@@ -1323,6 +1729,34 @@ function ContactsPage() {
             />
             Contacts
           </h2>
+          {mainTab === "contacts" ? (
+            <button
+              type="button"
+              className="um_btn_primary contacts_toolbar_add_btn"
+              onClick={openAddPanel}
+            >
+              <Plus size={18} strokeWidth={2} aria-hidden />
+              Add Contact
+            </button>
+          ) : mainTab === "tags" ? (
+            <button
+              type="button"
+              className="um_btn_primary contacts_toolbar_add_btn"
+              onClick={() => openLabelAdd("tag")}
+            >
+              <Plus size={18} strokeWidth={2} aria-hidden />
+              Add Tags
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="um_btn_primary contacts_toolbar_add_btn"
+              onClick={() => openLabelAdd("list")}
+            >
+              <Plus size={18} strokeWidth={2} aria-hidden />
+              Add Lists
+            </button>
+          )}
         </div>
       </div>
 
@@ -1363,6 +1797,7 @@ function ContactsPage() {
               role="tab"
               aria-selected={mainTab === "tags"}
               aria-controls="contacts-main-panel-tags"
+              aria-label={`Tags, ${tagCatalog.length}`}
               className={`um_members_tab deals_tabs_tab um_segmented_tab${
                 mainTab === "tags" ? " um_members_tab_active" : ""
               }`}
@@ -1379,6 +1814,9 @@ function ContactsPage() {
               />
               <span className="deals_tabs_label um_segmented_tab_label">
                 Tags
+              </span>
+              <span className="deals_tabs_count contacts_tab_count" aria-hidden>
+                ({tagCatalog.length})
               </span>
             </button>
             <button
@@ -1410,127 +1848,274 @@ function ContactsPage() {
       </div>
 
       {mainTab === "contacts" ? (
-        <>
-          <div className="um_members_header_block contacts_inner_header">
-            <div className="contacts_toolbar_filters_row">
-              <ActiveArchivedTabs
-                value={contactsListTab}
-                onChange={(tab) => {
-                  setContactsListTab(tab)
-                  setToolbarNotice("")
-                }}
-                activeCount={activeCount}
-                archivedCount={archivedCount}
-                idPrefix="contacts-filter"
-                ariaLabel="Filter contacts by status"
-                activeIcon={ContactRound}
-                activePanelId="contacts-main-panel-contacts"
-              />
-              <button
-                type="button"
-                className="um_btn_primary contacts_toolbar_add_btn"
-                onClick={openAddPanel}
-              >
-                <Plus size={18} strokeWidth={2} aria-hidden />
-                Add Contact
-              </button>
-            </div>
-          </div>
-
-      <div
-        id="contacts-main-panel-contacts"
-        role="tabpanel"
-        aria-labelledby="contacts-main-tab-contacts"
-        className="contacts_main_tab_panel_wrap"
-      >
-      <div className="um_members_tab_content contacts_main_tab_content_flush">
         <div
-          className="um_panel um_members_tab_panel deal_inv_table_panel contacts_table_panel"
-          id="contacts-directory-panel"
-          role="region"
-          aria-label={
-            contactsListTab === "archived"
-              ? "Archived contacts"
-              : "Active contacts"
-          }
+          id="contacts-main-panel-contacts"
+          role="tabpanel"
+          aria-labelledby="contacts-main-tab-contacts"
+          className="contacts_main_tab_panel_wrap"
         >
-          {archivedTabEmptyNoTable ? (
-            loading ? (
-              <p className="um_hint" role="status">
-                Loading contacts…
-              </p>
-            ) : (
-              <p className="um_hint" role="status">
-                No archived contacts. Suspend a contact from Active to move it
-                here.
-              </p>
-            )
-          ) : (
-            <>
-              <div className="um_toolbar deal_inv_table_um_toolbar um_toolbar_export_then_search">
-                <div className="um_toolbar_actions deal_inv_table_toolbar_actions">
-                  <button
-                    type="button"
-                    className="um_btn_toolbar"
-                    onClick={openSendMailModal}
-                    disabled={loading || selectedContacts.length === 0}
-                  >
-                    <Send size={18} strokeWidth={2} aria-hidden />
-                    Send email
-                  </button>
-                  <button
-                    type="button"
-                    className="um_btn_toolbar"
-                    onClick={handleSuspendAll}
-                    disabled={
-                      loading ||
-                      contactsListTab === "archived" ||
-                      tabRows.length === 0
-                    }
-                  >
-                    <Ban size={18} strokeWidth={2} aria-hidden />
-                    Suspend All
-                  </button>
-                  <button
-                    type="button"
-                    className="um_toolbar_export_btn"
-                    onClick={() => setExportModalOpen(true)}
-                    disabled={loading || tabRows.length === 0}
-                  >
-                    <Download size={18} strokeWidth={2} aria-hidden />
-                    <span>Export All</span>
-                  </button>
-                </div>
-                <div className="um_search_wrap">
-                  <Search className="um_search_icon" size={18} aria-hidden />
-                  <input
-                    type="search"
-                    className="um_search_input"
-                    placeholder="Search…"
-                    value={searchQuery}
-                    onChange={(e) => {
-                      setSearchQuery(e.target.value)
-                      setToolbarNotice("")
-                    }}
-                    aria-label={
-                      contactsListTab === "archived"
-                        ? "Search archived contacts"
-                        : "Search active contacts"
-                    }
-                    disabled={loading}
-                  />
-                </div>
-              </div>
+          <div className="um_members_tab_content contacts_main_tab_content_flush">
+            <div
+              className="um_panel um_members_tab_panel deal_inv_table_panel contacts_table_panel"
+              id="contacts-directory-panel"
+              role="region"
+              aria-label={
+                contactsListTab === "archived"
+                  ? "Archived contacts"
+                  : "Active contacts"
+              }
+            >
+              <div className="contacts_directory_toolbar">
+                    <div className="contacts_directory_toolbar_start">
+                      <div
+                        className="contacts_status_pills"
+                        role="tablist"
+                        aria-label="Filter contacts by status"
+                      >
+                        <button
+                          type="button"
+                          id="contacts-filter-active"
+                          role="tab"
+                          aria-selected={contactsListTab === "active"}
+                          aria-controls="contacts-main-panel-contacts"
+                          aria-label={`Active, ${activeCount}`}
+                          className={`contacts_status_pill${
+                            contactsListTab === "active"
+                              ? " contacts_status_pill_active"
+                              : ""
+                          }`}
+                          onClick={() => {
+                            setContactsListTab("active")
+                            setToolbarNotice("")
+                          }}
+                        >
+                          <ContactRound size={14} strokeWidth={2} aria-hidden />
+                          <span>Active</span>
+                          <span className="contacts_status_pill_count" aria-hidden>
+                            {activeCount}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          id="contacts-filter-archived"
+                          role="tab"
+                          aria-selected={contactsListTab === "archived"}
+                          aria-controls="contacts-main-panel-contacts"
+                          aria-label={`Archived, ${archivedCount}`}
+                          className={`contacts_status_pill${
+                            contactsListTab === "archived"
+                              ? " contacts_status_pill_active"
+                              : ""
+                          }`}
+                          onClick={() => {
+                            setContactsListTab("archived")
+                            setToolbarNotice("")
+                          }}
+                        >
+                          <Archive size={14} strokeWidth={2} aria-hidden />
+                          <span>Archived</span>
+                          <span className="contacts_status_pill_count" aria-hidden>
+                            {archivedCount}
+                          </span>
+                        </button>
+                      </div>
+
+                      <div
+                        className="contacts_directory_actions"
+                        role="toolbar"
+                        aria-label="Contact actions"
+                      >
+                        <button
+                          type="button"
+                          className="um_btn_toolbar"
+                          onClick={openSendMailModal}
+                          disabled={loading || selectedContacts.length === 0}
+                        >
+                          <Send size={16} strokeWidth={2} aria-hidden />
+                          Send email
+                        </button>
+                        <button
+                          type="button"
+                          className="um_btn_toolbar"
+                          onClick={handleSuspendAll}
+                          disabled={
+                            loading ||
+                            contactsListTab === "archived" ||
+                            tabRows.length === 0
+                          }
+                        >
+                          <Ban size={16} strokeWidth={2} aria-hidden />
+                          Suspend all
+                        </button>
+                        <button
+                          type="button"
+                          className="um_toolbar_export_btn"
+                          onClick={() => setExportModalOpen(true)}
+                          disabled={loading || tabRows.length === 0}
+                        >
+                          <Download size={16} strokeWidth={2} aria-hidden />
+                          <span>Export</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="um_btn_toolbar"
+                          onClick={() => void handleRefreshContacts()}
+                          disabled={loading}
+                          aria-label="Refresh contacts and reset sorting"
+                        >
+                          {loading ? (
+                            <Loader2
+                              size={16}
+                              strokeWidth={2}
+                              className="um_spin"
+                              aria-hidden
+                            />
+                          ) : (
+                            <RefreshCw size={16} strokeWidth={2} aria-hidden />
+                          )}
+                          Refresh
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="contacts_directory_toolbar_end">
+                      <div className="contacts_toolbar_filter">
+                        <DropdownSelect
+                          id="contacts-filter-offering-visibility"
+                          className="contacts_toolbar_filter_dropdown"
+                          triggerClassName="contacts_toolbar_filter_dropdown_trigger"
+                          panelClassName="contacts_toolbar_filter_dropdown_panel"
+                          value={offeringVisibilityFilter}
+                          options={OFFERING_VISIBILITY_FILTER_OPTIONS}
+                          disabled={loading}
+                          ariaLabel="Filter by offering visibility"
+                          placeholder="Visibility"
+                          useFixedPanel
+                          onChange={(v) => {
+                            setOfferingVisibilityFilter(
+                              v as OfferingVisibilityFilter,
+                            )
+                            setToolbarNotice("")
+                          }}
+                        />
+                      </div>
+                      <div className="contacts_toolbar_filter">
+                        <DropdownSelect
+                          id="contacts-filter-owner"
+                          className="contacts_toolbar_filter_dropdown"
+                          triggerClassName="contacts_toolbar_filter_dropdown_trigger"
+                          panelClassName="contacts_toolbar_filter_dropdown_panel"
+                          value={ownerFilter}
+                          options={ownerSponsorOptions}
+                          disabled={loading}
+                          ariaLabel="Filter by owner"
+                          placeholder="Owner"
+                          useFixedPanel
+                          searchable
+                          searchPlaceholder="Search Lead or Admin sponsors…"
+                          searchAriaLabel="Search owners"
+                          searchShowOptionCountHint
+                          onChange={(v) => {
+                            setOwnerFilter(v)
+                            setToolbarNotice("")
+                          }}
+                        />
+                      </div>
+                      <div className="contacts_toolbar_filter">
+                        <DropdownSelect
+                          id="contacts-filter-accreditation"
+                          className="contacts_toolbar_filter_dropdown contacts_accreditation_filter_select"
+                          triggerClassName="contacts_toolbar_filter_dropdown_trigger"
+                          panelClassName="contacts_toolbar_filter_dropdown_panel"
+                          value={accreditationFilter}
+                          options={[
+                            { value: "all", label: "All accreditation" },
+                            { value: "Accredited", label: "Accredited" },
+                            {
+                              value: "Not Accredited",
+                              label: "Not Accredited",
+                            },
+                            { value: "na", label: "N/A" },
+                          ]}
+                          disabled={loading}
+                          ariaLabel="Filter by accreditation status"
+                          placeholder="Accreditation"
+                          useFixedPanel
+                          onChange={(v) => {
+                            setAccreditationFilter(
+                              v as
+                                | "all"
+                                | "Accredited"
+                                | "Not Accredited"
+                                | "na",
+                            )
+                            setToolbarNotice("")
+                          }}
+                        />
+                      </div>
+                      <div className="um_search_wrap contacts_directory_search">
+                        <Search
+                          className="um_search_icon"
+                          size={16}
+                          aria-hidden
+                        />
+                        <input
+                          type="search"
+                          className="um_search_input"
+                          placeholder="Search contacts…"
+                          value={searchQuery}
+                          onChange={(e) => {
+                            setSearchQuery(e.target.value)
+                            setToolbarNotice("")
+                          }}
+                          aria-label={
+                            contactsListTab === "archived"
+                              ? "Search archived contacts"
+                              : "Search active contacts"
+                          }
+                          disabled={loading}
+                        />
+                      </div>
+                    </div>
+                  </div>
               {toolbarNotice ? (
                 <p className="um_toolbar_notice" role="status">
                   {toolbarNotice}
                 </p>
               ) : null}
+              {tagFilter ? (
+                <div
+                  className="contacts_active_tag_filter"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="contacts_active_tag_filter_label">
+                    Showing contacts with tag{" "}
+                    <strong className="contacts_active_tag_filter_name">
+                      {tagFilter}
+                    </strong>
+                    {` (${filteredRows.length})`}
+                  </span>
+                  <button
+                    type="button"
+                    className="contacts_active_tag_filter_clear"
+                    onClick={() => {
+                      setTagFilter(null)
+                      setPage(1)
+                    }}
+                  >
+                    <X size={14} strokeWidth={2} aria-hidden />
+                    Clear filter
+                  </button>
+                </div>
+              ) : null}
               <DataTable
+                key={tableResetKey}
                 visualVariant="members"
                 stickyFirstColumn
                 columns={columns}
                 rows={loading ? [] : filteredRows}
+                isLoading={loading}
                 getRowKey={(row) => row.id}
                 getRowClassName={(row) =>
                   contactsListTab === "active" && contactRowIsSuspended(row)
@@ -1543,43 +2128,39 @@ function ContactsPage() {
                     : rows.length === 0
                       ? "No contacts yet. Add a contact to see it here."
                       : tabRows.length === 0
-                        ? "No active contacts."
-                        : "No contacts match your search."
+                        ? contactsListTab === "archived"
+                          ? "No archived contacts. Suspend a contact from Active to move it here."
+                          : "No active contacts."
+                        : tagFilter
+                          ? `No contacts with tag “${tagFilter}”.`
+                          : offeringVisibilityFilter !== "all"
+                            ? "No contacts match this offering visibility filter."
+                            : accreditationFilter !== "all"
+                              ? "No contacts match this accreditation filter."
+                              : ownerFilter !== "all"
+                                ? "No contacts match this owner filter."
+                                : "No contacts match your search."
                 }
                 emptyStateRole={loading ? "status" : undefined}
                 pagination={
                   !loading && filteredRows.length > 0 ? pagination : undefined
                 }
               />
-            </>
-          )}
-        </div>
+            </div>
       </div>
       </div>
-        </>
       ) : mainTab === "tags" ? (
         <>
-          <div className="um_members_header_block contacts_inner_header">
-            <div className="contacts_toolbar_filters_row">
-              <UsageFilterTabs
-                value={tagsUsageFilter}
-                onChange={setTagsUsageFilter}
-                allCount={tagCatalog.length}
-                inUseCount={tagCountInUse}
-                unusedCount={tagCountUnused}
-                idPrefix="contacts-tags-filter"
-                ariaLabel="Filter tags by usage"
-              />
-              <button
-                type="button"
-                className="um_btn_primary contacts_toolbar_add_btn"
-                onClick={() => openLabelAdd("tag")}
-              >
-                <Plus size={18} strokeWidth={2} aria-hidden />
-                Add Tags
-              </button>
-            </div>
-          </div>
+          <UsageFilterTabs
+            value={tagsUsageFilter}
+            onChange={setTagsUsageFilter}
+            allCount={tagCatalog.length}
+            inUseCount={tagCountInUse}
+            unusedCount={tagCountUnused}
+            idPrefix="contacts-tags-filter"
+            ariaLabel="Filter tags by usage"
+            className="contacts_status_tabs_outer"
+          />
           <div
             className="um_members_tab_content contacts_main_tab_content_flush"
             id="contacts-main-panel-tags"
@@ -1606,6 +2187,7 @@ function ContactsPage() {
                 rows={filteredTagCatalogRows}
                 getRowKey={(r) => r.id}
                 emptyLabel={tagsTableEmptyLabel}
+                onBodyRowClick={(r) => openContactsForTag(r.name)}
                 pagination={
                   filteredTagCatalogRows.length > 0
                     ? tagsPagination
@@ -1617,27 +2199,16 @@ function ContactsPage() {
         </>
       ) : (
         <>
-          <div className="um_members_header_block contacts_inner_header">
-            <div className="contacts_toolbar_filters_row">
-              <UsageFilterTabs
-                value={listsUsageFilter}
-                onChange={setListsUsageFilter}
-                allCount={listCatalog.length}
-                inUseCount={listCountInUse}
-                unusedCount={listCountUnused}
-                idPrefix="contacts-lists-filter"
-                ariaLabel="Filter lists by usage"
-              />
-              <button
-                type="button"
-                className="um_btn_primary contacts_toolbar_add_btn"
-                onClick={() => openLabelAdd("list")}
-              >
-                <Plus size={18} strokeWidth={2} aria-hidden />
-                Add Lists
-              </button>
-            </div>
-          </div>
+          <UsageFilterTabs
+            value={listsUsageFilter}
+            onChange={setListsUsageFilter}
+            allCount={listCatalog.length}
+            inUseCount={listCountInUse}
+            unusedCount={listCountUnused}
+            idPrefix="contacts-lists-filter"
+            ariaLabel="Filter lists by usage"
+            className="contacts_status_tabs_outer"
+          />
           <div
             className="um_members_tab_content contacts_main_tab_content_flush"
             id="contacts-main-panel-lists"
@@ -2031,6 +2602,145 @@ function ContactsPage() {
         onSaved={handleSendMailPreviewSaved}
       />
 
+      {offeringVisibilityPending ? (
+        <div
+          className="um_modal_overlay deals_add_inv_modal_overlay portal_modal_z_boost"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeOfferingVisibilityConfirm()
+          }}
+        >
+          <div
+            className="um_modal um_modal_view deals_add_inv_modal_panel deals_suspend_all_modal_panel"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={offeringVisibilityTitleId}
+          >
+            <div className="um_modal_head">
+              <h3
+                id={offeringVisibilityTitleId}
+                className="um_modal_title"
+              >
+                Update offering visibility?
+              </h3>
+              <button
+                type="button"
+                className="um_modal_close"
+                onClick={closeOfferingVisibilityConfirm}
+                disabled={offeringVisibilitySaving}
+                aria-label="Close"
+              >
+                <X size={20} strokeWidth={2} aria-hidden />
+              </button>
+            </div>
+            <div className="deals_suspend_all_modal_body">
+              <p className="deals_suspend_all_modal_message">
+                Change offering visibility for{" "}
+                <strong>
+                  {contactDisplayName(offeringVisibilityPending.row)}
+                </strong>{" "}
+                from{" "}
+                <strong>
+                  {offeringVisibilityLabel(
+                    offeringVisibilityPending.row.showOfferingsVisibility ??
+                      null,
+                  )}
+                </strong>{" "}
+                to{" "}
+                <strong>
+                  {offeringVisibilityLabel(offeringVisibilityPending.next)}
+                </strong>
+                ? This only applies in Investing — it does not change which
+                deals they see in Syndication.
+              </p>
+            </div>
+            <div className="um_modal_actions add_contact_modal_actions">
+              <button
+                type="button"
+                className="um_btn_secondary"
+                onClick={closeOfferingVisibilityConfirm}
+                disabled={offeringVisibilitySaving}
+              >
+                <X size={16} strokeWidth={2} aria-hidden />
+                Close
+              </button>
+              <button
+                type="button"
+                className="um_btn_primary"
+                onClick={() => void confirmShowOfferingsChange()}
+                disabled={offeringVisibilitySaving}
+              >
+                {offeringVisibilitySaving ? (
+                  <Loader2 size={16} strokeWidth={2} aria-hidden />
+                ) : (
+                  <Eye size={16} strokeWidth={2} aria-hidden />
+                )}
+                {offeringVisibilitySaving ? "Updating…" : "Update"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {suspendAllOpen ? (
+        <div
+          className="um_modal_overlay deals_add_inv_modal_overlay portal_modal_z_boost"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeSuspendAllModal()
+          }}
+        >
+          <div
+            className="um_modal um_modal_view deals_add_inv_modal_panel deals_suspend_all_modal_panel"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={suspendAllTitleId}
+          >
+            <div className="um_modal_head">
+              <h3 id={suspendAllTitleId} className="um_modal_title">
+                Suspend all contacts?
+              </h3>
+              <button
+                type="button"
+                className="um_modal_close"
+                onClick={closeSuspendAllModal}
+                disabled={suspendAllBusy}
+                aria-label="Close"
+              >
+                <X size={20} strokeWidth={2} aria-hidden />
+              </button>
+            </div>
+            <div className="deals_suspend_all_modal_body">
+              <p className="deals_suspend_all_modal_message">
+                Suspend {tabRows.length} active contact
+                {tabRows.length === 1 ? "" : "s"}? They will move to the
+                Archived tab and can be activated again later.
+              </p>
+            </div>
+            <div className="um_modal_actions add_contact_modal_actions">
+              <button
+                type="button"
+                className="um_btn_secondary"
+                onClick={closeSuspendAllModal}
+                disabled={suspendAllBusy}
+              >
+                <X size={16} strokeWidth={2} aria-hidden />
+                Close
+              </button>
+              <button
+                type="button"
+                className="um_btn_primary"
+                onClick={confirmSuspendAll}
+                disabled={suspendAllBusy}
+              >
+                <Ban size={16} strokeWidth={2} aria-hidden />
+                {suspendAllBusy ? "Suspending…" : "Suspend all"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {suspendRow ? (
         <div
           className="um_modal_overlay contacts_suspend_overlay"
@@ -2124,7 +2834,7 @@ function ContactsPage() {
               <ViewReadonlyField
                 Icon={Mail}
                 label="Email"
-                value={suspendRow.email?.trim() || "—"}
+                value={displayEmail(suspendRow.email)}
               />
             </div>
 

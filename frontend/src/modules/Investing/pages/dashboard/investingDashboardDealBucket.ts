@@ -187,6 +187,15 @@ export function classifyInvestingDashboardDealBucket(
     return "in_progress"
   }
   if (isOpportunity) return "coming_soon"
+  if (!hasActivity) {
+    const effective = effectiveOfferingStatusForAccess(
+      row.dealStage,
+      row.offeringStatus,
+    )
+    if (effective && getDealStatusRules(effective).allowDashboardVisibility) {
+      return "coming_soon"
+    }
+  }
   return null
 }
 

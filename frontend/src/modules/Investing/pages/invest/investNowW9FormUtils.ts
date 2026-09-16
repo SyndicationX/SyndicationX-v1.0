@@ -1,5 +1,5 @@
 import {
-  // formatSsnItinInput,
+  formatSsnItinInput,
   nineDigitsFromSsnItinInput,
 } from "@/common/tax/usSsnItin"
 import type { SavedAddress } from "@/modules/Investing/pages/profiles/address.types"
@@ -53,6 +53,38 @@ function readWizardState(
   return raw as Record<string, unknown>
 }
 
+/** SSN / ITIN from the saved investing profile wizard (`formSnapshot.ssn`). */
+export function ssnFromProfileWizard(
+  wizard: Record<string, unknown> | null,
+): string {
+  if (!wizard) return ""
+  const raw = String(wizard.ssn ?? "").trim()
+  if (!raw) return ""
+  return formatSsnItinInput(raw)
+}
+
+function profileCreatedAtMs(profile: InvestorProfileListRow): number {
+  const t = Date.parse(profile.dateCreated)
+  return Number.isFinite(t) ? t : 0
+}
+
+/**
+ * Earliest non-empty SSN saved on any investing profile for this user.
+ * Used so W-9 and onboarding keep the same SSN across profile switches.
+ */
+export function ssnFromAnyInvestorProfile(
+  profiles: InvestorProfileListRow[],
+): string {
+  const ordered = [...profiles]
+    .filter((p) => !p.archived)
+    .sort((a, b) => profileCreatedAtMs(a) - profileCreatedAtMs(b))
+  for (const profile of ordered) {
+    const ssn = ssnFromProfileWizard(readWizardState(profile))
+    if (ssn) return ssn
+  }
+  return ""
+}
+
 function joinNameParts(parts: string[]): string {
   return parts.map((p) => p.trim()).filter(Boolean).join(" ")
 }
@@ -95,9 +127,11 @@ function prefillFromQuestionnaire(
   const last = String(answers.last_name ?? "").trim()
   const name = [first, last].filter(Boolean).join(" ")
   const addressLine = String(answers.address ?? "").trim()
+  const ssn = String(answers.social_security_number ?? "").trim()
   const partial: Partial<InvestNowW9FormValues> = {}
   if (name) partial.name = name
   if (addressLine) partial.addressLine = addressLine
+  if (ssn) partial.ssn = formatSsnItinInput(ssn)
   return partial
 }
 
@@ -141,6 +175,10 @@ export function mergeInvestNowW9Values(
     }
   } else if (structuredMissing && hasStructuredAddress(next)) {
     next.addressLine = formatInvestNowW9AddressLine(next)
+  }
+
+  if (!next.ssn.trim() && prefill.ssn.trim()) {
+    next.ssn = prefill.ssn.trim()
   }
 
   if (
@@ -192,10 +230,14 @@ export function buildInvestNowW9Prefill({
     if (addr) {
       next = { ...next, ...investNowW9ValuesFromAddress(addr) }
     }
+
   } else {
     const sessionName = sessionDisplayName()
     if (sessionName) next = { ...next, name: sessionName }
   }
+
+  const knownSsn = ssnFromAnyInvestorProfile(profiles)
+  if (knownSsn) next = { ...next, ssn: knownSsn }
 
   const fromQuestionnaire = prefillFromQuestionnaire(questionnaireAnswers)
   next = mergeInvestNowW9Values(next, {
@@ -207,6 +249,7 @@ export function buildInvestNowW9Prefill({
     city: fromQuestionnaire.city ?? "",
     state: fromQuestionnaire.state ?? "",
     zip: fromQuestionnaire.zip ?? "",
+    ssn: fromQuestionnaire.ssn ?? "",
   })
 
   return next

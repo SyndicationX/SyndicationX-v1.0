@@ -41,11 +41,11 @@
   transition: all 0.2s ease;
 }
 
-/* Hover */
-.radio-btn:hover,
-.radio-pill-label:hover .radio-btn {
-  background-color: #f0f6ff;
-  border-color:  var(--ui-button-background-add);
+/* Unchecked hover — same filled look as before (selection is still click-only). */
+.radio-group input[type="radio"]:not(:checked) + .radio-btn:hover {
+  background-color: var(--ui-button-background-add);
+  color: #ffffff;
+  border-color: var(--ui-button-background-add);
 }
 
 /* Checked state */

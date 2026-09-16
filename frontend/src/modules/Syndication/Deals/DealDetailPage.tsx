@@ -24,6 +24,7 @@ import {
 import { usePortalMode } from "@/modules/Investing/context/PortalModeContext"
 import { getSessionUserEmail } from "../../../common/auth/sessionUserEmail"
 import { getSessionUserId } from "../../../common/auth/sessionUserId"
+import { isCompanyAdmin, isPlatformAdmin } from "../../../common/auth/roleUtils"
 import { setAppDocumentTitle } from "../../../common/utils/appDocumentTitle"
 import {
   buildDealOfferingPreviewShareUrl,
@@ -41,6 +42,7 @@ import {
 } from "./api/dealsApi"
 import { DealAnnouncementBanner } from "./components/DealAnnouncementBanner"
 import { DealsPageCenteredLoader } from "./components/DealsPageCenteredLoader"
+import { DealSaasPaywallModal } from "./components/DealSaasPaywallModal"
 import {
   dealInvestNowPath,
   EMPTY_INVESTORS_PAYLOAD,
@@ -49,7 +51,7 @@ import { LpDealDetailsPage } from "@/modules/Investing/pages/deals/deal-details"
 import { refreshInvestmentDealDocumentsPreview } from "@/modules/Investing/pages/investments/utils/refreshInvestmentDealDocumentsPreview"
 import { applyOfferingInvestorPreviewJsonFromServer } from "./utils/offeringPreviewServerState"
 import { clearOfferingPreviewRuntime } from "./utils/offeringPreviewRuntimeStore"
-import { invitationMailSentOptimisticKeys } from "./utils/dealInvitationMailStatus"
+import { invitationMailSentOptimisticKeys, omitInvitationMailKeys } from "./utils/dealInvitationMailStatus"
 import { dealStageChipCompactClassName } from "./utils/dealStageChip"
 import { ADD_MEMBER_DRAFT_ROW_ID } from "./tabs/deal_members/add-investment/addMemberDraftInvestorRow"
 import {
@@ -61,10 +63,16 @@ import {
   type DealInvestorsTabHandle,
 } from "./tabs/investors/DealInvestorsTab"
 import { DealMembersTab } from "./tabs/deal_members"
+import {
+  dealInvestmentModalEntryFromRosterKind,
+  dealRosterKindFromRole,
+  type DealInvestmentModalEntry,
+} from "./constants/investor-profile"
 import { DealEsignTemplatesTab } from "./components/DealEsignTemplatesTab"
 import { DealDocumentsTab } from "./tabs/documents/DealDocumentsTab"
 import { DealOfferingDetailsTab } from "./tabs/offering_details/DealOfferingDetailsTab"
 import { InvestorCommunicationTab } from "./tabs/investor_communication"
+import { DistributionsTab } from "./tabs/distributions"
 import type {
   DealInvestorRow,
   DealInvestorsPayload,
@@ -77,10 +85,14 @@ import {
   viewerCanSendDealEsignTemplates,
   viewerCanUploadDealEsignTemplates,
   viewerCanApproveDealFund,
+  viewerCanEditDeal,
   visibleDealDetailTabIds,
+  isUsableInvestorEmail,
   type ViewerDealMemberRole,
 } from "./utils/dealDetailTabVisibility"
 import { toast } from "../../../common/components/Toast"
+import { getSessionOrganizationCompanyId } from "../../../common/auth/sessionOrganization"
+import { syncExtraCompanyUserCheckout } from "../company/companyBillingApi"
 import {
   isDealStageDraft,
   isDealStageOfferingShareBlocked,
@@ -88,6 +100,10 @@ import {
 import { dealHasOfferingShareLink } from "./utils/offeringOverviewForm"
 import { TabsScrollStrip } from "../../../common/components/tabs-scroll-strip/TabsScrollStrip"
 import { notifyDealsListRefetch } from "./createDealFormDraftStorage"
+import {
+  isDealSaasPaymentRequiredError,
+  type DealSaasPaywallDeal,
+} from "./utils/dealSaasAccess"
 import {
   DEAL_DETAIL_TAB_QUERY_PARAM,
   isOfferingDetailsSectionId,
@@ -125,7 +141,7 @@ const DEAL_DETAIL_TABS: DealDetailTabDef[] = [
   { id: "investors", label: "Investors", icon: Users },
   { id: "investor_communication", label: "Investor Communication ", icon: BarChart3 },
   { id: "distributions", label: "Distributions", icon: BarChart3 },
-  { id: "deal_members", label: "Deal Members", icon: Users },
+  { id: "deal_members", label: "General Partners", icon: Users },
 ]
 
 export function DealDetailPage() {
@@ -143,9 +159,8 @@ export function DealDetailPage() {
   const [sharedInvestmentModalOpen, setSharedInvestmentModalOpen] =
     useState(false)
   /** Which flow opened the shared modal — drives “Add Member” vs “Add Investor” title. */
-  const [investmentModalEntry, setInvestmentModalEntry] = useState<
-    "member" | "investor"
-  >("member")
+  const [investmentModalEntry, setInvestmentModalEntry] =
+    useState<DealInvestmentModalEntry>("member")
   /** Add-member modal: restore session draft (draft row) vs empty form (“Add Member” button). */
   const [restoreAddMemberSessionDraft, setRestoreAddMemberSessionDraft] =
     useState(true)
@@ -154,9 +169,15 @@ export function DealDetailPage() {
   const [invitationMailSentByRowId, setInvitationMailSentByRowId] = useState<
     Record<string, true>
   >({})
+  const [invitationMailSendingByRowId, setInvitationMailSendingByRowId] =
+    useState<Record<string, true>>({})
   const dealInvestorsTabRef = useRef<DealInvestorsTabHandle>(null)
   const [deal, setDeal] = useState<DealRecord | null | undefined>(undefined)
   const [dealDetailApi, setDealDetailApi] = useState<DealDetailApi | null>(null)
+  const [saasPaywallDeal, setSaasPaywallDeal] =
+    useState<DealSaasPaywallDeal | null>(null)
+  const [upgradePromptDeal, setUpgradePromptDeal] =
+    useState<DealSaasPaywallDeal | null>(null)
 
   const handleDealPersisted = useCallback((d: DealDetailApi) => {
     setDealDetailApi(d)
@@ -175,7 +196,7 @@ export function DealDetailPage() {
     DealInvestorRow[]
   >([])
   const [viewerDealMemberRoleFromApi, setViewerDealMemberRoleFromApi] =
-    useState<ViewerDealMemberRole | null>(null)
+    useState<ViewerDealMemberRole | undefined>(undefined)
 
   const openInvestNow = useCallback(() => {
     const id = dealId?.trim()
@@ -188,7 +209,7 @@ export function DealDetailPage() {
   }, [dealId])
 
   useEffect(() => {
-    setViewerDealMemberRoleFromApi(null)
+    setViewerDealMemberRoleFromApi(undefined)
     if (!dealId?.trim()) return
     let cancelled = false
     void fetchDealMembers(dealId).then((result) => {
@@ -207,7 +228,9 @@ export function DealDetailPage() {
   const sessionUserId = getSessionUserId()
 
   const viewerDealMemberRole = useMemo(() => {
-    if (viewerDealMemberRoleFromApi != null) return viewerDealMemberRoleFromApi
+    if (viewerDealMemberRoleFromApi !== undefined) {
+      return viewerDealMemberRoleFromApi
+    }
     return resolveViewerDealMemberRole(
       memberRosterForTabs,
       sessionEmail,
@@ -220,9 +243,15 @@ export function DealDetailPage() {
     sessionUserId,
   ])
 
+  const isWorkspaceAdmin = isCompanyAdmin() || isPlatformAdmin()
+
   const viewerDealTabIds = useMemo(
-    () => visibleDealDetailTabIds(viewerDealMemberRole),
-    [viewerDealMemberRole],
+    () =>
+      visibleDealDetailTabIds(viewerDealMemberRole, {
+        isWorkspaceAdmin,
+        isRoleLoading: viewerDealMemberRoleFromApi === undefined,
+      }),
+    [viewerDealMemberRole, viewerDealMemberRoleFromApi, isWorkspaceAdmin],
   )
 
   const canUploadEsignTemplates = useMemo(
@@ -236,9 +265,15 @@ export function DealDetailPage() {
   )
 
   const canApproveFund = useMemo(
-    () => viewerCanApproveDealFund(viewerDealMemberRole),
-    [viewerDealMemberRole],
+    () =>
+      viewerCanApproveDealFund(viewerDealMemberRole, { isWorkspaceAdmin }),
+    [viewerDealMemberRole, isWorkspaceAdmin],
   )
+
+  const canEditDeal = useMemo(() => {
+    if (dealDetailApi?.viewerCanEditDeal === false) return false
+    return viewerCanEditDeal(viewerDealMemberRole)
+  }, [dealDetailApi?.viewerCanEditDeal, viewerDealMemberRole])
 
   const [dealHasEsignDocuments, setDealHasEsignDocuments] = useState(false)
 
@@ -310,6 +345,36 @@ export function DealDetailPage() {
     setActiveTab((prev) => (prev === tabFromUrl ? prev : tabFromUrl))
   }, [searchParams, dealDetailTabsVisible])
 
+  useEffect(() => {
+    const extraUser = searchParams.get("extraCompanyUser")?.trim()
+    const sessionId = searchParams.get("session_id")?.trim() ?? ""
+    if (extraUser !== "success" || !sessionId) return
+    const companyId = getSessionOrganizationCompanyId()?.trim() ?? ""
+    if (!companyId) return
+    let cancelled = false
+    void syncExtraCompanyUserCheckout(companyId, sessionId).then((result) => {
+      if (cancelled) return
+      if (result.ok) {
+        toast.success(
+          "Extra company user paid",
+          "You can save the additional team member now.",
+        )
+      }
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          next.delete("extraCompanyUser")
+          next.delete("session_id")
+          return next
+        },
+        { replace: true },
+      )
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [searchParams, setSearchParams])
+
   const selectDealTab = useCallback(
     (tabId: string) => {
       setActiveTab(tabId)
@@ -342,6 +407,8 @@ export function DealDetailPage() {
     let cancelled = false
     setDeal(undefined)
     setDealDetailApi(null)
+    setSaasPaywallDeal(null)
+    setUpgradePromptDeal(null)
     void (async () => {
       try {
         const d = await fetchDealById(id)
@@ -356,9 +423,43 @@ export function DealDetailPage() {
           }
           setDealDetailApi(d)
           setDeal(dealDetailApiToRecord(d))
+          if (
+            mode !== "investing" &&
+            d.viewerIsLeadSponsor === true &&
+            d.needsPlanUpgrade === true
+          ) {
+            const key = `sx-deal-upgrade-prompt:${d.id}`
+            try {
+              if (sessionStorage.getItem(key) !== "1") {
+                setUpgradePromptDeal({
+                  id: d.id,
+                  dealName: d.dealName ?? "",
+                  needsPlanUpgrade: true,
+                  suggestedPlanId: d.suggestedPlanId ?? null,
+                  billingPlanId: d.billingPlanId ?? d.listRow?.billingPlanId ?? null,
+                  viewerIsLeadSponsor: true,
+                })
+              }
+            } catch {
+              setUpgradePromptDeal({
+                id: d.id,
+                dealName: d.dealName ?? "",
+                needsPlanUpgrade: true,
+                suggestedPlanId: d.suggestedPlanId ?? null,
+                billingPlanId: d.billingPlanId ?? null,
+                viewerIsLeadSponsor: true,
+              })
+            }
+          }
         }
-      } catch {
+      } catch (err) {
         if (!cancelled) {
+          if (isDealSaasPaymentRequiredError(err)) {
+            setSaasPaywallDeal({
+              ...err.payload,
+              id: err.payload.id || id,
+            })
+          }
           setDeal(null)
           setDealDetailApi(null)
         }
@@ -502,7 +603,7 @@ export function DealDetailPage() {
   const handleSendInvestorEsign = useCallback(
     async (row: DealInvestorRow, fileIds: string[]) => {
       const email = row.userEmail?.trim()
-      if (!email || email === "—") {
+      if (!isUsableInvestorEmail(email)) {
         toast.error("No email address", "This row has no email to send to.")
         return
       }
@@ -513,7 +614,7 @@ export function DealDetailPage() {
       if (!dealId) return
       const name = row.displayName?.trim()
       const result = await postDealInvestorSendEsign(dealId, {
-        to_email: email,
+        to_email: email!,
         member_display_name: name && name !== "—" ? name : undefined,
         roster_id: row.id?.trim(),
         file_ids: fileIds,
@@ -536,14 +637,14 @@ export function DealDetailPage() {
   const handleSendInvestorInvitationMail = useCallback(
     async (row: DealInvestorRow) => {
       const email = row.userEmail?.trim()
-      if (!email || email === "—") {
+      if (!isUsableInvestorEmail(email)) {
         toast.error("No email address", "This row has no email to send to.")
         return
       }
       if (!dealId) return
       const name = row.displayName?.trim()
       const result = await postDealMemberInvitationEmail(dealId, {
-        to_email: email,
+        to_email: email!,
         member_display_name: name && name !== "—" ? name : undefined,
         invitation_source: "investor",
         contact_member_id: row.contactId?.trim() || undefined,
@@ -570,32 +671,40 @@ export function DealDetailPage() {
   const handleSendMemberInvitationMail = useCallback(
     async (row: DealInvestorRow) => {
       const email = row.userEmail?.trim()
-      if (!email || email === "—") {
+      if (!isUsableInvestorEmail(email)) {
         toast.error("No email address", "This row has no email to send to.")
         return
       }
       if (!dealId) return
+      const sendingKeys = invitationMailSentOptimisticKeys(row)
+      setInvitationMailSendingByRowId((prev) => ({ ...prev, ...sendingKeys }))
       const name = row.displayName?.trim()
-      const result = await postDealMemberInvitationEmail(dealId, {
-        to_email: email,
-        member_display_name: name && name !== "—" ? name : undefined,
-        invitation_source: "deal_member",
-        deal_member_role: dealRowRoleLabelForInvitationEmail(row),
-        contact_member_id: row.contactId?.trim() || undefined,
-      })
-      if (result.ok) {
-        setInvitationMailSentByRowId((prev) => ({
-          ...prev,
-          ...invitationMailSentOptimisticKeys(row),
-        }))
-        toast.success(
-          "Invitation sent",
-          "The deal invitation email was sent (with this row’s role) using your server email settings.",
+      try {
+        const result = await postDealMemberInvitationEmail(dealId, {
+          to_email: email!,
+          member_display_name: name && name !== "—" ? name : undefined,
+          invitation_source: "deal_member",
+          deal_member_role: dealRowRoleLabelForInvitationEmail(row),
+          contact_member_id: row.contactId?.trim() || undefined,
+        })
+        if (result.ok) {
+          setInvitationMailSentByRowId((prev) => ({
+            ...prev,
+            ...sendingKeys,
+          }))
+          toast.success(
+            "Invitation sent",
+            "The deal invitation email was sent (with this row’s role) using your server email settings.",
+          )
+          setDealMembersRefreshKey((k) => k + 1)
+          void dealInvestorsTabRef.current?.refetchInvestors()
+        } else {
+          toast.error("Could not send email", result.message)
+        }
+      } finally {
+        setInvitationMailSendingByRowId((prev) =>
+          omitInvitationMailKeys(prev, sendingKeys),
         )
-        setDealMembersRefreshKey((k) => k + 1)
-        void dealInvestorsTabRef.current?.refetchInvestors()
-      } else {
-        toast.error("Could not send email", result.message)
       }
     },
     [dealId],
@@ -653,13 +762,31 @@ export function DealDetailPage() {
   if (!deal)
     return (
       <div className="deals_list_page deals_detail_page">
-        <p className="deals_list_not_found">
-          Deal not found.{" "}
-          <Link to={dealsListBackPath} className="deals_list_inline_back">
-            <ArrowLeft size={18} strokeWidth={2} aria-hidden />
-            Back to deals
-          </Link>
-        </p>
+        {saasPaywallDeal ? (
+          <>
+            <p className="deals_list_not_found">
+              {saasPaywallDeal.dealName.trim()
+                ? `Pay monthly SaaS (MRR) for “${saasPaywallDeal.dealName.trim()}” to continue.`
+                : "Pay monthly SaaS (MRR) for this deal to continue."}{" "}
+              <Link to={dealsListBackPath} className="deals_list_inline_back">
+                <ArrowLeft size={18} strokeWidth={2} aria-hidden />
+                Back to deals
+              </Link>
+            </p>
+            <DealSaasPaywallModal
+              deal={saasPaywallDeal}
+              onClose={() => navigate(dealsListBackPath)}
+            />
+          </>
+        ) : (
+          <p className="deals_list_not_found">
+            Deal not found.{" "}
+            <Link to={dealsListBackPath} className="deals_list_inline_back">
+              <ArrowLeft size={18} strokeWidth={2} aria-hidden />
+              Back to deals
+            </Link>
+          </p>
+        )}
       </div>
     )
 
@@ -671,6 +798,7 @@ export function DealDetailPage() {
   return (
     <div className="deals_list_page deals_detail_page">
       {showSyndicatingDealChrome ? (
+      <div className="deals_detail_sticky_chrome">
       <header className="deals_list_head">
         <DealAnnouncementBanner
           title={announcementTitle}
@@ -705,6 +833,7 @@ export function DealDetailPage() {
               </span>
             ) : null}
           </div>
+          {canEditDeal ? (
           <button
             type="button"
             className="um_btn_secondary deals_detail_edit_deal_btn"
@@ -713,25 +842,10 @@ export function DealDetailPage() {
             <Pencil size={16} strokeWidth={2} aria-hidden />
             {dealFormIncomplete ? "Continue editing" : "Edit deal"}
           </button>
+          ) : null}
         </div>
       </header>
-      ) : null}
 
-      {mode === "investing" && dealDetailApi ? (
-        <>
-          <LpDealDetailsPage
-            deal={dealDetailApi}
-            classes={investingOfferingClasses}
-            investorsPayload={investingOfferingInvestors}
-            onInvestNow={openInvestNow}
-            backTo={dealsListBackPath}
-            viewerRoleLabel={viewerDealInvestorRoleRaw}
-          />
-        </>
-      ) : null}
-
-      {showSyndicatingDealChrome ? (
-        <>
       <div className="um_members_tabs_outer deals_tabs_outer um_segmented_tabs_outer">
         <TabsScrollStrip scrollClassName="deals_tabs_scroll um_segmented_tabs_scroll">
           <div
@@ -775,7 +889,24 @@ export function DealDetailPage() {
           </div>
         </TabsScrollStrip>
       </div>
+      </div>
+      ) : null}
 
+      {mode === "investing" && dealDetailApi ? (
+        <>
+          <LpDealDetailsPage
+            deal={dealDetailApi}
+            classes={investingOfferingClasses}
+            investorsPayload={investingOfferingInvestors}
+            onInvestNow={openInvestNow}
+            backTo={dealsListBackPath}
+            viewerRoleLabel={viewerDealInvestorRoleRaw}
+          />
+        </>
+      ) : null}
+
+      {showSyndicatingDealChrome ? (
+        <>
       <div
         className={
           activeTab === "deal_members"
@@ -801,14 +932,21 @@ export function DealDetailPage() {
                 sharedInvestmentModalOpen={sharedInvestmentModalOpen}
                 investorsRefreshKey={dealMembersRefreshKey}
                 invitationMailStatusByRowId={invitationMailSentByRowId}
-                onAddMember={() => {
-                  setInvestmentModalEntry("member")
+                invitationMailSendingByRowId={invitationMailSendingByRowId}
+                onAddMember={(kind) => {
+                  setInvestmentModalEntry(
+                    dealInvestmentModalEntryFromRosterKind(kind),
+                  )
                   setRestoreAddMemberSessionDraft(false)
                   setAddInvestmentOpen(true)
                 }}
                 onEditMember={(row: DealInvestorRow) => {
+                  setInvestmentModalEntry(
+                    dealInvestmentModalEntryFromRosterKind(
+                      dealRosterKindFromRole(row.investorRole),
+                    ),
+                  )
                   if (row.id === ADD_MEMBER_DRAFT_ROW_ID) {
-                    setInvestmentModalEntry("member")
                     setRestoreAddMemberSessionDraft(true)
                     setAddInvestmentOpen(true)
                     return
@@ -869,6 +1007,7 @@ export function DealDetailPage() {
           <DealOfferingDetailsTab
             detail={dealDetailApi}
             onDealUpdated={handleDealPersisted}
+            viewerDealMemberRole={viewerDealMemberRole}
           />
         ) : activeTab === "documents" && dealDetailApi ? (
           <DealDocumentsTab
@@ -876,6 +1015,7 @@ export function DealDetailPage() {
             dealName={displayName}
             offeringInvestorPreviewJson={dealDetailApi.offeringInvestorPreviewJson}
             investorsListRefreshKey={dealMembersRefreshKey}
+            viewerDealMemberRole={viewerDealMemberRole}
             onOfferingPreviewSynced={handleDealPersisted}
           />
         ) : activeTab === "esign_templates" ? (
@@ -888,6 +1028,15 @@ export function DealDetailPage() {
           />
         ) : activeTab === "investor_communication" && dealId?.trim() ? (
           <InvestorCommunicationTab dealId={dealId.trim()} />
+        ) : activeTab === "distributions" && dealId?.trim() ? (
+          <DistributionsTab
+            dealId={dealId.trim()}
+            dealName={
+              dealDetailApi?.dealName?.trim() ||
+              deal?.title?.trim() ||
+              undefined
+            }
+          />
         ) : (
           <div className="deal_detail_wip_wrap" role="status">
             <p className="deal_detail_wip_title">Working in progress</p>
@@ -901,6 +1050,20 @@ export function DealDetailPage() {
       </div>
         </>
       ) : null}
+      <DealSaasPaywallModal
+        deal={upgradePromptDeal}
+        onClose={() => {
+          const id = upgradePromptDeal?.id?.trim()
+          if (id) {
+            try {
+              sessionStorage.setItem(`sx-deal-upgrade-prompt:${id}`, "1")
+            } catch {
+              /* ignore */
+            }
+          }
+          setUpgradePromptDeal(null)
+        }}
+      />
     </div>
   )
 }

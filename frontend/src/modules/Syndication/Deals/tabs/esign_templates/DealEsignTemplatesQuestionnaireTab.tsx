@@ -223,7 +223,12 @@ export function DealEsignTemplatesQuestionnaireTab({
       patch: Partial<
         Pick<
           InvestorQuestionnaireQuestion,
-          "label" | "fieldType" | "subtext" | "required" | "options"
+          | "label"
+          | "fieldType"
+          | "subtext"
+          | "required"
+          | "options"
+          | "investorProfileFieldKey"
         >
       >,
     ) => {
@@ -242,6 +247,9 @@ export function DealEsignTemplatesQuestionnaireTab({
             const subtext = next.subtext?.trim()
             if (!subtext) delete next.subtext
             else next.subtext = subtext
+            const profileKey = next.investorProfileFieldKey?.trim()
+            if (profileKey) next.investorProfileFieldKey = profileKey
+            else delete next.investorProfileFieldKey
             if (next.fieldType === "radio" || next.fieldType === "checkboxes") {
               const opts = (next.options ?? [])
                 .map((o) => o.trim())

@@ -97,7 +97,7 @@ function SyndicatingDashboard() {
           description={
             summary != null ? String(summary.contactsCount) : "—"
           }
-          hintTitle="Contacts added under your company (same list as Add contacts / CRM)."
+          hintTitle="Same list as the Contacts page for your account."
         />
         <ToolStyleCard
           variant="metric"

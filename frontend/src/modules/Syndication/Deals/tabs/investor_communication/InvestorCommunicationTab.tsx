@@ -8,7 +8,9 @@ import {
 } from "../../../../../common/components/data-table/DataTable"
 import { toast } from "../../../../../common/components/Toast"
 import { useDataTableRowSelection } from "../../../../../common/hooks/useDataTableRowSelection"
+import { getSessionUserId } from "../../../../../common/auth/sessionUserId"
 import { formatDateDdMmmYyyy } from "../../../../../common/utils/formatDateDisplay"
+import { isDisplayableEmail } from "../../../../../common/utils/displayEmail"
 import { DealSendMailModal } from "./DealSendMailModal"
 import { MailRecipientsModal } from "./MailRecipientsModal"
 import {
@@ -20,6 +22,8 @@ import type {
   InvestorCommunicationMailRow,
   InvestorCommunicationMailStatus,
 } from "./investor-communication.types"
+import { fetchDealMembers } from "../../api/dealsApi"
+import { parseViewerDealMemberRoleFromApi } from "../../utils/dealDetailTabVisibility"
 import "../../../contacts/contacts.css"
 import "../../../usermanagement/user_management.css"
 import "../../deals-list.css"
@@ -27,6 +31,22 @@ import "../../deal-investors-tab.css"
 import "./investor_communication.css"
 
 const DEFAULT_PAGE_SIZE = 10
+
+function sentToCountForRow(row: InvestorCommunicationMailRow): number {
+  const emails = new Set<string>()
+  let hiddenDelivered = 0
+  for (const r of row.recipientUsers) {
+    if (r.requiresCosponsorRelease) continue
+    const email = r.email.trim().toLowerCase()
+    if (isDisplayableEmail(email)) {
+      emails.add(email)
+      continue
+    }
+    if (r.classKind === "gp") continue
+    hiddenDelivered += 1
+  }
+  return emails.size + hiddenDelivered
+}
 
 function formatMailDateTime(raw: string): string {
   const t = String(raw ?? "").trim()
@@ -40,6 +60,26 @@ function formatMailDateTime(raw: string): string {
     hour12: true,
   })
   return `${date} · ${time}`
+}
+
+function mailStatusForViewer(
+  row: InvestorCommunicationMailRow,
+  opts: {
+    viewerIsCosponsor: boolean
+    interceptNo: boolean
+    sessionUserId: string
+  },
+): InvestorCommunicationMailStatus {
+  if (!opts.viewerIsCosponsor) return row.status
+  if (row.heldForCosponsorRelease) return "not_sent"
+  const sender = String(row.senderId ?? "").trim().toLowerCase()
+  const me = opts.sessionUserId.trim().toLowerCase()
+  const sentByMe = Boolean(me && sender && sender === me)
+  if (opts.interceptNo && !sentByMe) return "not_sent"
+  if (!sentByMe && sentToCountForRow(row) === 0 && row.status === "sent") {
+    return "not_sent"
+  }
+  return row.status
 }
 
 function MailStatusBadge({ status }: { status: InvestorCommunicationMailStatus }) {
@@ -77,6 +117,9 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
   const [sendMailOpen, setSendMailOpen] = useState(false)
   const [resendMail, setResendMail] =
     useState<InvestorCommunicationMailRow | null>(null)
+  const [releaseToOwnInvestors, setReleaseToOwnInvestors] = useState(false)
+  const [viewerIsCosponsor, setViewerIsCosponsor] = useState(false)
+  const [viewerInterceptNo, setViewerInterceptNo] = useState(false)
   const [recipientsMail, setRecipientsMail] =
     useState<InvestorCommunicationMailRow | null>(null)
   const [query, setQuery] = useState("")
@@ -94,7 +137,16 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
       return
     }
     setLoading(true)
-    const mails = await fetchDealInvestorCommunicationMails(dealId)
+    const [{ mails, viewerCoSponsorEmailIntercept }, membersPayload] =
+      await Promise.all([
+        fetchDealInvestorCommunicationMails(dealId),
+        fetchDealMembers(dealId),
+      ])
+    const isCo =
+      parseViewerDealMemberRoleFromApi(membersPayload.viewerDealMemberRole) ===
+      "co_sponsor"
+    setViewerIsCosponsor(isCo)
+    setViewerInterceptNo(isCo && viewerCoSponsorEmailIntercept === "no")
     setRows(mails)
     setLoading(false)
   }, [dealId])
@@ -103,10 +155,30 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
     void loadMails()
   }, [loadMails])
 
+  const sessionUserId = getSessionUserId()
+  const displayRows = useMemo(
+    () =>
+      rows.map((row) => ({
+        ...row,
+        status: mailStatusForViewer(row, {
+          viewerIsCosponsor,
+          interceptNo: viewerInterceptNo,
+          sessionUserId,
+        }),
+        heldForCosponsorRelease:
+          row.heldForCosponsorRelease ||
+          (viewerIsCosponsor &&
+            viewerInterceptNo &&
+            String(row.senderId ?? "").trim().toLowerCase() !==
+              sessionUserId.trim().toLowerCase()),
+      })),
+    [rows, sessionUserId, viewerInterceptNo, viewerIsCosponsor],
+  )
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return rows
-    return rows.filter((row) => {
+    if (!q) return displayRows
+    return displayRows.filter((row) => {
       const hay = [
         row.subject,
         row.sendFrom,
@@ -118,7 +190,7 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
         .toLowerCase()
       return hay.includes(q)
     })
-  }, [rows, query])
+  }, [displayRows, query])
 
   const {
     selectedIds,
@@ -183,13 +255,24 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
   }, [])
 
   const handleResend = useCallback((row: InvestorCommunicationMailRow) => {
+    setReleaseToOwnInvestors(false)
     setResendMail(row)
     setSendMailOpen(true)
   }, [])
 
+  const handleSendToInvestors = useCallback(
+    (row: InvestorCommunicationMailRow) => {
+      setReleaseToOwnInvestors(true)
+      setResendMail(row)
+      setSendMailOpen(true)
+    },
+    [],
+  )
+
   const closeSendMail = useCallback(() => {
     setSendMailOpen(false)
     setResendMail(null)
+    setReleaseToOwnInvestors(false)
   }, [])
 
   const handleDelete = useCallback(
@@ -255,21 +338,26 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
         id: "sentTo",
         header: "Sent to",
         align: "center",
-        thClassName: "contacts_th_deals_count",
-        tdClassName: "contacts_td_deals_count",
-        sortValue: (row) => row.recipientCount,
+        thClassName: "deal_inv_comm_th_sent_to",
+        tdClassName: "deal_inv_comm_td_sent_to",
+        sortValue: (row) => sentToCountForRow(row),
         cell: (row) => {
-          const count = row.recipientCount
-          const label = row.sentTo?.trim() || "—"
-          if (count <= 0) return label
-          const canOpen = row.recipientUsers.length > 0
+          const count = sentToCountForRow(row)
+          const sentRecipients = row.recipientUsers.filter(
+            (r) => !r.requiresCosponsorRelease,
+          )
+          const canOpen = sentRecipients.length > 0
+          if (!canOpen) {
+            return count > 0 ? String(count) : "—"
+          }
           return (
             <button
               type="button"
               className="deal_inv_comm_sent_to_btn"
-              title={canOpen ? "View recipient list" : label}
-              disabled={!canOpen}
-              onClick={() => setRecipientsMail(row)}
+              title="View recipient list"
+              onClick={() =>
+                setRecipientsMail({ ...row, recipientUsers: sentRecipients })
+              }
             >
               <span className="deal_inv_comm_sent_to">
                 <span className="deal_inv_comm_sent_to_count">{count}</span>
@@ -284,6 +372,8 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
       {
         id: "sentAt",
         header: "Date & time",
+        thClassName: "deal_inv_comm_th_sent_at",
+        tdClassName: "deal_inv_comm_td_sent_at",
         sortValue: (row) => {
           const t = new Date(row.sentAt).getTime()
           return Number.isFinite(t) ? t : 0
@@ -311,8 +401,12 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
         cell: (row) => (
           <InvestorCommunicationRowActions
             row={row}
+            viewerIsCosponsor={viewerIsCosponsor}
             onView={handleView}
             onResend={handleResend}
+            onSendToInvestors={
+              viewerIsCosponsor ? handleSendToInvestors : undefined
+            }
             onDelete={handleDelete}
           />
         ),
@@ -323,12 +417,14 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
       filtered.length,
       handleDelete,
       handleResend,
+      handleSendToInvestors,
       handleView,
       loading,
       selectAllRef,
       selectedIds,
       toggleSelect,
       toggleSelectAllFiltered,
+      viewerIsCosponsor,
     ],
   )
 
@@ -363,13 +459,20 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
         open={sendMailOpen}
         onClose={closeSendMail}
         onSent={handleMailSent}
-        initialRecipientEmails={resendMail?.recipientUsers.map((r) => r.email)}
+        initialRecipientEmails={
+          releaseToOwnInvestors
+            ? undefined
+            : resendMail?.recipientUsers.map((r) => r.email)
+        }
+        initialTemplateId={resendMail?.templateId ?? null}
+        releaseToOwnInvestors={releaseToOwnInvestors}
       />
 
       <MailRecipientsModal
         open={recipientsMail != null}
         subject={recipientsMail?.subject ?? ""}
         recipients={recipientsMail?.recipientUsers ?? []}
+        viewerIsCosponsor={viewerIsCosponsor}
         onClose={() => setRecipientsMail(null)}
       />
 
@@ -416,6 +519,7 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
               className="um_btn_toolbar"
               onClick={() => {
                 setResendMail(null)
+                setReleaseToOwnInvestors(false)
                 setSendMailOpen(true)
               }}
             >

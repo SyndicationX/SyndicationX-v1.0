@@ -35,7 +35,8 @@ export interface OfferingStatusMeta {
 export const OFFERING_STATUS_CATALOG: Record<DealStatus, OfferingStatusMeta> = {
   draft_hidden: {
     value: "draft_hidden",
-    label: "Draft (hidden to investors)",
+    label: "Draft",
+    // label: "Draft (hidden to investors)",
     tone: "slate",
     icon: EyeOff,
     description:

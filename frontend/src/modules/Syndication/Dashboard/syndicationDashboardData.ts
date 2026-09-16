@@ -4,21 +4,14 @@ import {
   fetchDealInvestors,
   fetchDealsList,
 } from "../Deals/api/dealsApi"
+import { fetchDistributionSetup } from "../Deals/distribution-setup/api/distributionSetupApi"
 import {
   acceptedAmountForPayload,
   formatUsdDashboardAmount,
+  sumPriorDistributionsAmount,
   targetAmountNumberForDeal,
 } from "../Deals/dealsDashboardMoney"
 import type { DealListRow } from "../Deals/types/deals.types"
-
-function lpInvestorCountForDashboard(row: DealListRow, payloadLen: number): number {
-  const raw = String(row.investors ?? "").trim()
-  if (raw && raw !== "—") {
-    const n = parseInt(raw.replace(/[^\d]/g, ""), 10)
-    if (Number.isFinite(n)) return n
-  }
-  return payloadLen
-}
 
 export interface SyndicationDashboardSummary {
   dealCount: number
@@ -53,32 +46,33 @@ async function loadDashboardSummaryForDealList(
 
   const perDeal = await Promise.all(
     list.map(async (row: DealListRow) => {
-      const [payload, classes] = await Promise.all([
-        fetchDealInvestors(row.id),
+      const [payload, classes, distSetup] = await Promise.all([
+        fetchDealInvestors(row.id, { lpInvestorsOnly: true }),
         fetchDealInvestorClasses(row.id),
+        fetchDistributionSetup(row.id).catch(() => null),
       ])
-      return { row, payload, classes }
+      return { row, payload, classes, distSetup }
     }),
   )
 
   let totalInvestorRows = 0
   let sumTarget = 0
   let sumAccepted = 0
+  let sumDistributed = 0
 
-  for (const { row, payload, classes } of perDeal) {
-    totalInvestorRows += lpInvestorCountForDashboard(row, payload.investors.length)
+  for (const { row, payload, classes, distSetup } of perDeal) {
+    totalInvestorRows += payload.investors.length
     sumTarget += targetAmountNumberForDeal(row, classes)
     sumAccepted += acceptedAmountForPayload(payload)
+    sumDistributed += sumPriorDistributionsAmount(distSetup?.priorDistributions)
   }
-
-  const money = formatUsdDashboardAmount(sumAccepted)
 
   return {
     dealCount: list.length,
     totalInvestorRows,
     totalTargetDisplay: formatUsdDashboardAmount(sumTarget),
-    totalDistributionsDisplay: money,
-    totalCommittedDisplay: money,
+    totalDistributionsDisplay: formatUsdDashboardAmount(sumDistributed),
+    totalCommittedDisplay: formatUsdDashboardAmount(sumAccepted),
     contactsCount,
   }
 }
@@ -86,7 +80,8 @@ async function loadDashboardSummaryForDealList(
 /**
  * Loads aggregate metrics for the syndicating dashboard cards.
  * - Total target amount = sum of offering sizes (investor classes per deal), else deal raise target.
- * - Total distributions (and committed) = sum of accepted investment amounts across all deals.
+ * - Total distributions = sum of completed distribution cash across all deals.
+ * - Total committed = sum of accepted investment amounts across all deals.
  */
 export async function loadSyndicationDashboardSummary(): Promise<SyndicationDashboardSummary> {
   return loadDashboardSummaryForDealList(undefined)

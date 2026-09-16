@@ -25,9 +25,13 @@ import {
   computeDealAssetRowsFromClientStorage,
   DEAL_ASSETS_STORAGE_CHANGED_EVENT,
 } from "../../types/deal-asset.types"
+import { syncDealAssetsFromServer } from "../../utils/dealAssetsServerSync"
 import { DEAL_FORM_TYPE_OPTIONS } from "../../types/deals.types"
 import { SEC_TYPE_OPTIONS } from "../../constants/sec-type-options"
-import { isLpInvestorClass } from "../../utils/investorClassOverviewFields"
+import {
+  computeInvestorClassPricePerUnitFromForm,
+  isLpInvestorClass,
+} from "../../utils/investorClassOverviewFields"
 import type { DealInvestorClass } from "../../types/deal-investor-class.types"
 import {
   blurFormatMoneyInput,
@@ -40,6 +44,7 @@ import {
   isInvestmentFlowOpeningTransition,
   normalizeDealStageCanonical,
   normalizeDealStatus,
+  offeringStatusRequiresInvestorClass,
   validateOfferingStatusChange,
 } from "../../constants/deal-lifecycle"
 import {
@@ -141,7 +146,7 @@ function stateFromDetail(d: DealDetailApi): OverviewDraft {
     dealName: d.dealName?.trim() || "",
     dealType: (d.dealType ?? "").trim(),
     selectedAssetIds: [...(d.offeringOverviewAssetIds ?? [])],
-    selectedClassId: "",
+    selectedClassId: d.offeringOverviewClassId?.trim() || "",
     classOfferingSize: "",
     classMinimumInvestment: "",
     classNumberOfUnits: "",
@@ -170,7 +175,9 @@ function mergeOverviewDraftWithClasses(
   const pick =
     prev.selectedClassId && classes.some((c) => c.id === prev.selectedClassId)
       ? prev.selectedClassId
-      : classes[0]!.id
+      : base.selectedClassId && classes.some((c) => c.id === base.selectedClassId)
+        ? base.selectedClassId
+        : classes[0]!.id
   const row = classes.find((c) => c.id === pick)
   if (!row) {
     return {
@@ -191,7 +198,15 @@ function mergeOverviewDraftWithClasses(
       row.minimumInvestment ?? "",
     ),
     classNumberOfUnits: blurFormatNumberOfUnitsInput(row.numberOfUnits ?? ""),
-    classPricePerUnit: blurFormatMoneyInput(row.pricePerUnit ?? ""),
+    classPricePerUnit: isLpInvestorClass(row)
+      ? computeInvestorClassPricePerUnitFromForm({
+          offeringSize: blurFormatMoneyInput(row.offeringSize ?? ""),
+          raiseAmountDistributions: blurFormatMoneyInput(
+            row.raiseAmountDistributions ?? "",
+          ),
+          numberOfUnits: blurFormatNumberOfUnitsInput(row.numberOfUnits ?? ""),
+        })
+      : blurFormatMoneyInput(row.pricePerUnit ?? ""),
     classInvestmentType: investmentTypeFromClassRow(row),
   }
 }
@@ -204,6 +219,27 @@ function isMoneyFieldEmpty(raw: string): boolean {
   return String(raw ?? "")
     .replace(/[$,\s]/g, "")
     .trim() === ""
+}
+
+function overviewDraftPricePerUnit(draft: OverviewDraft): string {
+  return computeInvestorClassPricePerUnitFromForm({
+    offeringSize: draft.classOfferingSize,
+    raiseAmountDistributions: "",
+    numberOfUnits: draft.classNumberOfUnits,
+  })
+}
+
+function withOverviewAutoPricePerUnit(
+  patch: Partial<OverviewDraft>,
+  current: OverviewDraft,
+  isLpClass: boolean,
+): OverviewDraft {
+  const merged = { ...current, ...patch }
+  if (!isLpClass) return merged
+  return {
+    ...merged,
+    classPricePerUnit: overviewDraftPricePerUnit(merged),
+  }
 }
 
 function draftEqual(a: OverviewDraft, b: OverviewDraft): boolean {
@@ -249,7 +285,18 @@ export function OfferingOverviewSection({
   const [draftStageInfoModalOpen, setDraftStageInfoModalOpen] = useState(false)
   const [pendingOpenInvestmentStatus, setPendingOpenInvestmentStatus] =
     useState<string | null>(null)
+  const [assetsSyncTick, setAssetsSyncTick] = useState(0)
   const overviewRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void syncDealAssetsFromServer(detail.id).then(() => {
+      if (!cancelled) setAssetsSyncTick((t) => t + 1)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [detail.id])
 
   const refreshEsignTemplatesConfigured = useCallback(async () => {
     const result = await fetchDealEsignTemplates(detail.id)
@@ -308,6 +355,14 @@ export function OfferingOverviewSection({
 
   const tryApplyOfferingStatus = useCallback(
     async (next: string): Promise<boolean> => {
+      if (
+        classes.length === 0 &&
+        next !== draft.offeringStatus &&
+        offeringStatusRequiresInvestorClass(next)
+      ) {
+        toast.error("Create a class to change the deal status")
+        return false
+      }
       let configured = esignTemplatesConfigured
       if (configured === null) {
         configured = await refreshEsignTemplatesConfigured()
@@ -338,6 +393,7 @@ export function OfferingOverviewSection({
       return true
     },
     [
+      classes.length,
       detail.dealStage,
       draft.offeringStatus,
       esignTemplatesConfigured,
@@ -373,6 +429,7 @@ export function OfferingOverviewSection({
     detail.dealType,
     detail.secType,
     detail.closeDate,
+    detail.offeringOverviewClassId,
     sortedIdsKey(detail.offeringOverviewAssetIds ?? []),
     classes,
   ])
@@ -387,7 +444,7 @@ export function OfferingOverviewSection({
       computeDealAssetRowsFromClientStorage(detail).filter(
         (r) => !r.archived,
       ),
-    [detail],
+    [detail, assetsSyncTick],
   )
 
   const assetRowIdsKey = useMemo(
@@ -555,6 +612,13 @@ export function OfferingOverviewSection({
 
       if (!overviewBitsEqual) {
         if (draft.offeringStatus !== savedSnapshot.offeringStatus) {
+          if (
+            classes.length === 0 &&
+            offeringStatusRequiresInvestorClass(draft.offeringStatus)
+          ) {
+            toast.error("Create a class to change the deal status")
+            return
+          }
           const statusCheck = validateOfferingStatusChange({
             dealStage: detail.dealStage,
             previousOfferingStatus: detail.offeringStatus,
@@ -586,6 +650,7 @@ export function OfferingOverviewSection({
           dealName: name,
           dealType: draft.dealType.trim(),
           offeringOverviewAssetIds: draft.selectedAssetIds,
+          offeringOverviewClassId: draft.selectedClassId || null,
         })
         if (!res.ok) {
           const nameErr = res.fieldErrors?.deal_name
@@ -607,7 +672,9 @@ export function OfferingOverviewSection({
         form.offeringSize = draft.classOfferingSize
         form.minimumInvestment = draft.classMinimumInvestment
         form.numberOfUnits = draft.classNumberOfUnits
-        form.pricePerUnit = draft.classPricePerUnit
+        form.pricePerUnit = isLpInvestorClass(row)
+          ? overviewDraftPricePerUnit(draft)
+          : draft.classPricePerUnit
         form.advanced.investmentType = draft.classInvestmentType.trim() || "equity"
         try {
           await updateDealInvestorClass(
@@ -621,15 +688,31 @@ export function OfferingOverviewSection({
           )
           return
         }
-        try {
-          dealOut = await fetchDealById(detail.id)
-        } catch (e) {
-          toast.error(
-            e instanceof Error
-              ? e.message
-              : "Saved class fields but could not reload the deal.",
-          )
-          return
+        if (overviewBitsEqual) {
+          const classIdRes = await patchDealOfferingOverview(detail.id, {
+            offeringStatus: draft.offeringStatus,
+            offeringVisibility: draft.offeringVisibility,
+            dealName: draft.dealName.trim(),
+            dealType: draft.dealType.trim(),
+            offeringOverviewAssetIds: draft.selectedAssetIds,
+            offeringOverviewClassId: draft.selectedClassId || null,
+          })
+          if (!classIdRes.ok) {
+            toast.error(classIdRes.message)
+            return
+          }
+          dealOut = classIdRes.deal
+        } else {
+          try {
+            dealOut = await fetchDealById(detail.id)
+          } catch (e) {
+            toast.error(
+              e instanceof Error
+                ? e.message
+                : "Saved class fields but could not reload the deal.",
+            )
+            return
+          }
         }
       }
 
@@ -1164,9 +1247,19 @@ export function OfferingOverviewSection({
                             classNumberOfUnits: blurFormatNumberOfUnitsInput(
                               row.numberOfUnits ?? "",
                             ),
-                            classPricePerUnit: blurFormatMoneyInput(
-                              row.pricePerUnit ?? "",
-                            ),
+                            classPricePerUnit: isLpInvestorClass(row)
+                              ? computeInvestorClassPricePerUnitFromForm({
+                                  offeringSize: blurFormatMoneyInput(
+                                    row.offeringSize ?? "",
+                                  ),
+                                  raiseAmountDistributions: blurFormatMoneyInput(
+                                    row.raiseAmountDistributions ?? "",
+                                  ),
+                                  numberOfUnits: blurFormatNumberOfUnitsInput(
+                                    row.numberOfUnits ?? "",
+                                  ),
+                                })
+                              : blurFormatMoneyInput(row.pricePerUnit ?? ""),
                             classInvestmentType:
                               investmentTypeFromClassRow(row),
                           }
@@ -1258,16 +1351,28 @@ export function OfferingOverviewSection({
                   }
                   onChange={(e) => {
                     setClassOfferingSizeError(undefined)
-                    setDraft((d) => ({
-                      ...d,
-                      classOfferingSize: formatCurrencyUsdTypeInput(e.target.value),
-                    }))
+                    setDraft((d) =>
+                      withOverviewAutoPricePerUnit(
+                        {
+                          classOfferingSize: formatCurrencyUsdTypeInput(
+                            e.target.value,
+                          ),
+                        },
+                        d,
+                        isSelectedLpClass,
+                      ),
+                    )
                   }}
                   onBlur={(e) =>
-                    setDraft((d) => ({
-                      ...d,
-                      classOfferingSize: blurFormatMoneyInput(e.target.value),
-                    }))
+                    setDraft((d) =>
+                      withOverviewAutoPricePerUnit(
+                        {
+                          classOfferingSize: blurFormatMoneyInput(e.target.value),
+                        },
+                        d,
+                        isSelectedLpClass,
+                      ),
+                    )
                   }
                   autoComplete="off"
                   aria-label="Offering size"
@@ -1304,20 +1409,30 @@ export function OfferingOverviewSection({
                     aria-disabled={classFieldsDisabled}
                     value={draft.classNumberOfUnits}
                     onChange={(e) =>
-                      setDraft((d) => ({
-                        ...d,
-                        classNumberOfUnits: formatNumberOfUnitsTypingInput(
-                          e.target.value,
+                      setDraft((d) =>
+                        withOverviewAutoPricePerUnit(
+                          {
+                            classNumberOfUnits: formatNumberOfUnitsTypingInput(
+                              e.target.value,
+                            ),
+                          },
+                          d,
+                          isSelectedLpClass,
                         ),
-                      }))
+                      )
                     }
                     onBlur={(e) =>
-                      setDraft((d) => ({
-                        ...d,
-                        classNumberOfUnits: blurFormatNumberOfUnitsInput(
-                          e.target.value,
+                      setDraft((d) =>
+                        withOverviewAutoPricePerUnit(
+                          {
+                            classNumberOfUnits: blurFormatNumberOfUnitsInput(
+                              e.target.value,
+                            ),
+                          },
+                          d,
+                          isSelectedLpClass,
                         ),
-                      }))
+                      )
                     }
                     autoComplete="off"
                     aria-label="Number of units"
@@ -1345,22 +1460,11 @@ export function OfferingOverviewSection({
                     disabled={classFieldsDisabled}
                     aria-disabled={classFieldsDisabled}
                     value={draft.classPricePerUnit}
-                    onChange={(e) =>
-                      setDraft((d) => ({
-                        ...d,
-                        classPricePerUnit: formatCurrencyUsdTypeInput(
-                          e.target.value,
-                        ),
-                      }))
-                    }
-                    onBlur={(e) =>
-                      setDraft((d) => ({
-                        ...d,
-                        classPricePerUnit: blurFormatMoneyInput(e.target.value),
-                      }))
-                    }
+                    readOnly
+                    aria-readonly
+                    tabIndex={-1}
                     autoComplete="off"
-                    aria-label="Price per unit"
+                    aria-label="Price per unit (calculated from offering size and number of units)"
                   />
                 </div>
               </div>

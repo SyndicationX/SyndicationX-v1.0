@@ -26,11 +26,33 @@ function buildUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, "")}${normalizedPath}`;
 }
 
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function parseSignFlowError(res: Response): Promise<string> {
   try {
     const body = (await res.json()) as SignFlowErrorBody;
     const msg = body.error?.message?.trim();
     const code = body.error?.code?.trim();
+    if (res.status === 401) {
+      return (
+        msg ||
+        "SignFlow API key is invalid. Copy an API key from SignFlow → API Keys and set SIGNFLOW_API_KEY in backend/.env.local."
+      );
+    }
+    if (res.status === 429) {
+      return (
+        msg ||
+        "SignFlow is temporarily busy (rate limit). Wait a moment and try again."
+      );
+    }
+    if (res.status === 404) {
+      return (
+        msg ||
+        "SignFlow document not found. Ask your sponsor to resend the eSign request."
+      );
+    }
     if (msg && code) return `${code}: ${msg}`;
     if (msg) return msg;
   } catch {
@@ -46,6 +68,7 @@ async function parseSignFlowError(res: Response): Promise<string> {
 export async function signflowRequest<T = unknown>(
   path: string,
   options: RequestInit = {},
+  attempt = 0,
 ): Promise<T | null> {
   const { baseUrl, apiKey } = requireSignFlowConfig();
   const url = buildUrl(baseUrl, path);
@@ -64,6 +87,11 @@ export async function signflowRequest<T = unknown>(
       );
     }
     throw err;
+  }
+
+  if (response.status === 429 && attempt < 3) {
+    await sleepMs(400 * (attempt + 1));
+    return signflowRequest<T>(path, options, attempt + 1);
   }
 
   if (!response.ok) {
@@ -129,6 +157,11 @@ export type SignFlowField = {
   required?: boolean;
   profileType?: SignFlowProfileType;
   profileTypes?: SignFlowProfileType[];
+  /**
+   * Catalog key for sponsor-added investor data fields (e.g. firstName).
+   * Used to prefill from the investor profile when the label alone is ambiguous.
+   */
+  dataKey?: string;
   /** Pre-filled value for text/date fields when sending for signing. */
   value?: string;
   /** Sponsor template page (1-based) where the field was placed. */
@@ -184,7 +217,7 @@ export async function sendSignFlowDocumentForSigning(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       recipients: params.recipients,
-      fields: params.fields,
+      fields: normalizeSignFlowFieldsForApi(params.fields),
       workflowType: params.workflowType ?? DEFAULT_ESIGN_SIGNFLOW_WORKFLOW_TYPE,
       emailSubject: params.emailSubject,
       emailMessage: params.emailMessage,
@@ -227,6 +260,7 @@ export type SignFlowDocument = {
     required?: boolean;
     profileType?: string;
     profileTypes?: string[];
+    dataKey?: string;
     value?: string;
     templatePage?: number;
     pageHash?: string;
@@ -271,6 +305,7 @@ export async function createSignFlowEmbedSigningSession(params: {
   documentId: string;
   recipientEmail?: string;
   recipientId?: string;
+  profileType?: string;
 }): Promise<{ token: string; signUrl: string }> {
   const documentId = params.documentId.trim();
   if (!documentId) {
@@ -280,8 +315,10 @@ export async function createSignFlowEmbedSigningSession(params: {
   const body: Record<string, string> = {};
   const email = params.recipientEmail?.trim().toLowerCase();
   const recipientId = params.recipientId?.trim();
+  const profileType = params.profileType?.trim();
   if (email) body.recipientEmail = email;
   if (recipientId) body.recipientId = recipientId;
+  if (profileType) body.profileType = profileType;
   if (!email && !recipientId) {
     throw new Error("recipientEmail or recipientId is required");
   }
@@ -300,9 +337,13 @@ export async function createSignFlowEmbedSigningSession(params: {
     throw new Error("SignFlow returned an incomplete embed signing session");
   }
 
+  const cfg = requireSignFlowConfig();
+  const baseSignUrl =
+    result?.signUrl?.trim() || buildSignFlowSignerEmbedUrl(token);
+
   return {
     token,
-    signUrl: result?.signUrl?.trim() || buildSignFlowSignerEmbedUrl(token),
+    signUrl: enrichSignFlowEmbedSignUrl(baseSignUrl, cfg.embedApiKey),
   };
 }
 
@@ -311,8 +352,68 @@ function isSignFlowWaitingForPriorSignerError(err: unknown): boolean {
   return (
     message.includes("WAITING_FOR_PRIOR_SIGNER") ||
     message.toLowerCase().includes("investor must sign") ||
-    message.toLowerCase().includes("must sign first")
+    message.toLowerCase().includes("must sign first") ||
+    message.toLowerCase().includes("prior signer")
   );
+}
+
+export function mapSignFlowEmbedSessionError(
+  err: unknown,
+  baseUrl?: string | null,
+): {
+  code: "not_configured" | "not_pending" | "waiting_for_prior_signer";
+  message: string;
+  waitingFor?: "sponsor" | "investor" | "prior_investor";
+} {
+  const message =
+    err instanceof Error ? err.message.trim() : String(err ?? "").trim();
+
+  if (isSignFlowWaitingForPriorSignerError(err)) {
+    const waitingFor: "sponsor" | "investor" | "prior_investor" =
+      message.toLowerCase().includes("sponsor") ? "sponsor" : "prior_investor";
+    return {
+      code: "waiting_for_prior_signer",
+      message:
+        message ||
+        "Your documents are not ready for signature yet. We will notify you when it is your turn to sign.",
+      waitingFor,
+    };
+  }
+
+  if (isEsignProviderUnreachableError(err)) {
+    const url = baseUrl?.trim() || "SIGNFLOW_API_BASE_URL";
+    return {
+      code: "not_configured",
+      message: `SignFlow API is not reachable at ${url}. Start the SignFlow backend on port 5007 and the SignFlow UI on port 5177, then try again.`,
+    };
+  }
+
+  if (
+    message.includes("429") ||
+    message.toLowerCase().includes("rate limit") ||
+    message.toLowerCase().includes("temporarily busy")
+  ) {
+    return {
+      code: "not_configured",
+      message:
+        "SignFlow is temporarily busy. Wait a few seconds and click Try again.",
+    };
+  }
+
+  if (message) {
+    return {
+      code: "not_pending",
+      message: message.includes("SignFlow")
+        ? message
+        : `SignFlow signing error: ${message}`,
+    };
+  }
+
+  return {
+    code: "not_pending",
+    message:
+      "Could not open SignFlow signing. Confirm SignFlow is running on port 5007 and the SignFlow UI on port 5177, then try again.",
+  };
 }
 
 /**
@@ -577,6 +678,26 @@ export function buildSignFlowSignerEmbedUrl(signingToken: string): string {
   return `${appBaseUrl}/embed/sign/${encodeURIComponent(signingToken.trim())}`;
 }
 
+/** Adds embed apiKey to SignFlow signer iframe URLs when configured. */
+export function enrichSignFlowEmbedSignUrl(
+  signUrl: string,
+  embedApiKey?: string | null,
+): string {
+  const raw = signUrl.trim();
+  if (!raw) return raw;
+  const key = embedApiKey?.trim();
+  if (!key) return raw;
+  try {
+    const u = new URL(raw);
+    if (!u.searchParams.has("apiKey")) {
+      u.searchParams.set("apiKey", key);
+    }
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
 /** Shifts page numbers when answer pages are prepended; x/y/width/height stay as placed. */
 export function shiftSignFlowFieldsPageOffset(
   fields: SignFlowField[],
@@ -593,6 +714,91 @@ export function shiftSignFlowFieldsPageOffset(
 function signFlowFieldCoordinate(value: unknown, fallback: number): number {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/** SignFlow signing API expects `date_signed` (embed builder may emit `date`). */
+export function normalizeSignFlowFieldTypeForApi(type: string): string {
+  const t = String(type ?? "").trim().toLowerCase();
+  if (t === "date") return "date_signed";
+  return String(type ?? "text").trim() || "text";
+}
+
+export function normalizeSignFlowFieldsForApi(
+  fields: SignFlowField[],
+): SignFlowField[] {
+  return fields.map((field) => ({
+    ...field,
+    type: normalizeSignFlowFieldTypeForApi(String(field.type ?? "text")),
+  }));
+}
+
+/**
+ * Resolve template fields for send/sign.
+ * Live SignFlow is the base (respects sponsor deletes). SynX snapshot/bindings
+ * only fill in sponsor-added catalog fields that are missing from live.
+ */
+export function resolveSignFlowTemplateDocumentFields(
+  file: {
+    signflowStatus?: string;
+    signflowTemplateFields?: SignFlowField[];
+    signflowInvestorDataFieldBindings?: Array<{
+      dataKey?: string;
+      esignLabel?: string;
+      page?: number;
+      x?: number;
+      y?: number;
+    }>;
+  },
+  templateDoc: SignFlowDocument,
+): SignFlowDocument {
+  const stored = file.signflowTemplateFields ?? [];
+  const live = (templateDoc.fields ?? []) as SignFlowField[];
+
+  if (!live.length && stored.length) {
+    return { ...templateDoc, fields: stored };
+  }
+  if (!stored.length) return templateDoc;
+
+  const bindingKeys = new Set(
+    (file.signflowInvestorDataFieldBindings ?? [])
+      .map((b) => String(b.dataKey ?? "").trim())
+      .filter(Boolean),
+  );
+  if (!bindingKeys.size) return templateDoc;
+
+  const liveHasCatalogKey = (dataKey: string) =>
+    live.some((field) => String(field.dataKey ?? "").trim() === dataKey);
+
+  const liveHasPlacement = (field: SignFlowField) =>
+    live.some((existing) => {
+      const pageA = Math.max(1, Math.floor(Number(existing.page) || 1));
+      const pageB = Math.max(
+        1,
+        Math.floor(Number(field.templatePage ?? field.page) || 1),
+      );
+      if (pageA !== pageB) return false;
+      return (
+        Math.abs(Number(existing.x) - Number(field.x)) < 1.5 &&
+        Math.abs(Number(existing.y) - Number(field.y)) < 1.5 &&
+        String(existing.label ?? "").trim().toLowerCase() ===
+          String(field.label ?? "").trim().toLowerCase()
+      );
+    });
+
+  const missingCatalogFields = stored.filter((field) => {
+    const dataKey = String(field.dataKey ?? "").trim();
+    if (!dataKey || !bindingKeys.has(dataKey)) return false;
+    if (liveHasCatalogKey(dataKey)) return false;
+    if (liveHasPlacement(field)) return false;
+    return true;
+  });
+
+  if (!missingCatalogFields.length) return templateDoc;
+
+  return {
+    ...templateDoc,
+    fields: [...live, ...missingCatalogFields],
+  };
 }
 
 export function findSignFlowTemplateRecipient(
@@ -707,17 +913,10 @@ export function signFlowInvestorPhaseComplete(doc: SignFlowDocument): boolean {
   );
 }
 
-/** True when sequential workflow assigns sponsor a lower order than every investor. */
+/** True when recipient order assigns sponsor a lower order than every investor. */
 export function signFlowSponsorSignsBeforeInvestor(
   doc: SignFlowDocument,
 ): boolean {
-  const workflowType = String(
-    doc.workflowType ?? DEFAULT_ESIGN_SIGNFLOW_WORKFLOW_TYPE,
-  )
-    .trim()
-    .toLowerCase();
-  if (workflowType !== "sequential") return false;
-
   const investors = (doc.recipients ?? []).filter((r) =>
     matchSignFlowPartyRole(r, "investor"),
   );
@@ -733,18 +932,39 @@ export function signFlowSponsorSignsBeforeInvestor(
   return sponsorOrder < minInvestorOrder;
 }
 
-/** True when sponsor must wait for investor signature (sequential, investor-first). */
-export function signFlowCounterSignRequiresInvestorSigned(
+/** True when recipient order assigns investor before sponsor on this document. */
+export function signFlowInvestorSignsBeforeSponsor(
   doc: SignFlowDocument,
 ): boolean {
-  if (signFlowSponsorSignsBeforeInvestor(doc)) return false;
+  const investors = (doc.recipients ?? []).filter((r) =>
+    matchSignFlowPartyRole(r, "investor"),
+  );
+  const sponsor = (doc.recipients ?? []).find((r) =>
+    matchSignFlowPartyRole(r, "sponsor"),
+  );
+  if (investors.length === 0 || !sponsor) return false;
+
+  const sponsorOrder = Number(sponsor.order) || 2;
+  const minInvestorOrder = Math.min(
+    ...investors.map((r) => Number(r.order) || 1),
+  );
+  if (minInvestorOrder < sponsorOrder) return true;
+
   const workflowType = String(
     doc.workflowType ?? DEFAULT_ESIGN_SIGNFLOW_WORKFLOW_TYPE,
   )
     .trim()
     .toLowerCase();
-  if (workflowType !== "sequential") return false;
-  return true;
+  // Legacy parallel sends used order 1 for both parties — still investor-first.
+  return workflowType === "parallel" && minInvestorOrder === sponsorOrder;
+}
+
+/** True when sponsor must wait for investor signature (investor-first by order). */
+export function signFlowCounterSignRequiresInvestorSigned(
+  doc: SignFlowDocument,
+): boolean {
+  if (signFlowSponsorSignsBeforeInvestor(doc)) return false;
+  return signFlowInvestorSignsBeforeSponsor(doc);
 }
 
 export function signFlowTemplateHasSponsorFields(
@@ -778,9 +998,13 @@ export function mapSignFlowTemplateFieldsForInvestor(
       "recipient_a",
     ]) ?? template.recipients?.[0];
   const sourceRecipientId = investorTemplateRecipient?.id?.trim() ?? "";
+  const recipients = template.recipients ?? [];
 
   return (template.fields ?? [])
     .filter((f) => {
+      const party = signFlowFieldRecipientParty(f, recipients);
+      if (party === "sponsor") return false;
+      if (party === "investor") return true;
       const rid = String(f.recipientId ?? "").trim();
       if (rid && sourceRecipientId && rid !== sourceRecipientId) {
         return false;
@@ -804,7 +1028,7 @@ export function mapSignFlowTemplateFieldsForInvestor(
         ),
       );
       return {
-        type: String(f.type ?? "signature"),
+        type: normalizeSignFlowFieldTypeForApi(String(f.type ?? "signature")),
         label: String(f.label ?? "Field"),
         x: signFlowFieldCoordinate(f.x, 10),
         y: signFlowFieldCoordinate(f.y, 10),
@@ -813,8 +1037,11 @@ export function mapSignFlowTemplateFieldsForInvestor(
         page: templatePage,
         templatePage,
         ...(f.pageHash?.trim() ? { pageHash: f.pageHash.trim() } : {}),
+        ...(f.dataKey?.trim() ? { dataKey: f.dataKey.trim() } : {}),
+        ...(f.value?.trim() ? { value: f.value.trim() } : {}),
         recipientId: investorRecipientId,
-        required: f.required !== false,
+        // Sponsor-added catalog fields (dataKey) always count for the investor.
+        required: f.dataKey?.trim() ? true : f.required !== false,
         ...(profileTypes ? { profileTypes } : {}),
         ...(profileType ? { profileType } : {}),
       };
@@ -956,21 +1183,12 @@ function matchSignFlowPartyRole(
   );
 }
 
-/** Blocks embedded signing when sequential workflow has not reached this recipient's turn. */
+/** Blocks embedded signing when recipient order has not reached this party's turn. */
 export function evaluateSignFlowRecipientSignAccess(
   doc: SignFlowDocument,
   recipientEmail: string,
   opts?: { investorHasCompletedSignature?: boolean },
 ): SignFlowRecipientSignAccess {
-  const workflowType = String(
-    doc.workflowType ?? DEFAULT_ESIGN_SIGNFLOW_WORKFLOW_TYPE,
-  )
-    .trim()
-    .toLowerCase();
-  if (workflowType !== "sequential") {
-    return { allowed: true };
-  }
-
   const email = recipientEmail.trim().toLowerCase();
   const recipients = doc.recipients ?? [];
   if (!email || recipients.length === 0) {
@@ -1076,6 +1294,11 @@ export async function downloadSignFlowSignedPdfBuffer(
 export function isSignFlowNotAllSignedError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? "");
   return message.includes("NOT_ALL_SIGNED");
+}
+
+export function isSignFlowInvestorNotSignedError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return message.includes("INVESTOR_NOT_SIGNED");
 }
 
 function signFlowRecipientSigningStatusSigned(recipient: {
@@ -1190,7 +1413,10 @@ export type SignFlowDocumentSummary = {
   isComplete: boolean;
   isDeclined: boolean;
   lastViewedAt: string | null;
+  /** Latest signature from any signer (sponsor or investor). */
   lastSignedAt: string | null;
+  /** Latest signature from an investor-role signer only. */
+  investorLastSignedAt: string | null;
   signers: Array<{
     recipientId: string | null;
     signerName: string | null;
@@ -1268,6 +1494,7 @@ export async function getSignFlowDocumentSummary(
     isDeclined: status === "declined",
     lastViewedAt: null,
     lastSignedAt,
+    investorLastSignedAt: investorSignedAt,
     signers,
   };
 }

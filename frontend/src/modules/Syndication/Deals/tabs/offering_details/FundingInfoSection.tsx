@@ -1,5 +1,6 @@
 import { Loader2, RotateCcw, Save } from "lucide-react"
-import { useCallback, useEffect, useId, useMemo, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
+import { focusFirstFormErrorAfterUpdate } from "@/common/utils/scrollToFirstFormError"
 import { toast } from "../../../../../common/components/Toast"
 import {
   patchDealFundingInstructions,
@@ -22,6 +23,12 @@ import {
   serializeFundingInstructions,
   type FundingInstructionsState,
 } from "./fundingInstructions"
+import {
+  fundingInstructionsFieldErrorsActive,
+  fundingInstructionsFieldErrorsFromApiMessage,
+  validateFundingInstructionsForm,
+  type FundingInstructionsFieldErrors,
+} from "./fundingInstructionsValidation"
 
 type FundingToggleProps = {
   checked: boolean
@@ -60,6 +67,7 @@ export function FundingInfoSection({
   onSaved,
 }: FundingInfoSectionProps) {
   const baseId = useId()
+  const rootRef = useRef<HTMLDivElement>(null)
   const [form, setForm] = useState<FundingInstructionsState>(() =>
     fundingInstructionsFromStoredJson(initialStoredJson),
   )
@@ -67,11 +75,15 @@ export function FundingInfoSection({
     () => cloneFundingInstructions(fundingInstructionsFromStoredJson(initialStoredJson)),
   )
   const [saving, setSaving] = useState(false)
+  const [fieldErrors, setFieldErrors] = useState<FundingInstructionsFieldErrors>(
+    {},
+  )
 
   useEffect(() => {
     const next = fundingInstructionsFromStoredJson(initialStoredJson)
     setForm(next)
     setSavedSnapshot(cloneFundingInstructions(next))
+    setFieldErrors({})
   }, [dealId, initialStoredJson])
 
   const isDirty = useMemo(
@@ -82,12 +94,25 @@ export function FundingInfoSection({
   const patchForm = useCallback(
     (partial: Partial<FundingInstructionsState>) => {
       setForm((prev) => ({ ...prev, ...partial }))
+      if ("achRoutingNumber" in partial) {
+        setFieldErrors((e) => ({ ...e, achRoutingNumber: undefined }))
+      }
+      if ("routingNumber" in partial) {
+        setFieldErrors((e) => ({ ...e, wireRoutingNumber: undefined }))
+      }
     },
     [],
   )
 
   const handleSave = useCallback(async () => {
     if (saving) return
+    const validationErrors = validateFundingInstructionsForm(form)
+    if (fundingInstructionsFieldErrorsActive(validationErrors)) {
+      setFieldErrors(validationErrors)
+      focusFirstFormErrorAfterUpdate({ container: rootRef.current })
+      return
+    }
+    setFieldErrors({})
     setSaving(true)
     try {
       const result = await patchDealFundingInstructions(
@@ -95,7 +120,15 @@ export function FundingInfoSection({
         serializeFundingInstructions(form),
       )
       if (!result.ok) {
-        toast.error(result.message)
+        const apiFieldErrors = fundingInstructionsFieldErrorsFromApiMessage(
+          result.message,
+        )
+        if (fundingInstructionsFieldErrorsActive(apiFieldErrors)) {
+          setFieldErrors(apiFieldErrors)
+          focusFirstFormErrorAfterUpdate({ container: rootRef.current })
+        } else {
+          toast.error(result.message)
+        }
         return
       }
       onSaved?.(result.deal)
@@ -144,6 +177,7 @@ export function FundingInfoSection({
 
   const handleReset = useCallback(() => {
     setForm(cloneFundingInstructions(savedSnapshot))
+    setFieldErrors({})
   }, [savedSnapshot])
 
   const achTitleId = `${baseId}-ach-title`
@@ -152,7 +186,7 @@ export function FundingInfoSection({
   const feeTitleId = `${baseId}-fee-title`
 
   return (
-    <div className="deal_fi_root">
+    <div ref={rootRef} className="deal_fi_root">
       <div className="deal_fi_stack">
         {/* ACH payments */}
         <section className="deal_fi_card" aria-labelledby={achTitleId}>
@@ -192,6 +226,7 @@ export function FundingInfoSection({
                     onRoutingNumberChange={(achRoutingNumber) =>
                       patchForm({ achRoutingNumber })
                     }
+                    routingNumberError={fieldErrors.achRoutingNumber}
                     accountNumber={form.achAccountNumber}
                     onAccountNumberChange={(achAccountNumber) =>
                       patchForm({ achAccountNumber })
@@ -260,6 +295,7 @@ export function FundingInfoSection({
                     onRoutingNumberChange={(routingNumber) =>
                       patchForm({ routingNumber })
                     }
+                    routingNumberError={fieldErrors.wireRoutingNumber}
                     accountNumber={form.accountNumber}
                     onAccountNumberChange={(accountNumber) =>
                       patchForm({ accountNumber })

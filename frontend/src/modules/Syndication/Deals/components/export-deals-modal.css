@@ -203,6 +203,11 @@
   margin-top: auto;
 }
 
+.deals_export_modal_footer .um_btn_primary,
+.deals_export_modal_footer .um_btn_secondary {
+  font-size: 0.875em;
+}
+
 .deals_export_modal_footer_trailing {
   display: flex;
   flex-wrap: wrap;
@@ -265,10 +270,12 @@
 }
 
 :root[data-theme="dark"] .deals_export_modal_btn_primary {
-  background: #f9fafb;
-  color: #111827;
+  background: var(--ui-button-background-add, var(--sidebar-bg-color));
+  color: var(--ui-button-text, var(--sidebar-active-text));
+  border: 1px solid var(--ui-button-border, var(--sidebar-active-text));
 }
 
 :root[data-theme="dark"] .deals_export_modal_btn_primary:hover:not(:disabled) {
-  background: #e5e7eb;
+  background: var(--ui-button-hover);
+  color: var(--ui-button-text, var(--sidebar-active-text));
 }

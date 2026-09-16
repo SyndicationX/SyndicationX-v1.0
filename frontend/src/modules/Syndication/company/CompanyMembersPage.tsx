@@ -12,6 +12,7 @@ import {
   Plus,
   Phone,
   RefreshCw,
+  Search,
   Send,
   Shield,
   Upload,
@@ -37,6 +38,10 @@ import {
 import { ViewReadonlyField } from "../../../common/components/ViewReadonlyField"
 import { toast } from "../../../common/components/Toast"
 import {
+  displayEmail,
+  isDisplayableEmail,
+} from "../../../common/utils/displayEmail"
+import {
   loadEmailTemplates,
   type EmailTemplateRow,
 } from "../contacts/emailTemplatesStorage"
@@ -60,19 +65,27 @@ import {
   PLATFORM_INVITE_ROLE_OPTIONS,
   accountInviteIsExpired,
   accountStatusForUi,
+  accountStatusLabel,
   formatMemberUsername,
+  formatOrganizationsCsvCell,
+  formatRoleCsvCell,
   formatValue,
+  isOrgStaffPortalRole,
+  memberRoleDisplayName,
   memberUserCellPrimaryLabel,
   rowDisplayName,
   memberInvitePending,
   memberRowIsCurrentUser,
   memberRowIsInactive,
+  membershipsSortValue,
   organizationsSortValue,
   normalizeMemberStatusForEdit,
+  primaryRoleLabelFromRow,
   resolveOrganizationDisplayScope,
   roleSortValue,
   syncSessionUserDetailsById,
   userStatusForUi,
+  type OrganizationDisplayScope,
 } from "../usermanagement/memberAdminShared"
 import { MemberRoleBadge } from "../usermanagement/MemberRoleBadge"
 import { UserOrganizationsCell } from "../usermanagement/UserOrganizationsCell"
@@ -113,6 +126,36 @@ function rowStableId(row: Record<string, unknown>, index: number): string {
 function rowSelectionId(row: Record<string, unknown>): string {
   const id = row.id ?? row.user_id
   return id != null ? String(id).trim() : ""
+}
+
+function memberRowMatchesSearch(
+  row: Record<string, unknown>,
+  query: string,
+  organizationScope?: OrganizationDisplayScope | null,
+): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  const hay = [
+    rowDisplayName(row),
+    formatValue(row.email),
+    formatMemberUsername(row.username),
+    formatValue(row.companyName),
+    formatValue(row.company_name),
+    formatUsPhoneStoredForUi(row.phone),
+    formatValue(row.role),
+    memberRoleDisplayName(row.role),
+    primaryRoleLabelFromRow(row),
+    membershipsSortValue(row),
+    organizationsSortValue(row, organizationScope),
+    formatRoleCsvCell(row),
+    formatOrganizationsCsvCell(row, organizationScope),
+    formatValue(row.userStatus),
+    userStatusForUi(row).label,
+    accountStatusLabel(row),
+  ]
+    .join(" ")
+    .toLowerCase()
+  return hay.includes(q)
 }
 
 function StatusWithDot({
@@ -161,6 +204,7 @@ export default function CompanyMembersPage() {
   const [error, setError] = useState("")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
+  const [searchQuery, setSearchQuery] = useState("")
 
   const [actionMenuRowId, setActionMenuRowId] = useState<string | null>(null)
   const [actionMenuRow, setActionMenuRow] = useState<Record<
@@ -305,7 +349,10 @@ export default function CompanyMembersPage() {
       setMembers(
         list.filter(
           (x): x is Record<string, unknown> =>
-            x !== null && typeof x === "object" && !Array.isArray(x),
+            x !== null &&
+            typeof x === "object" &&
+            !Array.isArray(x) &&
+            isOrgStaffPortalRole(x.role),
         ),
       )
     } catch {
@@ -324,6 +371,19 @@ export default function CompanyMembersPage() {
   }, [companyId, navigate, load])
 
   const titleCompany = companyDisplayName?.trim() || "Company"
+
+  const organizationDisplayScope = useMemo(
+    () => resolveOrganizationDisplayScope(companyId, companyDisplayName),
+    [companyId, companyDisplayName],
+  )
+
+  const filteredMembers = useMemo(
+    () =>
+      members.filter((row) =>
+        memberRowMatchesSearch(row, searchQuery, organizationDisplayScope),
+      ),
+    [members, searchQuery, organizationDisplayScope],
+  )
 
   const sendInviteForEmail = useCallback(
     async (
@@ -603,17 +663,22 @@ export default function CompanyMembersPage() {
     () => ({
       page,
       pageSize,
-      totalItems: members.length,
+      totalItems: filteredMembers.length,
       onPageChange: setPage,
       onPageSizeChange: setPageSize,
       ariaLabel: `Members for ${titleCompany} table pagination`,
     }),
-    [page, pageSize, members.length, titleCompany],
+    [page, pageSize, filteredMembers.length, titleCompany],
+  )
+
+  const allMemberIds = useMemo(
+    () => members.map((r) => rowSelectionId(r)).filter(Boolean),
+    [members],
   )
 
   const selectableMemberIds = useMemo(
-    () => members.map((r) => rowSelectionId(r)).filter(Boolean),
-    [members],
+    () => filteredMembers.map((r) => rowSelectionId(r)).filter(Boolean),
+    [filteredMembers],
   )
 
   const allMembersSelected = useMemo(
@@ -638,7 +703,7 @@ export default function CompanyMembersPage() {
   useEffect(() => {
     setSelectedMemberIds((prev) => {
       if (prev.size === 0) return prev
-      const valid = new Set(selectableMemberIds)
+      const valid = new Set(allMemberIds)
       const next = new Set<string>()
       for (const id of prev) {
         if (valid.has(id)) next.add(id)
@@ -646,7 +711,7 @@ export default function CompanyMembersPage() {
       if (next.size === prev.size) return prev
       return next
     })
-  }, [selectableMemberIds])
+  }, [allMemberIds])
 
   const selectedMemberRows = useMemo(
     () => members.filter((r) => selectedMemberIds.has(rowSelectionId(r))),
@@ -796,6 +861,7 @@ export default function CompanyMembersPage() {
         ccRaw: sendMailCc,
         templateSubject: template.subject,
         templateBodyHtml: template.body,
+        templateAttachment: template.attachment,
         senderEmail,
       })
       if (!result.ok) {
@@ -852,11 +918,6 @@ export default function CompanyMembersPage() {
     closeSendMailModal,
   ])
 
-  const organizationDisplayScope = useMemo(
-    () => resolveOrganizationDisplayScope(companyId, companyDisplayName),
-    [companyId, companyDisplayName],
-  )
-
   const columns: DataTableColumn<Record<string, unknown>>[] = useMemo(
     () => [
       {
@@ -901,13 +962,13 @@ export default function CompanyMembersPage() {
         colWidth: "16rem",
         sortValue: (row) => {
           const name = memberUserCellPrimaryLabel(row)
-          const e = formatValue(row.email)
+          const e = displayEmail(row.email)
           return `${name} ${e}`.toLowerCase()
         },
         tdClassName: "um_td_user",
         cell: (row) => {
           const rawEmail = String(row.email ?? "").trim()
-          const emailShown = formatValue(row.email)
+          const emailShown = displayEmail(row.email)
           const displayName = memberUserCellPrimaryLabel(row)
           const namePlaceholder =
             displayName === "—" ? " um_user_meta_username--placeholder" : ""
@@ -924,7 +985,7 @@ export default function CompanyMembersPage() {
                 >
                   {displayName}
                 </span>
-                {rawEmail.includes("@") ? (
+                {isDisplayableEmail(rawEmail) ? (
                   <a
                     href={`mailto:${encodeURIComponent(rawEmail)}`}
                     className="um_user_meta_email um_user_meta_email_link"
@@ -932,7 +993,9 @@ export default function CompanyMembersPage() {
                     {rawEmail}
                   </a>
                 ) : (
-                  <span className="um_user_meta_email">{emailShown}</span>
+                  <span className="um_user_meta_email um_status_muted">
+                    {emailShown}
+                  </span>
                 )}
               </div>
             </div>
@@ -1050,12 +1113,12 @@ export default function CompanyMembersPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [members.length, companyId])
+  }, [members.length, companyId, searchQuery])
 
   useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(members.length / pageSize))
+    const totalPages = Math.max(1, Math.ceil(filteredMembers.length / pageSize))
     if (page > totalPages) setPage(totalPages)
-  }, [members.length, page, pageSize])
+  }, [filteredMembers.length, page, pageSize])
 
   return (
     <div
@@ -1114,6 +1177,18 @@ export default function CompanyMembersPage() {
               Refresh
             </button>
           </div>
+          <div className="um_search_wrap">
+            <Search className="um_search_icon" size={18} aria-hidden />
+            <input
+              type="search"
+              className="um_search_input"
+              placeholder="Search members…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label={`Search members for ${titleCompany}`}
+              disabled={loading}
+            />
+          </div>
         </div>
 
         {error ? (
@@ -1139,16 +1214,20 @@ export default function CompanyMembersPage() {
               membersTableClassName="um_table_members deal_inv_table"
               initialSort={{ columnId: "user", direction: "asc" }}
               columns={columns}
-              rows={loading ? [] : members}
+              rows={loading ? [] : filteredMembers}
               getRowKey={(row, i) => rowStableId(row, i)}
               emptyLabel={
                 loading
                   ? "Loading members…"
-                  : "No members in this company."
+                  : members.length === 0
+                    ? "No members in this company."
+                    : searchQuery.trim()
+                      ? "No members match your search."
+                      : "No members in this company."
               }
               emptyStateRole={loading ? "status" : undefined}
               pagination={
-                !loading && members.length > 0 ? pagination : undefined
+                !loading && filteredMembers.length > 0 ? pagination : undefined
               }
             />
           </div>
@@ -1338,7 +1417,7 @@ export default function CompanyMembersPage() {
               <ViewReadonlyField
                 Icon={Mail}
                 label="Email"
-                value={formatValue(viewRow.email)}
+                value={displayEmail(viewRow.email)}
               />
               <ViewReadonlyField
                 Icon={User}
@@ -1698,7 +1777,7 @@ export default function CompanyMembersPage() {
               <ViewReadonlyField
                 Icon={Mail}
                 label="Email"
-                value={formatValue(editRow.email)}
+                value={displayEmail(editRow.email)}
               />
             </div>
             <form onSubmit={submitEditMember}>
@@ -1838,7 +1917,7 @@ export default function CompanyMembersPage() {
               <ViewReadonlyField
                 Icon={Mail}
                 label="Email"
-                value={formatValue(suspendRow.email)}
+                value={displayEmail(suspendRow.email)}
               />
             </div>
             <form onSubmit={submitSuspendMember}>

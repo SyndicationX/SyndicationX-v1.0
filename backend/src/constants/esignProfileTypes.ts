@@ -16,6 +16,14 @@ export type SignFlowProfileType =
   | "joint_tenancy"
   | "llc_corp_partnership_trust_solo_checkbook_ira";
 
+/** Every SignFlow profile type a unified template can target. */
+export const ALL_SIGNFLOW_PROFILE_TYPES: SignFlowProfileType[] = [
+  "individual",
+  "custodian_ira_401k",
+  "joint_tenancy",
+  "llc_corp_partnership_trust_solo_checkbook_ira",
+];
+
 export function portalProfileIdToSignFlowProfileType(
   profileId: string | null | undefined,
 ): SignFlowProfileType | null {

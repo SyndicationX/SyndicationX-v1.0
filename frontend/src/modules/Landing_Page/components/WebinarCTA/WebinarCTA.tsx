@@ -30,7 +30,7 @@ export function WebinarCTA() {
                 <CalendarPlus size={18} strokeWidth={2} aria-hidden />
                 {webinarCta.buttonLabel}
               </button>
-              <a href="mailto:sales@syndicationx.com" className="sx-btn-outline">
+              <a href="mailto:support@syndicationx.com" className="sx-btn-outline">
                 <Mail size={18} strokeWidth={2} aria-hidden />
                 Talk to sales
               </a>

@@ -35,10 +35,7 @@ import {
   readInvestorVisibilityForOfferingPreview,
 } from "./utils/offeringPreviewInvestorVisibility"
 import { buildOfferingPreviewAssetBlocks } from "./utils/offeringPreviewAssets"
-import {
-  galleryUrlsReferToSameAsset,
-  orderedGalleryUrlsForOffering,
-} from "./utils/offeringGalleryUrls"
+import { orderedGalleryUrlsForOffering } from "./utils/offeringGalleryUrls"
 import type { DealStatusRules } from "./constants/deal-lifecycle"
 import { getDealStatusRules } from "./constants/deal-lifecycle"
 import {
@@ -55,6 +52,7 @@ import {
   OfferingOverviewLocationMap,
 } from "./tabs/offering_details/OfferingOverviewLocationMap"
 import { DealOfferingGalleryImage } from "./components/DealOfferingGalleryImage"
+import { DealCardMediaCarousel } from "@/common/components/deal-card/DealCardMediaCarousel"
 import { DealOfferingPreviewBentoLayout } from "./components/DealOfferingPreviewBentoLayout"
 import { DealOfferingPreviewBentoAdaptiveGrid } from "./components/DealOfferingPreviewBentoAdaptiveGrid"
 import { OfferingPreviewAssetBentoCard } from "./components/OfferingPreviewAssetBentoCard"
@@ -65,6 +63,7 @@ import "./tabs/deal_members/add-investment/add_deal_modal.css"
 import "./deal-offering-portfolio.css"
 import "./deal-offering-details.css"
 import "./deals-list.css"
+import "@/common/components/deal-card/deal-card.css"
 
 function safeDownloadFilename(name: string): string {
   const base = name.trim() || "document"
@@ -101,6 +100,8 @@ export type DealOfferingPreviewInnerProps = {
    * When false, the same sources as Offering details → Gallery are used (local asset previews in this browser).
    */
   galleryUsesPersistedSourcesOnly?: boolean
+  /** Encrypted `?preview=` token for anonymous `/uploads/` gallery access. */
+  publicPreviewUploadToken?: string | null
   /** When false, the bento Documents block is omitted (e.g. sectioned list shown elsewhere). */
   showDocumentsSection?: boolean
   /** Replaces the default bento Documents block (e.g. LP investing sectioned list). */
@@ -123,6 +124,7 @@ export function DealOfferingPreviewInner({
   publicOfferingSignInState,
   onPersistSharedOfferingAuthIntent,
   galleryUsesPersistedSourcesOnly = false,
+  publicPreviewUploadToken = null,
   offeringStatusRules: offeringStatusRulesProp,
   showDocumentsSection = true,
   documentsSection,
@@ -141,15 +143,18 @@ export function DealOfferingPreviewInner({
     setGalleryOpen(false)
   }, [detail.id])
 
-  /* `overflow-x: hidden` on html/body and `.app_main_section` breaks sidebar `position: sticky` */
+  /* `overflow-x: hidden` on html/body and scroll parents breaks sidebar `position: sticky` */
   useEffect(() => {
     const html = document.documentElement
     const appMain = document.querySelector(".app_main_section")
+    const appContent = document.querySelector(".app_main_content")
     html.classList.add("deal_offer_pf_sticky_scroll")
     appMain?.classList.add("deal_offer_pf_sticky_scroll")
+    appContent?.classList.add("deal_offer_pf_sticky_scroll")
     return () => {
       html.classList.remove("deal_offer_pf_sticky_scroll")
       appMain?.classList.remove("deal_offer_pf_sticky_scroll")
+      appContent?.classList.remove("deal_offer_pf_sticky_scroll")
     }
   }, [])
 
@@ -221,8 +226,14 @@ export function DealOfferingPreviewInner({
     () =>
       orderedGalleryUrlsForOffering(detail, {
         persistedOnly: galleryUsesPersistedSourcesOnly,
+        previewToken: isPublicOfferingRoute ? publicPreviewUploadToken : null,
       }),
-    [detail, galleryUsesPersistedSourcesOnly],
+    [
+      detail,
+      galleryUsesPersistedSourcesOnly,
+      isPublicOfferingRoute,
+      publicPreviewUploadToken,
+    ],
   )
   const investorPreviewVisibility = useMemo(
     () =>
@@ -248,8 +259,8 @@ export function DealOfferingPreviewInner({
     investorPreviewVisibility.gallery,
   ])
   const previewAssetBlocks = useMemo(
-    () => buildOfferingPreviewAssetBlocks(detail, galleryUrls),
-    [detail, galleryUrls],
+    () => buildOfferingPreviewAssetBlocks(detail),
+    [detail],
   )
   const previewDocuments = useMemo(() => {
     const suppressForOfferingLink =
@@ -605,68 +616,12 @@ export function DealOfferingPreviewInner({
                         </div>
                       </div>
                     ) : (
-                      <div className="deal_offer_pf_media_gallery_stack">
-                        <div className="deal_offer_pf_hero deal_offer_pf_hero--clean deal_offer_pf_hero--cover_main">
-                          <button
-                            type="button"
-                            className="deal_offer_pf_hero_img_btn"
-                            onClick={() => openGalleryAt(0)}
-                            aria-haspopup="dialog"
-                            aria-label="Open cover image in gallery viewer"
-                          >
-                            <DealOfferingGalleryImage
-                              src={galleryUrls[0]}
-                              alt=""
-                              className="deal_offer_pf_hero_img"
-                              loading="eager"
-                              fetchPriority="high"
-                            />
-                          </button>
-                        </div>
-                        {galleryUrls.length > 1 ? (
-                          <div
-                            className="deal_offer_pf_media_thumb_row"
-                            role="list"
-                            aria-label="Additional gallery photos"
-                          >
-                            {galleryUrls.slice(1, 4).map((src, j) => {
-                              const index = j + 1
-                              const hasMoreOverlay =
-                                galleryUrls.length > 4 && j === 2
-                              const moreCount = galleryUrls.length - 4
-                              return (
-                                <button
-                                  key={`pf-media-sub-${index}-${src.slice(0, 48)}`}
-                                  type="button"
-                                  role="listitem"
-                                  className={`deal_offer_pf_media_thumb_cell${hasMoreOverlay ? " deal_offer_pf_media_thumb_cell--more" : ""}`}
-                                  onClick={() => openGalleryAt(index)}
-                                  aria-haspopup="dialog"
-                                  aria-label={
-                                    hasMoreOverlay
-                                      ? `Open gallery (${galleryUrls.length} photos; ${moreCount} more not shown here)`
-                                      : `Open image ${index + 1} of ${galleryUrls.length} in gallery viewer`
-                                  }
-                                >
-                            <DealOfferingGalleryImage
-                              src={src}
-                              alt=""
-                              className="deal_offer_pf_media_thumb_img"
-                              loading="eager"
-                            />
-                                  {hasMoreOverlay ? (
-                                    <span
-                                      className="deal_offer_pf_gallery_preview_more_overlay"
-                                      aria-hidden
-                                    >
-                                      +{moreCount}
-                                    </span>
-                                  ) : null}
-                                </button>
-                              )
-                            })}
-                          </div>
-                        ) : null}
+                      <div className="deal_offer_pf_carousel_hero">
+                        <DealCardMediaCarousel
+                          imageUrls={galleryUrls}
+                          title={title}
+                          onImageClick={openGalleryAt}
+                        />
                       </div>
                     )}
 
@@ -889,9 +844,22 @@ export function DealOfferingPreviewInner({
                               aria-hidden
                             />
                             <div className="deal_offer_pf_documents_item_body">
-                              <span className="deal_offer_pf_documents_name">
-                                {doc.name}
-                              </span>
+                              {doc.url ? (
+                                <a
+                                  href={doc.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="deal_offer_pf_documents_name deal_offer_pf_documents_name_link"
+                                  title={doc.name}
+                                  aria-label={`View ${doc.name} (opens in a new tab)`}
+                                >
+                                  {doc.name}
+                                </a>
+                              ) : (
+                                <span className="deal_offer_pf_documents_name">
+                                  {doc.name}
+                                </span>
+                              )}
                               {doc.url ? (
                                 <div
                                   className="deal_offer_pf_documents_actions"
@@ -955,27 +923,12 @@ export function DealOfferingPreviewInner({
                       className="deal_offer_pf_bento_asset_grid"
                       ariaLabel="Deal assets"
                     >
-                      {previewAssetBlocks.map((block) => {
-                        const blockGalleryCount = block.galleryUrls.length
-                        const openAssetGallery =
-                          blockGalleryCount > 0
-                            ? () => {
-                                const first = block.galleryUrls[0]
-                                if (!first) return
-                                const idx = galleryUrls.findIndex((u) =>
-                                  galleryUrlsReferToSameAsset(u, first),
-                                )
-                                openGalleryAt(idx >= 0 ? idx : 0)
-                              }
-                            : undefined
-                        return (
-                          <OfferingPreviewAssetBentoCard
-                            key={block.id}
-                            block={block}
-                            onViewImages={openAssetGallery}
-                          />
-                        )
-                      })}
+                      {previewAssetBlocks.map((block) => (
+                        <OfferingPreviewAssetBentoCard
+                          key={block.id}
+                          block={block}
+                        />
+                      ))}
                     </DealOfferingPreviewBentoAdaptiveGrid>
                 </section>
               ) : null}

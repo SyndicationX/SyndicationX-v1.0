@@ -373,6 +373,8 @@ export type CollectDealGalleryUrlsOptions = {
    * `/public/offering-preview` / shared link consumers.
    */
   persistedOnly?: boolean
+  /** Public offering preview `?preview=` token for protected `/uploads/` access. */
+  previewToken?: string | null
 }
 
 /**
@@ -453,20 +455,26 @@ export function orderedGalleryUrlsForOffering(
   options?: CollectDealGalleryUrlsOptions,
 ): string[] {
   const all = collectDealGalleryUrls(detail, options)
+  const uploadAccess = options?.previewToken
+    ? { previewToken: options.previewToken }
+    : undefined
+  const withAccess = (urls: string[]) =>
+    uploadAccess ? urls.map((u) => normalizeDealGallerySrc(u, uploadAccess)) : urls
   const pickRaw = detail.galleryCoverImageUrl?.trim()
   const pick = pickRaw
-    ? resolveCloudinaryImageSrc(pickRaw, normalizeDealGallerySrc).trim()
+    ? resolveCloudinaryImageSrc(pickRaw, (raw) =>
+        normalizeDealGallerySrc(raw, uploadAccess),
+      ).trim()
     : ""
-  if (!pick) return all
+  if (!pick) return withAccess(all)
   if (all.length === 0) return [pick]
   const idx = all.findIndex((u) => galleryUrlsReferToSameAsset(u, pick))
   if (idx < 0) {
-    /** Avoid showing the same file twice if `pick` matches an entry under a different string form. */
     const rest = all.filter((u) => !galleryUrlsReferToSameAsset(u, pick))
-    return [pick, ...rest]
+    return withAccess([pick, ...rest])
   }
-  if (idx === 0) return all
+  if (idx === 0) return withAccess(all)
   const next = [...all]
   const [c] = next.splice(idx, 1)
-  return [c, ...next]
+  return withAccess([c, ...next])
 }

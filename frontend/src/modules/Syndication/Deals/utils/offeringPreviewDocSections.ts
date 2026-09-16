@@ -38,11 +38,13 @@ export type OfferingPreviewDisplayDocument = {
  * Which document scopes appear on a given surface.
  * - Offering link + Preview offering: `offering_page` only.
  * - LP portal (signed-in LP on the deal): `offering_page` and `lp_investor`.
+ * - `not_visible`: never on offering link, preview, or LP portal.
  */
 export function sectionVisibleOnOfferingPreview(
   scope: SectionSharedWithScope,
   ctx: { isPublicAnonymousOffering: boolean; isLpDealWorkspace: boolean },
 ): boolean {
+  if (scope === "not_visible") return false
   if (ctx.isLpDealWorkspace) {
     return scope === "offering_page" || scope === "lp_investor"
   }
@@ -83,8 +85,7 @@ export function listWorkspaceDocumentsForOfferingPreview(
 
   if (out.length === 0) {
     for (const d of readOfferingPreviewDocuments(id)) {
-      const scope: SectionSharedWithScope =
-        d.sharedWithScope === "lp_investor" ? "lp_investor" : "offering_page"
+      const scope = resolveFlatDocumentSharedWithScope(d.sharedWithScope)
       if (!sectionVisibleOnOfferingPreview(scope, ctx)) continue
       tryAdd(d)
     }
@@ -97,7 +98,18 @@ export function listWorkspaceDocumentsForOfferingPreview(
 export type SectionSharedWithScope = OfferingPreviewDocSharedWithScope
 
 export function sectionSharedWithDisplay(scope: SectionSharedWithScope): string {
-  return scope === "lp_investor" ? "LP portal only" : "Offering link"
+  if (scope === "not_visible") return "Hidden by default"
+  if (scope === "lp_investor") return "LP portal only"
+  return "Offering link"
+}
+
+/** Map a flat/legacy document scope string to the three-value Visibility enum. */
+export function resolveFlatDocumentSharedWithScope(
+  raw: OfferingPreviewDocSharedWithScope | string | undefined | null,
+): SectionSharedWithScope {
+  if (raw === "lp_investor") return "lp_investor"
+  if (raw === "not_visible") return "not_visible"
+  return "offering_page"
 }
 
 /** Per-document scope when set; otherwise the section default. */
@@ -114,7 +126,10 @@ function parseSharedWithScope(
 ): SectionSharedWithScope {
   if (rawScope === "lp_investor") return "lp_investor"
   if (rawScope === "offering_page") return "offering_page"
+  if (rawScope === "not_visible") return "not_visible"
   const vis = legacyVisibility.trim().toLowerCase()
+  if (vis.includes("not visible") || vis.includes("hidden by default"))
+    return "not_visible"
   if (vis.includes("lp") && vis.includes("investor")) return "lp_investor"
   if (vis.includes("offering") && (vis.includes("link") || vis.includes("page")))
     return "offering_page"
@@ -124,6 +139,7 @@ function parseSharedWithScope(
 function parseDocumentSharedWithScope(raw: unknown): SectionSharedWithScope | undefined {
   if (raw === "lp_investor") return "lp_investor"
   if (raw === "offering_page") return "offering_page"
+  if (raw === "not_visible") return "not_visible"
   return undefined
 }
 
@@ -156,6 +172,7 @@ export type NestedPreviewDocument = {
    * Overrides the section scope for this file when set.
    * `offering_page`: offering link + preview (+ LPs when signed in).
    * `lp_investor`: LP portal only.
+   * `not_visible` / Hidden by default: sponsor workspace only.
    */
   sharedWithScope?: SectionSharedWithScope
   /**
@@ -163,6 +180,8 @@ export type NestedPreviewDocument = {
    * on at least one commitment for this deal (Funding Information PDFs).
    */
   requiresProfileInvestment?: boolean
+  /** When Shared With recipients were last set (ISO). Used for investor inbox timestamps. */
+  sharedAt?: string
   /** Present on auto-synced investor eSign PDFs in Investor e signatures section. */
   esignSignatureRequestId?: string
   esignInvestorRowId?: string
@@ -170,6 +189,27 @@ export type NestedPreviewDocument = {
   esignTemplateFileId?: string
   esignAwaitingSponsorSignature?: boolean
   esignSponsorSigned?: boolean
+  /** Portal user who uploaded this file from the Documents tab. */
+  uploadedByUserId?: string
+  /** Co-sponsor uploads stay hidden from lead / admin sponsors unless shared with them. */
+  uploadedByIsCoSponsor?: boolean
+}
+
+/** True when Shared With has at least one recipient / All Investors. */
+export function nestedDocumentHasSharedAudience(
+  doc: Pick<
+    NestedPreviewDocument,
+    | "sharedDealClassIds"
+    | "sharedInvestorIds"
+    | "sharedWithAllInvestors"
+    | "sharedSponsorUserIds"
+  >,
+): boolean {
+  if (doc.sharedWithAllInvestors) return true
+  if (doc.sharedDealClassIds.length > 0) return true
+  if (doc.sharedInvestorIds.length > 0) return true
+  if ((doc.sharedSponsorUserIds?.length ?? 0) > 0) return true
+  return false
 }
 
 export type OfferingPreviewSection = {
@@ -378,6 +418,7 @@ export function mergeAutoManagedDocumentSections(
   localSections: OfferingPreviewSection[],
   dealId: string,
   previewJson?: string | null,
+  opts?: { preferPreviewJson?: boolean },
 ): OfferingPreviewSection[] {
   const id = dealId.trim()
   const fromJson = parseDocumentSectionsFromPreviewJson(previewJson).filter(
@@ -392,10 +433,12 @@ export function mergeAutoManagedDocumentSections(
   }
   for (const section of fromWorkspace) {
     const existing = autoById.get(section.id)
-    if (
-      !existing ||
-      section.nestedDocuments.length >= existing.nestedDocuments.length
-    ) {
+    if (!existing) {
+      autoById.set(section.id, section)
+      continue
+    }
+    if (opts?.preferPreviewJson) continue
+    if (section.nestedDocuments.length >= existing.nestedDocuments.length) {
       autoById.set(section.id, section)
     }
   }
@@ -715,6 +758,16 @@ function normalizeNested(
       : undefined
   const esignAwaitingSponsorSignature = Boolean(raw.esignAwaitingSponsorSignature)
   const esignSponsorSigned = Boolean(raw.esignSponsorSigned)
+  const uploadedByUserId =
+    typeof raw.uploadedByUserId === "string" && raw.uploadedByUserId.trim()
+      ? raw.uploadedByUserId.trim()
+      : undefined
+  const uploadedByIsCoSponsor = raw.uploadedByIsCoSponsor === true
+  const sharedAtRaw =
+    typeof raw.sharedAt === "string" && raw.sharedAt.trim()
+      ? raw.sharedAt.trim()
+      : ""
+  const sharedAtMs = sharedAtRaw ? Date.parse(sharedAtRaw) : Number.NaN
   return {
     id,
     name,
@@ -725,6 +778,7 @@ function normalizeNested(
     sharedInvestorIds,
     sharedWithAllInvestors,
     sharedSponsorUserIds,
+    ...(Number.isFinite(sharedAtMs) ? { sharedAt: new Date(sharedAtMs).toISOString() } : {}),
     ...(sharedWithScope ? { sharedWithScope } : {}),
     ...(requiresProfileInvestment ? { requiresProfileInvestment: true } : {}),
     ...(esignSignatureRequestId ? { esignSignatureRequestId } : {}),
@@ -733,6 +787,8 @@ function normalizeNested(
     ...(esignTemplateFileId ? { esignTemplateFileId } : {}),
     ...(esignAwaitingSponsorSignature ? { esignAwaitingSponsorSignature: true } : {}),
     ...(esignSponsorSigned ? { esignSponsorSigned: true } : {}),
+    ...(uploadedByUserId ? { uploadedByUserId } : {}),
+    ...(uploadedByIsCoSponsor ? { uploadedByIsCoSponsor: true } : {}),
   }
 }
 

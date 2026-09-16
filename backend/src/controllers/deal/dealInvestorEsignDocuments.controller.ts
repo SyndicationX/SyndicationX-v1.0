@@ -19,6 +19,12 @@ import {
 } from "../../services/deal/dealAccess.service.js";
 import { requestedOrganizationIdFromRequest } from "../../services/org/orgResolution.service.js";
 import {
+  dealHasSequentialInvestorFirstEsign,
+  dealHasInvestorFirstCounterSignEsign,
+  evaluateDealSequentialInvestorSignAccess,
+  sequentialWorkflowInvestorPortalDocsGateOpen,
+} from "../../services/deal/dealSequentialEsignWorkflow.service.js";
+import {
   listMyEsignDocumentsForInvestor,
   maybeSyncDealInvestorEsignByTarget,
   syncDealInvestorEsignAfterEmbeddedSign,
@@ -37,6 +43,7 @@ import { getDealMyEsignSignSession } from "../../services/deal/dealMemberEsignSi
 import { readOfferingInvestorPreviewJsonAfterEsignSync } from "../../services/deal/dealEsignDocumentsWorkspaceSync.service.js";
 import { getDealSponsorEsignSignSession } from "../../services/deal/dealSponsorEsignSignSession.service.js";
 import { isPortalUserSponsorOnDeal } from "../../services/deal/dealMemberScope.service.js";
+import { scopeOfferingInvestorPreviewJsonForViewer } from "../../services/deal/dealDocumentCoSponsorVisibility.service.js";
 
 function queryString(v: unknown): string {
   if (typeof v === "string") return v.trim();
@@ -154,21 +161,43 @@ export async function getDealMyEsignDocuments(
           )
         : bundle?.sends ?? [];
     const workflowLabel = esignSignedColumnLabelFromApi(esignStatus) ?? "Sent";
+    const investorPortalDocumentsGateOpen =
+      await sequentialWorkflowInvestorPortalDocsGateOpen(dealId);
+    const isSequentialInvestorFirst =
+      await dealHasSequentialInvestorFirstEsign(dealId);
+    const isInvestorFirstCounterSign =
+      await dealHasInvestorFirstCounterSignEsign(dealId);
+    const esignCompleted =
+      profileSends.length > 0
+        ? esignProfileSendsCompleteForInvestor(profileSends)
+        : bundle
+          ? esignBundleIsAllCompleted(bundle)
+          : false;
+    const signTurnOpen = target
+      ? (await evaluateDealSequentialInvestorSignAccess(dealId, target)).allowed
+      : true;
+    const awaitingSequentialSignTurn =
+      isSequentialInvestorFirst && !signTurnOpen && !esignCompleted;
+    const awaitingSponsorCounterSign =
+      isInvestorFirstCounterSign &&
+      investorPortalDocumentsGateOpen &&
+      esignCompleted &&
+      documents.every((d) => !d.url?.trim());
+    const hasUnsignedSends =
+      profileSends.length > 0
+        ? esignProfileSendsPendingForInvestor(profileSends)
+        : bundle
+          ? esignBundleHasPending(bundle)
+          : false;
 
     res.status(200).json({
       documents,
-      esignCompleted:
-        profileSends.length > 0
-          ? esignProfileSendsCompleteForInvestor(profileSends)
-          : bundle
-            ? esignBundleIsAllCompleted(bundle)
-            : false,
-      esignPending:
-        profileSends.length > 0
-          ? esignProfileSendsPendingForInvestor(profileSends)
-          : bundle
-            ? esignBundleHasPending(bundle)
-            : false,
+      investorPortalDocumentsGateOpen,
+      sequentialSignTurnOpen: signTurnOpen,
+      awaitingSequentialSignTurn,
+      awaitingSponsorCounterSign,
+      esignCompleted,
+      esignPending: hasUnsignedSends && signTurnOpen,
       esignStatus,
       workflowLabel,
       completedAt: esignStatus?.completedAt ?? null,
@@ -245,7 +274,7 @@ export async function getDealMyEsignSignSessionHandler(
             ? 404
             : result.code === "waiting_for_prior_signer"
               ? 409
-            : 400;
+              : 400;
       res.status(status).json({
         message: result.message,
         ...(result.code ? { code: result.code } : {}),
@@ -552,7 +581,12 @@ export async function postSyncCompletedEsignDocuments(
     }
 
     const offeringInvestorPreviewJson =
-      await readOfferingInvestorPreviewJsonAfterEsignSync(dealId);
+      await scopeOfferingInvestorPreviewJsonForViewer({
+        dealId,
+        viewerUserId: user.id,
+        viewerRole: user.userRole,
+        json: await readOfferingInvestorPreviewJsonAfterEsignSync(dealId),
+      });
     res.status(200).json({ offeringInvestorPreviewJson });
   } catch (err) {
     console.error("postSyncCompletedEsignDocuments:", err);
@@ -716,7 +750,12 @@ export async function postDealSponsorEsignSync(
     }
 
     const offeringInvestorPreviewJson =
-      await readOfferingInvestorPreviewJsonAfterEsignSync(dealId);
+      await scopeOfferingInvestorPreviewJsonForViewer({
+        dealId,
+        viewerUserId: user.id,
+        viewerRole: user.userRole,
+        json: await readOfferingInvestorPreviewJsonAfterEsignSync(dealId),
+      });
 
     res.status(200).json({
       ok: true,

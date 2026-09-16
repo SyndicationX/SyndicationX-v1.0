@@ -53,7 +53,8 @@ function investmentEsignStatusLabel(
   status: "pending" | "signed",
   esignCompleted?: boolean,
 ): string {
-  if (esignCompleted || status === "signed") return "Completed"
+  if (esignCompleted) return "Completed"
+  if (status === "signed") return "Signed"
   return "Awaiting signature"
 }
 
@@ -184,6 +185,9 @@ async function fetchEsignProfileCardsForDeal(
   cards: EsignProfileCardData[]
   pending: boolean
   loadError: string | null
+  investorPortalDocumentsGateOpen: boolean
+  awaitingSponsorCounterSign: boolean
+  awaitingSequentialSignTurn: boolean
 }> {
   const slots = buildEsignCommitmentSlots(viewerRows, nameByUserProfileId)
 
@@ -200,11 +204,19 @@ async function fetchEsignProfileCardsForDeal(
 
   let pending = false
   let loadError: string | null = null
+  let investorPortalDocumentsGateOpen = true
+  let awaitingSponsorCounterSign = false
+  let awaitingSequentialSignTurn = false
   const cards: EsignProfileCardData[] = []
 
   for (const { slot, esign, esignScope } of results) {
     if (esign.loadError && !loadError) loadError = esign.loadError
     if (esign.esignPending) pending = true
+    if (esign.investorPortalDocumentsGateOpen === false) {
+      investorPortalDocumentsGateOpen = false
+    }
+    if (esign.awaitingSponsorCounterSign) awaitingSponsorCounterSign = true
+    if (esign.awaitingSequentialSignTurn) awaitingSequentialSignTurn = true
     if (esign.documents.length === 0) continue
     cards.push({
       cardKey: slot.cardKey,
@@ -225,6 +237,11 @@ async function fetchEsignProfileCardsForDeal(
     const esign = await fetchDealMyEsignDocuments(dealId)
     if (esign.loadError) loadError = esign.loadError
     if (esign.esignPending) pending = true
+    if (esign.investorPortalDocumentsGateOpen === false) {
+      investorPortalDocumentsGateOpen = false
+    }
+    if (esign.awaitingSponsorCounterSign) awaitingSponsorCounterSign = true
+    if (esign.awaitingSequentialSignTurn) awaitingSequentialSignTurn = true
     if (esign.documents.length > 0) {
       cards.push({
         cardKey: "unscoped",
@@ -236,7 +253,14 @@ async function fetchEsignProfileCardsForDeal(
     }
   }
 
-  return { cards, pending, loadError }
+  return {
+    cards,
+    pending,
+    loadError,
+    investorPortalDocumentsGateOpen,
+    awaitingSponsorCounterSign,
+    awaitingSequentialSignTurn,
+  }
 }
 
 function esignProfileCardTitle(card: EsignProfileCardData): string {
@@ -281,6 +305,12 @@ export function InvestmentDetailDocumentsTab({
   >([])
   const [esignPending, setEsignPending] = useState(false)
   const [esignLoadError, setEsignLoadError] = useState<string | null>(null)
+  const [investorPortalDocumentsGateOpen, setInvestorPortalDocumentsGateOpen] =
+    useState(true)
+  const [awaitingSponsorCounterSign, setAwaitingSponsorCounterSign] =
+    useState(false)
+  const [awaitingSequentialSignTurn, setAwaitingSequentialSignTurn] =
+    useState(false)
   const [profileNameByBookId, setProfileNameByBookId] = useState<
     ReadonlyMap<string, string>
   >(() => new Map())
@@ -320,6 +350,9 @@ export function InvestmentDetailDocumentsTab({
       setEsignProfileCards(result.cards)
       setEsignPending(result.pending)
       setEsignLoadError(result.loadError)
+      setInvestorPortalDocumentsGateOpen(result.investorPortalDocumentsGateOpen)
+      setAwaitingSponsorCounterSign(result.awaitingSponsorCounterSign)
+      setAwaitingSequentialSignTurn(result.awaitingSequentialSignTurn)
       if (result.pending && !autoEsignTabRef.current) {
         autoEsignTabRef.current = true
         setActiveSubTab("esignatures")
@@ -395,8 +428,17 @@ export function InvestmentDetailDocumentsTab({
   }, [dealId])
 
   const offeringDocumentSections = useMemo(() => {
-    return listInvestmentDetailDocumentSectionGroups(dealId, audience)
-  }, [dealId, audience, sectionsRevision])
+    const sections = listInvestmentDetailDocumentSectionGroups(dealId, audience)
+    if (investorPortalDocumentsGateOpen) return sections
+    return sections
+      .map((section) => ({
+        ...section,
+        documents: section.documents.filter(
+          (doc) => !doc.id.startsWith("esign-promoted-"),
+        ),
+      }))
+      .filter((section) => section.documents.length > 0)
+  }, [dealId, audience, sectionsRevision, investorPortalDocumentsGateOpen])
 
   const offeringDocuments = useMemo(
     () => offeringDocumentSections.flatMap((section) => section.documents),
@@ -478,7 +520,7 @@ export function InvestmentDetailDocumentsTab({
                 aria-hidden
               />
               <span className="deals_tabs_label um_segmented_tab_label">
-                Offering Documents
+                Documents
                 {offeringDocuments.length > 0 ? (
                   <span className="investment_detail_docs_tab_count">
                     {offeringDocuments.length}
@@ -522,6 +564,7 @@ export function InvestmentDetailDocumentsTab({
             </p>
           ) : activeSubTab === "offering" ? (
             <OfferingDocumentsPanel
+              dealId={dealId}
               showAudienceGate={showAudienceGate}
               previewSyncFailed={previewSyncFailed}
               hasSectionsOnDeal={
@@ -539,6 +582,9 @@ export function InvestmentDetailDocumentsTab({
               esignPending={esignPending}
               esignLoadError={esignLoadError}
               esignProfileCards={filteredEsignProfileCards}
+              investorPortalDocumentsGateOpen={investorPortalDocumentsGateOpen}
+              awaitingSponsorCounterSign={awaitingSponsorCounterSign}
+              awaitingSequentialSignTurn={awaitingSequentialSignTurn}
               searchQuery={query}
               onSearchQueryChange={setQuery}
               firstPendingSign={firstPendingSign}
@@ -578,6 +624,7 @@ export function InvestmentDetailDocumentsTab({
 }
 
 function OfferingDocumentsPanel({
+  dealId,
   showAudienceGate,
   previewSyncFailed,
   hasSectionsOnDeal,
@@ -586,6 +633,7 @@ function OfferingDocumentsPanel({
   searchQuery,
   onSearchQueryChange,
 }: {
+  dealId: string
   showAudienceGate: boolean
   previewSyncFailed: boolean
   hasSectionsOnDeal: boolean
@@ -663,7 +711,10 @@ function OfferingDocumentsPanel({
           ) : null}
 
           {showOfferingList ? (
-            <InvestorOfferingDocumentsList sections={filteredOfferingSections} />
+            <InvestorOfferingDocumentsList
+              dealId={dealId}
+              sections={filteredOfferingSections}
+            />
           ) : null}
         </div>
       </div>
@@ -822,6 +873,9 @@ function EsignaturesDocumentsPanel({
   esignPending,
   esignLoadError,
   esignProfileCards,
+  investorPortalDocumentsGateOpen,
+  awaitingSponsorCounterSign,
+  awaitingSequentialSignTurn,
   searchQuery,
   onSearchQueryChange,
   firstPendingSign,
@@ -830,6 +884,9 @@ function EsignaturesDocumentsPanel({
   esignPending: boolean
   esignLoadError: string | null
   esignProfileCards: EsignProfileCardData[]
+  investorPortalDocumentsGateOpen: boolean
+  awaitingSponsorCounterSign: boolean
+  awaitingSequentialSignTurn: boolean
   searchQuery: string
   onSearchQueryChange: (value: string) => void
   firstPendingSign: {
@@ -843,6 +900,21 @@ function EsignaturesDocumentsPanel({
 }) {
   const hasAny = esignProfileCards.length > 0
   const hasVisibleCards = esignProfileCards.length > 0
+  const awaitingTurnMessage =
+    awaitingSequentialSignTurn && !hasAny
+      ? "Your documents will be ready to sign soon. We will email you and show an alert when it is your turn."
+      : null
+  const awaitingAllInvestorsMessage =
+    !investorPortalDocumentsGateOpen &&
+    !hasAny &&
+    !awaitingSequentialSignTurn &&
+    !awaitingSponsorCounterSign
+      ? "Your signed subscription documents will appear here after you complete signing."
+      : null
+  const awaitingSponsorMessage =
+    awaitingSponsorCounterSign && !hasAny
+      ? "Your fully executed documents will appear here after your sponsor completes counter-signature."
+      : null
 
   return (
     <div
@@ -909,8 +981,10 @@ function EsignaturesDocumentsPanel({
 
           {!hasAny ? (
             <p className="investment_detail_documents_status">
-              No e-sign documents have been sent to you on this deal yet. When
-              your sponsor sends templates for signature, they will appear here.
+              {awaitingTurnMessage ??
+                awaitingSponsorMessage ??
+                awaitingAllInvestorsMessage ??
+                "No e-sign documents have been sent to you on this deal yet. When your sponsor sends templates for signature, they will appear here."}
             </p>
           ) : !hasVisibleCards ? (
             <p className="investment_detail_documents_status">

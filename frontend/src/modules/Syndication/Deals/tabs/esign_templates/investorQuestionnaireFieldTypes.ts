@@ -13,7 +13,7 @@ export const QUESTIONNAIRE_TYPE_OPTIONS: QuestionnaireTypeOption[] = [
   { value: "address", label: "Address" },
   { value: "date", label: "Date" },
   { value: "boolean", label: "Yes / No" },
-  { value: "ssn", label: "Social security number" },
+  { value: "ssn", label: "Social Security Number" },
   { value: "ein", label: "EIN (XX-XXXXXXX)" },
   { value: "radio", label: "Radio buttons" },
   { value: "checkboxes", label: "Checkboxes" },

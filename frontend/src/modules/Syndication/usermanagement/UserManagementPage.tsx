@@ -1,10 +1,12 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type FormEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
@@ -52,6 +54,7 @@ import {
   resolvePlatformAdminMembersListScope,
 } from "../../../common/auth/sessionOrganization";
 import { DataTablePagination } from "../../../common/components/DataTablePagination/DataTablePagination";
+import { TableHScrollShell } from "../../../common/components/data-table/TableHScrollShell";
 import { ViewReadonlyField } from "../../../common/components/ViewReadonlyField";
 import { toast } from "../../../common/components/Toast";
 import { MemberRoleBadge } from "./MemberRoleBadge";
@@ -70,6 +73,7 @@ import {
   formatOrganizationsCsvCell,
   formatRoleCsvCell,
   formatValue,
+  isOrgStaffPortalRole,
   memberUserCellPrimaryLabel,
   memberInvitePending,
   memberRowIsCurrentUser,
@@ -91,6 +95,10 @@ import { buildMembersCsv, downloadMembersCsv, exportAuditLinesForMembers } from 
 import { notifyMembersExportAudit } from "./membersExportNotifyApi";
 import { buildTableExportFilename } from "../../../common/utils/tableExportFilename";
 import {
+  displayEmail,
+  isDisplayableEmail,
+} from "../../../common/utils/displayEmail";
+import {
   getCurrentSessionUserEmail,
   openSendMailDraft,
   parseEmailInput,
@@ -100,6 +108,7 @@ import {
   type SendMailEmailPreviewPayload,
 } from "../contacts/components/SendMailEmailPreviewModal";
 import { RadioPillGroup } from "../../../common/components/radio-pill-group/RadioPillGroup";
+import { TabsScrollStrip } from "../../../common/components/tabs-scroll-strip/TabsScrollStrip";
 import { DealsCreateDropdownSelect } from "../Deals/components/DealsCreateDropdownSelect";
 import {
   loadEmailTemplates,
@@ -440,6 +449,7 @@ export default function UserManagementPage({
   const token = sessionStorage.getItem(SESSION_BEARER_KEY);
   const apiV1 = getApiV1Base();
   const navigate = useNavigate();
+  const suspendAllTitleId = useId();
 
   const currentUserId = useMemo(() => {
     if (!token) return "";
@@ -511,7 +521,10 @@ export default function UserManagementPage({
         const list = Array.isArray(data.users) ? data.users : [];
         const normalized = list.filter(
           (x): x is Record<string, unknown> =>
-            x !== null && typeof x === "object" && !Array.isArray(x),
+            x !== null &&
+            typeof x === "object" &&
+            !Array.isArray(x) &&
+            isOrgStaffPortalRole(x.role),
         );
         setMemberRows(normalized);
         setActionMenuRowId(null);
@@ -547,7 +560,10 @@ export default function UserManagementPage({
       const list = Array.isArray(data.users) ? data.users : [];
       const normalized = list.filter(
         (x): x is Record<string, unknown> =>
-          x !== null && typeof x === "object" && !Array.isArray(x),
+          x !== null &&
+          typeof x === "object" &&
+          !Array.isArray(x) &&
+          isOrgStaffPortalRole(x.role),
       );
       setMemberRows(normalized);
     } catch {
@@ -627,6 +643,10 @@ export default function UserManagementPage({
   const [suspendReason, setSuspendReason] = useState("");
   const [suspendSaving, setSuspendSaving] = useState(false);
   const [suspendErr, setSuspendErr] = useState("");
+  const [suspendAllOpen, setSuspendAllOpen] = useState(false);
+  const [suspendAllReason, setSuspendAllReason] = useState("");
+  const [suspendAllErr, setSuspendAllErr] = useState("");
+  const [suspendAllBusy, setSuspendAllBusy] = useState(false);
   const kebabPortalRef = useRef<HTMLUListElement | null>(null);
   const kebabTriggerRef = useRef<HTMLButtonElement | null>(null);
 
@@ -690,6 +710,15 @@ export default function UserManagementPage({
         selectedMemberRowIds.has(rowStableId(row, i)),
       ),
     [sortedRows, selectedMemberRowIds],
+  );
+  const membersToSuspend = useMemo(
+    () =>
+      sortedRows.filter(
+        (row) =>
+          !memberRowIsInactive(row) &&
+          !memberRowIsCurrentUser(row, currentUserId),
+      ),
+    [sortedRows, currentUserId],
   );
   const senderEmail = useMemo(() => getCurrentSessionUserEmail(), []);
   const selectedTemplate = useMemo(
@@ -945,7 +974,104 @@ export default function UserManagementPage({
   }
 
   function handleSuspendAll() {
-    setToolbarNotice("Bulk suspend is not available yet.");
+    if (membersToSuspend.length === 0) return;
+    setToolbarNotice("");
+    setSuspendAllErr("");
+    setSuspendAllReason("");
+    setSuspendAllOpen(true);
+  }
+
+  function closeSuspendAllModal() {
+    if (suspendAllBusy) return;
+    setSuspendAllOpen(false);
+    setSuspendAllErr("");
+    setSuspendAllReason("");
+  }
+
+  async function confirmSuspendAll(e: FormEvent) {
+    e.preventDefault();
+    if (!token || !apiV1 || membersToSuspend.length === 0) return;
+    const reason = suspendAllReason.trim();
+    if (!reason) {
+      setSuspendAllErr("Please enter a reason for suspending these members.");
+      return;
+    }
+    setSuspendAllBusy(true);
+    setSuspendAllErr("");
+    const targets = [...membersToSuspend];
+    const n = targets.length;
+    let failed = 0;
+    const updatedUsers: Record<string, Record<string, unknown>> = {};
+    try {
+      for (const row of targets) {
+        const id = String(row.id ?? "").trim();
+        if (!id) {
+          failed += 1;
+          continue;
+        }
+        const res = await fetch(`${apiV1}/users/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            userStatus: "inactive",
+            reason,
+            action: MEMBER_AUDIT_ACTION_SUSPEND,
+          }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          message?: string;
+          user?: Record<string, unknown>;
+        };
+        if (!res.ok) {
+          failed += 1;
+          continue;
+        }
+        if (data.user && typeof data.user === "object") {
+          updatedUsers[id] = data.user;
+          syncSessionUserDetailsById(id, data.user);
+        }
+      }
+      if (Object.keys(updatedUsers).length > 0) {
+        setMemberRows((prev) =>
+          prev.map((r) => {
+            const id = String(r.id ?? "").trim();
+            const u = updatedUsers[id];
+            return u ? { ...r, ...u } : r;
+          }),
+        );
+      }
+      setSelectedMemberRowIds(new Set());
+      setSuspendAllOpen(false);
+      setSuspendAllReason("");
+      const succeeded = n - failed;
+      if (failed > 0) {
+        toast.error(
+          "Could not suspend all members",
+          succeeded > 0
+            ? `Suspended ${succeeded} of ${n}; ${failed} failed. Refresh and try again for the rest.`
+            : "None of the members could be suspended. Try again.",
+        );
+        if (succeeded > 0) {
+          toast.success(
+            "Members suspended",
+            `Marked ${succeeded} member${succeeded === 1 ? "" : "s"} inactive.`,
+          );
+        }
+        return;
+      }
+      toast.success(
+        "Members suspended",
+        `Marked ${n} member${n === 1 ? "" : "s"} inactive.`,
+      );
+    } catch {
+      setSuspendAllErr("Unable to connect.");
+      toast.error("Could not suspend members", "Unable to connect.");
+    } finally {
+      setSuspendAllBusy(false);
+    }
   }
 
   const openSendMailModal = useCallback(() => {
@@ -1040,6 +1166,7 @@ export default function UserManagementPage({
       ccRaw: sendMailCc,
       templateSubject: template.subject,
       templateBodyHtml: template.body,
+      templateAttachment: template.attachment,
       senderEmail,
     });
     if (!result.ok) {
@@ -1444,41 +1571,57 @@ export default function UserManagementPage({
   return (
     <section className="um_page" aria-label="Members">
       <div className="um_members_top_row">
-        <div className="um_members_tabs_outer">
-          <div
-            className="um_members_tabs_row"
-            role="tablist"
-            aria-label="Members sections"
-          >
-            <button
-              type="button"
-              id="um-members-tab-users"
-              role="tab"
-              aria-selected={membersTab === "users"}
-              aria-controls="um-members-panel-users"
-              className={`um_members_tab${
-                membersTab === "users" ? " um_members_tab_active" : ""
-              }`}
-              onClick={() => setMembersTab("users")}
+        <div className="um_members_tabs_outer deals_tabs_outer um_segmented_tabs_outer">
+          <TabsScrollStrip scrollClassName="deals_tabs_scroll um_segmented_tabs_scroll">
+            <div
+              className="um_members_tabs_row deals_tabs_row um_segmented_tabs_row"
+              role="tablist"
+              aria-label="Members sections"
             >
-              <Users size={18} strokeWidth={1.75} aria-hidden />
-              <span>Users &amp; Roles</span>
-            </button>
-            <button
-              type="button"
-              id="um-members-tab-general"
-              role="tab"
-              aria-selected={membersTab === "general"}
-              aria-controls="um-members-panel-general"
-              className={`um_members_tab${
-                membersTab === "general" ? " um_members_tab_active" : ""
-              }`}
-              onClick={() => setMembersTab("general")}
-            >
-              <Info size={18} strokeWidth={1.75} aria-hidden />
-              <span>General Info</span>
-            </button>
-          </div>
+              <button
+                type="button"
+                id="um-members-tab-users"
+                role="tab"
+                aria-selected={membersTab === "users"}
+                aria-controls="um-members-panel-users"
+                className={`um_members_tab deals_tabs_tab um_segmented_tab${
+                  membersTab === "users" ? " um_members_tab_active" : ""
+                }`}
+                onClick={() => setMembersTab("users")}
+              >
+                <Users
+                  className="deals_tabs_icon um_segmented_tab_icon"
+                  size={16}
+                  strokeWidth={2}
+                  aria-hidden
+                />
+                <span className="deals_tabs_label um_segmented_tab_label">
+                  Users &amp; Roles
+                </span>
+              </button>
+              <button
+                type="button"
+                id="um-members-tab-general"
+                role="tab"
+                aria-selected={membersTab === "general"}
+                aria-controls="um-members-panel-general"
+                className={`um_members_tab deals_tabs_tab um_segmented_tab${
+                  membersTab === "general" ? " um_members_tab_active" : ""
+                }`}
+                onClick={() => setMembersTab("general")}
+              >
+                <Info
+                  className="deals_tabs_icon um_segmented_tab_icon"
+                  size={16}
+                  strokeWidth={2}
+                  aria-hidden
+                />
+                <span className="deals_tabs_label um_segmented_tab_label">
+                  General Info
+                </span>
+              </button>
+            </div>
+          </TabsScrollStrip>
         </div>
         {membersTab === "users" ? (
           <div className="um_members_top_row_actions">
@@ -1495,6 +1638,7 @@ export default function UserManagementPage({
       </div>
 
       <div className="um_members_tab_content">
+      {membersTab === "users" ? (
       <div
         className={`um_panel um_members_tab_panel deal_inv_table_panel deals_list_table_panel${
           membersLoading ? " deals_list_table_panel_loading" : ""
@@ -1503,7 +1647,6 @@ export default function UserManagementPage({
         role="tabpanel"
         aria-labelledby="um-members-tab-users"
         aria-busy={membersLoading}
-        hidden={membersTab !== "users"}
       >
         <div className="um_toolbar um_toolbar_export_then_search">
           <div className="um_toolbar_actions">
@@ -1520,7 +1663,7 @@ export default function UserManagementPage({
               type="button"
               className="um_btn_toolbar"
               onClick={handleSuspendAll}
-              disabled={membersLoading}
+              disabled={membersLoading || membersToSuspend.length === 0}
             >
               <Ban size={18} strokeWidth={2} aria-hidden />
               Suspend All
@@ -1563,6 +1706,10 @@ export default function UserManagementPage({
         ) : null}
         {!membersLoadError ? (
           <div className="um_table_wrap">
+            <TableHScrollShell
+              active={!membersLoading && sortedRows.length > 0}
+              ariaLabel="Members columns"
+            >
             <table className="um_table um_table_sortable um_table_members">
               <thead>
                 <tr>
@@ -1663,7 +1810,7 @@ export default function UserManagementPage({
                   const initials = initialsFromRow(row);
                   const displayName = memberUserCellPrimaryLabel(row);
                   const rawEmail = String(row.email ?? "").trim();
-                  const email = formatValue(row.email);
+                  const email = displayEmail(row.email);
                   const menuOpen = actionMenuRowId === rowId;
                   const rowUserStatus = userStatusForUi(row);
                   const rowAccountStatus = accountStatusForUi(row);
@@ -1709,7 +1856,7 @@ export default function UserManagementPage({
                             >
                               {displayName}
                             </span>
-                            {rawEmail.includes("@") ? (
+                            {isDisplayableEmail(rawEmail) ? (
                               <a
                                 href={`mailto:${encodeURIComponent(rawEmail)}`}
                                 className="um_user_meta_email um_user_meta_email_link"
@@ -1717,7 +1864,9 @@ export default function UserManagementPage({
                                 {rawEmail}
                               </a>
                             ) : (
-                              <span className="um_user_meta_email">{email}</span>
+                              <span className="um_user_meta_email um_status_muted">
+                                {email}
+                              </span>
                             )}
                           </div>
                         </div>
@@ -1781,6 +1930,7 @@ export default function UserManagementPage({
                 )}
               </tbody>
             </table>
+            </TableHScrollShell>
             {!membersLoading && sortedRows.length > 0 ? (
               <DataTablePagination
                 page={membersPageSafe}
@@ -1794,16 +1944,16 @@ export default function UserManagementPage({
           </div>
         ) : null}
       </div>
-
+      ) : (
       <div
         className="um_panel um_members_tab_panel deals_list_card_surface um_members_general_panel"
         id="um-members-panel-general"
         role="tabpanel"
         aria-labelledby="um-members-tab-general"
-        hidden={membersTab !== "general"}
       >
         <MembersRoleInfoPanel />
       </div>
+      )}
       </div>
 
       {actionMenuRowId &&
@@ -1969,7 +2119,7 @@ export default function UserManagementPage({
               <ViewReadonlyField
                 Icon={Mail}
                 label="Email"
-                value={formatValue(viewRow.email)}
+                value={displayEmail(viewRow.email)}
               />
               <ViewReadonlyField
                 Icon={User}
@@ -2061,7 +2211,7 @@ export default function UserManagementPage({
               <ViewReadonlyField
                 Icon={Mail}
                 label="Email"
-                value={formatValue(editRow.email)}
+                value={displayEmail(editRow.email)}
               />
             </div>
             <form onSubmit={submitEditMember}>
@@ -2237,7 +2387,7 @@ export default function UserManagementPage({
               <ViewReadonlyField
                 Icon={Mail}
                 label="Email"
-                value={formatValue(suspendRow.email)}
+                value={displayEmail(suspendRow.email)}
               />
             </div>
             <form onSubmit={submitSuspendMember}>
@@ -2602,6 +2752,91 @@ export default function UserManagementPage({
         members={sortedRows}
         organizationScope={organizationDisplayScope}
       />
+      {suspendAllOpen ? (
+        <div
+          className="um_modal_overlay deals_add_inv_modal_overlay portal_modal_z_boost"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeSuspendAllModal();
+          }}
+        >
+          <div
+            className="um_modal um_modal_view deals_add_inv_modal_panel deals_suspend_all_modal_panel"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={suspendAllTitleId}
+          >
+            <div className="um_modal_head">
+              <h3 id={suspendAllTitleId} className="um_modal_title">
+                Suspend all members?
+              </h3>
+              <button
+                type="button"
+                className="um_modal_close"
+                onClick={closeSuspendAllModal}
+                disabled={suspendAllBusy}
+                aria-label="Close"
+              >
+                <X size={20} strokeWidth={2} aria-hidden />
+              </button>
+            </div>
+            <form onSubmit={(e) => void confirmSuspendAll(e)}>
+              <div className="deals_suspend_all_modal_body">
+                <p className="deals_suspend_all_modal_message">
+                  Mark {membersToSuspend.length} active member
+                  {membersToSuspend.length === 1 ? "" : "s"} inactive? Your own
+                  account is excluded. You can activate members again from the
+                  row menu.
+                </p>
+                <div className="um_field contacts_suspend_reason_field">
+                  <label htmlFor="um-suspend-all-reason">Reason</label>
+                  <textarea
+                    id="um-suspend-all-reason"
+                    className="um_field_textarea contacts_suspend_reason_textarea"
+                    rows={3}
+                    value={suspendAllReason}
+                    onChange={(e) => {
+                      setSuspendAllReason(e.target.value);
+                      setSuspendAllErr("");
+                    }}
+                    disabled={suspendAllBusy}
+                    placeholder="Why are these members being suspended?"
+                  />
+                </div>
+                {suspendAllErr ? (
+                  <p
+                    className="um_msg_error um_modal_form_error contacts_suspend_modal_error"
+                    role="alert"
+                  >
+                    {suspendAllErr}
+                  </p>
+                ) : null}
+              </div>
+              <div className="um_modal_actions add_contact_modal_actions">
+                <button
+                  type="button"
+                  className="um_btn_secondary"
+                  onClick={closeSuspendAllModal}
+                  disabled={suspendAllBusy}
+                >
+                  <X size={16} strokeWidth={2} aria-hidden />
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  className="um_btn_primary"
+                  disabled={suspendAllBusy || !suspendAllReason.trim()}
+                >
+                  <Ban size={16} strokeWidth={2} aria-hidden />
+                  {suspendAllBusy ? "Suspending…" : "Suspend all"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
+
+export { UserManagementPage };

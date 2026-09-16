@@ -10,6 +10,7 @@ import { db } from "../../database/db.js";
 import { users } from "../../schema/schema.js";
 import { eq } from "drizzle-orm";
 import {
+  isGeneralPartnerStoredRole,
   isLpInvestorRole,
   resolveInvestorClassForDealInvestment,
 } from "../../services/deal/dealInvestment.service.js";
@@ -17,13 +18,19 @@ import { reconcileAssigningDealUsersForDeal } from "../../services/deal/assignin
 import { sendDealMemberInviteForInvestmentIfRequested } from "../../services/deal/dealMemberInvitationEmail.service.js";
 import {
   findDealLpInvestorByDealAndContact,
-  getDealLpInvestorById,
+  findMergedInvestorForLpRosterRow,
   getLpInvestorsTabPayload,
   LP_INVESTOR_ALREADY_ON_DEAL_MESSAGE,
+  mapDealLpInvestorRowToEditApi,
+  resolveDealLpInvestorForEdit,
   updateDealLpInvestorById,
   updateMyCommittedAmountForLpDeal,
   upsertDealLpInvestor,
 } from "../../services/deal/dealLpInvestor.service.js";
+import {
+  assertEligibleForNewDealRosterAdd,
+  isDealRosterEligibilityError,
+} from "../../services/user/portalUserRosterGuard.service.js";
 
 function bodyString(v: unknown): string {
   if (typeof v === "string") return v;
@@ -41,6 +48,68 @@ function isAutosaveJson(b: Record<string, unknown>): boolean {
   if (raw === true) return true;
   const v = bodyString(raw);
   return v === "true" || v === "1" || v.toLowerCase() === "yes";
+}
+
+/**
+ * GET /deals/:dealId/lp-investors/:lpInvestorId
+ * Optional `?contactId=` — when the list row is a `deal_investment` id, resolve via contact.
+ */
+export async function getDealLpInvestor(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const dealId =
+    typeof req.params.dealId === "string"
+      ? req.params.dealId
+      : req.params.dealId?.[0];
+  const lpInvestorId =
+    typeof req.params.lpInvestorId === "string"
+      ? req.params.lpInvestorId
+      : req.params.lpInvestorId?.[0];
+  if (!dealId?.trim() || !lpInvestorId?.trim()) {
+    res.status(400).json({ message: "Missing deal id or LP investor id" });
+    return;
+  }
+
+  const contactIdRaw = req.query.contactId ?? req.query.contact_id;
+  const contactId =
+    typeof contactIdRaw === "string"
+      ? contactIdRaw.trim()
+      : Array.isArray(contactIdRaw)
+        ? String(contactIdRaw[0] ?? "").trim()
+        : "";
+
+  try {
+    const scope = await resolveDealViewerScope(
+      user.id,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    if (!(await assertDealIdInViewerScope(dealId, scope))) {
+      res.status(404).json({ message: "Deal not found" });
+      return;
+    }
+
+    const row = await resolveDealLpInvestorForEdit(dealId.trim(), {
+      lpInvestorId: lpInvestorId.trim(),
+      contactId: contactId || undefined,
+    });
+    if (!row) {
+      res.status(404).json({ message: "LP investor row not found" });
+      return;
+    }
+
+    const investor = await mapDealLpInvestorRowToEditApi(row);
+    res.status(200).json({ investor });
+  } catch (err) {
+    console.error("getDealLpInvestor:", err);
+    res.status(500).json({ message: "Could not load LP investor" });
+  }
 }
 
 /**
@@ -83,6 +152,18 @@ export async function postDealLpInvestor(
   const investorRole = bodyString(
     b.investor_role ?? b.investorRole ?? b.role,
   );
+  const percentOfClassOwnership = bodyString(
+    b.percent_of_class_ownership ?? b.percentOfClassOwnership,
+  );
+  const percentOfClassDistributions = bodyString(
+    b.percent_of_class_distributions ?? b.percentOfClassDistributions,
+  );
+  const entityOwnershipPercent = bodyString(
+    b.entity_ownership_percent ?? b.entityOwnershipPercent,
+  );
+  const distributionAllocationPercent = bodyString(
+    b.distribution_allocation_percent ?? b.distributionAllocationPercent,
+  );
 
   if (!contactId.trim()) {
     res.status(400).json({ message: "Member (contact) is required" });
@@ -103,6 +184,9 @@ export async function postDealLpInvestor(
     const classResolution = await resolveInvestorClassForDealInvestment(
       dealId,
       investorClass,
+      {
+        excludeGp: !isGeneralPartnerStoredRole(investorRole),
+      },
     );
     if (!classResolution.ok) {
       res.status(400).json({ message: classResolution.message });
@@ -120,6 +204,14 @@ export async function postDealLpInvestor(
       }
     }
 
+    const existingForContact = await findDealLpInvestorByDealAndContact(
+      dealId,
+      contactId,
+    );
+    if (!existingForContact) {
+      await assertEligibleForNewDealRosterAdd(contactId.trim());
+    }
+
     const row = await upsertDealLpInvestor(dealId, {
       contactMemberId: contactId.trim(),
       contactDisplayName: contactDisplayName.trim(),
@@ -129,6 +221,10 @@ export async function postDealLpInvestor(
       addedByUserId: user.id,
       emailFromClient: contactEmail.trim() || null,
       roleFromClient: investorRole.trim() || null,
+      percentOfClassOwnership,
+      percentOfClassDistributions,
+      entityOwnershipPercent,
+      distributionAllocationPercent,
     });
 
     await reconcileAssigningDealUsersForDeal(dealId, user.id);
@@ -144,16 +240,17 @@ export async function postDealLpInvestor(
     }
 
     const { investors } = await getLpInvestorsTabPayload(dealId, user.id);
-    const inv = investors.find(
-      (x) => String(x.id).toLowerCase() === String(row.id).toLowerCase(),
-    );
+    const inv = await findMergedInvestorForLpRosterRow(investors, row);
 
-    console.log("INV", inv);
     res.status(201).json({
       message: "LP investor saved",
       investor: inv ?? null,
     });
   } catch (err) {
+    if (isDealRosterEligibilityError(err)) {
+      res.status(400).json({ message: err.message });
+      return;
+    }
     console.error("postDealLpInvestor:", err);
     res.status(500).json({ message: "Could not save LP investor" });
   }
@@ -203,6 +300,18 @@ export async function putDealLpInvestor(
   const investorRole = bodyString(
     b.investor_role ?? b.investorRole ?? b.role,
   );
+  const percentOfClassOwnership = bodyString(
+    b.percent_of_class_ownership ?? b.percentOfClassOwnership,
+  );
+  const percentOfClassDistributions = bodyString(
+    b.percent_of_class_distributions ?? b.percentOfClassDistributions,
+  );
+  const entityOwnershipPercent = bodyString(
+    b.entity_ownership_percent ?? b.entityOwnershipPercent,
+  );
+  const distributionAllocationPercent = bodyString(
+    b.distribution_allocation_percent ?? b.distributionAllocationPercent,
+  );
 
   if (!contactId.trim()) {
     res.status(400).json({ message: "Member (contact) is required" });
@@ -220,7 +329,10 @@ export async function putDealLpInvestor(
       return;
     }
 
-    const existing = await getDealLpInvestorById(dealId, lpInvestorId);
+    const existing = await resolveDealLpInvestorForEdit(dealId, {
+      lpInvestorId,
+      contactId: contactId.trim() || undefined,
+    });
     if (!existing) {
       res.status(404).json({ message: "LP investor row not found" });
       return;
@@ -229,6 +341,9 @@ export async function putDealLpInvestor(
     const classResolution = await resolveInvestorClassForDealInvestment(
       dealId,
       investorClass,
+      {
+        excludeGp: !isGeneralPartnerStoredRole(investorRole),
+      },
     );
     if (!classResolution.ok) {
       res.status(400).json({ message: classResolution.message });
@@ -243,14 +358,14 @@ export async function putDealLpInvestor(
       if (
         duplicate &&
         String(duplicate.id).toLowerCase() !==
-          String(lpInvestorId).trim().toLowerCase()
+          String(existing.id).trim().toLowerCase()
       ) {
         res.status(409).json({ message: LP_INVESTOR_ALREADY_ON_DEAL_MESSAGE });
         return;
       }
     }
 
-    const row = await updateDealLpInvestorById(dealId, lpInvestorId, {
+    const row = await updateDealLpInvestorById(dealId, existing.id, {
       contactMemberId: contactId.trim(),
       contactDisplayName: contactDisplayName.trim(),
       profileId,
@@ -259,6 +374,10 @@ export async function putDealLpInvestor(
       addedByUserId: user.id,
       emailFromClient: contactEmail.trim() || null,
       roleFromClient: investorRole.trim() || null,
+      percentOfClassOwnership,
+      percentOfClassDistributions,
+      entityOwnershipPercent,
+      distributionAllocationPercent,
     });
     if (!row) {
       res.status(404).json({ message: "Could not update LP investor" });
@@ -278,15 +397,17 @@ export async function putDealLpInvestor(
     }
 
     const { investors } = await getLpInvestorsTabPayload(dealId, user.id);
-    const inv = investors.find(
-      (x) => String(x.id).toLowerCase() === String(row.id).toLowerCase(),
-    );
+    const inv = await findMergedInvestorForLpRosterRow(investors, row);
 
     res.status(200).json({
       message: "LP investor updated",
       investor: inv ?? null,
     });
   } catch (err) {
+    if (isDealRosterEligibilityError(err)) {
+      res.status(400).json({ message: err.message });
+      return;
+    }
     console.error("putDealLpInvestor:", err);
     res.status(500).json({ message: "Could not update LP investor" });
   }

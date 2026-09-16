@@ -29,9 +29,9 @@ export function useInvestmentEsignSigning(
 ) {
   const [phase, setPhase] = useState<InvestmentEsignSignPhase>("idle")
   const [error, setError] = useState<string | null>(null)
-  const [waitingFor, setWaitingFor] = useState<"sponsor" | "investor" | null>(
-    null,
-  )
+  const [waitingFor, setWaitingFor] = useState<
+    "sponsor" | "investor" | "prior_investor" | null
+  >(null)
   const [activeSession, setActiveSession] =
     useState<InvestmentEsignActiveSession | null>(null)
   const [embedKey, setEmbedKey] = useState(0)

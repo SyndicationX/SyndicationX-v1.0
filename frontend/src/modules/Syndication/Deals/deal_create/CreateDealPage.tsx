@@ -12,19 +12,25 @@ import {
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { FormHeadingWithInfo } from "../../../../common/components/form-heading/FormHeadingWithInfo"
 import { toast } from "../../../../common/components/Toast"
-import { focusFirstFormErrorAfterUpdate } from "../../../../common/utils/scrollToFirstFormError"
+import { focusFirstFormErrorAfterUpdate, scrollMultiStepFormToTopAfterUpdate } from "../../../../common/utils/scrollToFirstFormError"
 import {
   assetImagePathsToUrls,
   getApiV1Base,
 } from "../../../../common/utils/apiBaseUrl"
 import { AssetStepForm } from "../components/AssetStepForm"
 import { ASSET_MAX_IMAGE_COUNT } from "../types/deal-asset.types"
+import {
+  DealBillableStageNoticeModal,
+  type DealBillableStageNoticeMode,
+} from "../components/DealBillableStageNoticeModal"
 import { DealStageChangeConfirmModal } from "../components/DealStageChangeConfirmModal"
+import { DealSaasPaywallModal } from "../components/DealSaasPaywallModal"
 import { DealStepForm } from "../components/DealStepForm"
 import "../../contacts/contacts.css"
 import "../../usermanagement/user_management.css"
 import "../deal-investor-class.css"
 import {
+  AUTOSAVE_DEFAULT_DEAL_NAME,
   buildCreateDealFormData,
   buildCreateDealFormDataForAutosave,
   createDealMultipart,
@@ -51,7 +57,15 @@ import {
 } from "../constants/deal-stage-modal-config"
 import { dedupeStoredImagePathSegments } from "../utils/offeringGalleryUrls"
 import { dealImageFileKey } from "../../../../common/utils/materializeImageFileForUpload"
-import type { DealStage } from "../constants/deal-lifecycle/deal-stage"
+import {
+  isDealStageSaasBillable,
+  type DealStage,
+} from "../constants/deal-lifecycle/deal-stage"
+import {
+  dealSaasBillingSettingsPath,
+  isDealSaasPaymentRequiredError,
+  type DealSaasPaywallDeal,
+} from "../utils/dealSaasAccess"
 import {
   emptyAssetStepDraft,
   emptyDealStepDraft,
@@ -62,19 +76,55 @@ import {
 import "../deals-create.css"
 import "../deals-list.css"
 
+function segmentsFromAssetImagePath(path: string | null | undefined): string[] {
+  return dedupeStoredImagePathSegments(
+    String(path ?? "")
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  )
+}
+
+function isDealStepRequiredDataFilled(deal: DealStepDraft): boolean {
+  const name = deal.dealName.trim()
+  if (!name || name.toLowerCase() === AUTOSAVE_DEFAULT_DEAL_NAME.toLowerCase()) {
+    return false
+  }
+  return Boolean(
+    deal.secType.trim() &&
+      deal.owningEntityName.trim() &&
+      deal.fundsBeforeGpCountersigns &&
+      deal.autoFundingAfterGpCountersigns,
+  )
+}
+
 function DealStepBillingNote() {
   return (
     <div className="deals_create_billing_wrap">
       <p className="deals_create_billing_info" role="note">
-        Your default billing method will be charged automatically. To assign a
-        different billing method, go to{" "}
-        <Link className="deals_create_billing_info_link" to="/settings">
+        When this deal is raising capital or asset managing, the lead sponsor
+        pays monthly SaaS (MRR). Choose a plan or pay from{" "}
+        <Link className="deals_create_billing_info_link" to="/settings?billing=pay">
           Billing
         </Link>
         .
       </p>
     </div>
   )
+}
+
+function dealSaasPaymentCompleteFromDetail(detail: {
+  listRow?: { billingSubscriptionStatus?: string }
+  billingSubscriptionStatus?: string
+}): boolean {
+  const status = String(
+    detail.listRow?.billingSubscriptionStatus ??
+      detail.billingSubscriptionStatus ??
+      "",
+  )
+    .trim()
+    .toLowerCase()
+  return status === "active" || status === "trialing"
 }
 
 export function CreateDealPage() {
@@ -97,8 +147,8 @@ export function CreateDealPage() {
   const [assetDraft, setAssetDraft] = useState(emptyAssetStepDraft)
   const [assetImages, setAssetImages] = useState<File[]>([])
   /**
-   * Edit deal (`?edit=id`): upload-relative segments for property images still on the deal.
-   * Drives thumbnails + `retained_asset_image_path` on PUT so removals persist.
+   * Saved property-image path segments (edit deal and in-progress create).
+   * Drives thumbnails, the 10-image cap, and `retained_asset_image_path` on PUT.
    */
   const [retainedPropertyImagePaths, setRetainedPropertyImagePaths] = useState<
     string[]
@@ -112,6 +162,13 @@ export function CreateDealPage() {
   const [saving, setSaving] = useState(false)
   const [stageChangeModalOpen, setStageChangeModalOpen] = useState(false)
   const [stageModalMode, setStageModalMode] = useState<"radio" | "save">("radio")
+  const [billableStageNoticeOpen, setBillableStageNoticeOpen] = useState(false)
+  const [billableStageNoticeBusy, setBillableStageNoticeBusy] = useState(false)
+  const [billableStageNoticeMode, setBillableStageNoticeMode] =
+    useState<DealBillableStageNoticeMode>("billing")
+  const [billableStageNoticeStage, setBillableStageNoticeStage] = useState<
+    DealStageOption | ""
+  >("")
   const [pendingStageFormValue, setPendingStageFormValue] = useState<
     DealStageOption | ""
   >("")
@@ -122,19 +179,32 @@ export function CreateDealPage() {
   const [initialDealStageCanonical, setInitialDealStageCanonical] =
     useState<DealStage | null>(null)
   const [loadingDeal, setLoadingDeal] = useState(Boolean(editDealId))
+  const [saasPaywallDeal, setSaasPaywallDeal] =
+    useState<DealSaasPaywallDeal | null>(null)
   const [backendDealId, setBackendDealId] = useState<string | null>(null)
   const createDealDraftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   )
   const backendDealIdRef = useRef<string | null>(null)
   const createPostInFlightRef = useRef(false)
+  /** Set when autosave was skipped because the initial POST was still running. */
+  const pendingBackendAutosaveRef = useRef(false)
   const backendAutosaveInFlightRef = useRef(false)
   const galleryUploadInFlightRef = useRef(false)
   const uploadedImageKeysRef = useRef<Set<string>>(new Set())
+  const lastImageUploadErrorRef = useRef<string | null>(null)
+  const galleryHydratedForDealRef = useRef<string | null>(null)
+  const retainedPropertyImagePathsRef = useRef<string[]>([])
   const assetImagesRef = useRef<File[]>([])
   const backendAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   )
+  /** Backend autosave uses this after deal stage is unchanged briefly (avoids persisting a flicker). */
+  const persistableDealStageRef = useRef<DealStageOption | "">("")
+  const dealStageStabilizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  )
+  const saasPaidRef = useRef(false)
   const latestCreateDealDraftRef = useRef({
     deal: emptyDealStepDraft(),
     asset: emptyAssetStepDraft(),
@@ -149,6 +219,7 @@ export function CreateDealPage() {
    */
   const skipOverwriteEmptySessionDraftRef = useRef(false)
   const formRef = useRef<HTMLFormElement>(null)
+  const stepScrollBootRef = useRef(true)
 
   useLayoutEffect(() => {
     if (editDealId) {
@@ -176,7 +247,10 @@ export function CreateDealPage() {
         setBackendDealId(null)
         backendDealIdRef.current = null
       }
+      setAssetImages([])
       setRetainedPropertyImagePaths([])
+      uploadedImageKeysRef.current = new Set()
+      galleryHydratedForDealRef.current = null
       return
     }
     skipOverwriteEmptySessionDraftRef.current = true
@@ -188,6 +262,7 @@ export function CreateDealPage() {
     setAssetImages([])
     setRetainedPropertyImagePaths([])
     uploadedImageKeysRef.current = new Set()
+    galleryHydratedForDealRef.current = null
   }, [editDealId, resumeDraft])
 
   useEffect(() => {
@@ -198,10 +273,20 @@ export function CreateDealPage() {
     let cancelled = false
     setLoadingDeal(true)
     setRetainedPropertyImagePaths([])
+    let blockedFromEdit = false
     void (async () => {
       try {
         const detail = await fetchDealById(editDealId)
         if (cancelled) return
+        if (detail.viewerCanEditDeal === false) {
+          blockedFromEdit = true
+          toast.error(
+            "You cannot edit this deal",
+            "Only the lead or admin sponsor can edit the deal.",
+          )
+          navigate(postSavePath, { replace: true })
+          return
+        }
         const mapped = mapDealDetailApiToCreateDrafts(detail)
         const { deal, asset, step: mergedStep } =
           mergeStoredCreateDealDraftForEdit(editDealId, mapped.deal, mapped.asset)
@@ -209,24 +294,28 @@ export function CreateDealPage() {
         setAssetDraft(asset)
         setAssetImages([])
         uploadedImageKeysRef.current = new Set()
-        const segs = dedupeStoredImagePathSegments(
-          detail.assetImagePath
-            ?.split(";")
-            .map((s: string) => s.trim())
-            .filter(Boolean) ?? [],
-        )
+        const segs = segmentsFromAssetImagePath(detail.assetImagePath)
         setRetainedPropertyImagePaths(segs)
         setStep(mergedStep)
         setInitialDealStageCanonical(formDealStageToCanonical(detail.dealStage))
+        saasPaidRef.current = dealSaasPaymentCompleteFromDetail(detail)
         setStageConfirmedInSession(null)
         setPendingStageFormValue("")
-      } catch {
+      } catch (err) {
         if (!cancelled) {
+          if (isDealSaasPaymentRequiredError(err)) {
+            setSaasPaywallDeal({
+              ...err.payload,
+              id: err.payload.id || editDealId || "",
+            })
+            setLoadingDeal(false)
+            return
+          }
           toast.error("Could not load deal to edit.")
           navigate(postSavePath, { replace: true })
         }
       } finally {
-        if (!cancelled) setLoadingDeal(false)
+        if (!cancelled && !blockedFromEdit) setLoadingDeal(false)
       }
     })()
     return () => {
@@ -234,8 +323,45 @@ export function CreateDealPage() {
     }
   }, [editDealId, navigate, postSavePath])
 
+  /** Resume / in-progress create: count images already on the server toward the 10-image cap. */
+  useEffect(() => {
+    if (editDealId) return
+    const id = backendDealId?.trim()
+    if (!id) {
+      galleryHydratedForDealRef.current = null
+      return
+    }
+    if (galleryHydratedForDealRef.current === id) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const detail = await fetchDealById(id)
+        if (cancelled) return
+        const segs = segmentsFromAssetImagePath(detail.assetImagePath)
+        galleryHydratedForDealRef.current = id
+        setRetainedPropertyImagePaths((prev) =>
+          dedupeStoredImagePathSegments([...segs, ...prev]),
+        )
+      } catch {
+        /* Keep local thumbnails if the deal cannot be loaded yet. */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [editDealId, backendDealId])
+
+  useEffect(() => {
+    if (stepScrollBootRef.current) {
+      stepScrollBootRef.current = false
+      return
+    }
+    scrollMultiStepFormToTopAfterUpdate({ container: formRef.current })
+  }, [step])
+
   backendDealIdRef.current = backendDealId
   assetImagesRef.current = assetImages
+  retainedPropertyImagePathsRef.current = retainedPropertyImagePaths
 
   const existingPropertyImageUrls = useMemo(
     () =>
@@ -245,12 +371,41 @@ export function CreateDealPage() {
     [retainedPropertyImagePaths],
   )
 
+  useEffect(() => {
+    const room = Math.max(
+      0,
+      ASSET_MAX_IMAGE_COUNT - retainedPropertyImagePaths.length,
+    )
+    setAssetImages((prev) => (prev.length <= room ? prev : prev.slice(0, room)))
+  }, [retainedPropertyImagePaths])
+
   latestCreateDealDraftRef.current = {
     deal: dealDraft,
     asset: assetDraft,
     step,
     backendDealId,
   }
+
+  /** Wait until deal stage stops changing before backend autosave may persist it. */
+  useEffect(() => {
+    if (dealStageStabilizeTimerRef.current) {
+      clearTimeout(dealStageStabilizeTimerRef.current)
+      dealStageStabilizeTimerRef.current = null
+    }
+    const next = dealDraft.dealStage
+    persistableDealStageRef.current = ""
+    if (!next?.trim()) return
+    dealStageStabilizeTimerRef.current = setTimeout(() => {
+      dealStageStabilizeTimerRef.current = null
+      persistableDealStageRef.current = next
+    }, 800)
+    return () => {
+      if (dealStageStabilizeTimerRef.current) {
+        clearTimeout(dealStageStabilizeTimerRef.current)
+        dealStageStabilizeTimerRef.current = null
+      }
+    }
+  }, [dealDraft.dealStage])
 
   /** Edit flow: defer stage change on autosave until user confirms on Save. */
   function dealDraftForBackendPersist(deal: DealStepDraft): DealStepDraft {
@@ -263,6 +418,15 @@ export function CreateDealPage() {
       }
     }
     return deal
+  }
+
+  /** Create flow: only persist deal stage after it stops changing (hover-then-pick another option). */
+  function dealDraftForCreateAutosave(deal: DealStepDraft): DealStepDraft | null {
+    const stage = persistableDealStageRef.current?.trim()
+      ? persistableDealStageRef.current
+      : deal.dealStage
+    if (!String(stage ?? "").trim()) return null
+    return dealDraftForBackendPersist({ ...deal, dealStage: stage })
   }
 
   /** Upload each picked file at most once (autosave + Save share this). */
@@ -281,20 +445,12 @@ export function CreateDealPage() {
 
       galleryUploadInFlightRef.current = true
       const claimKeys = new Set(pending.map(dealImageFileKey))
-      setAssetImages((prev) =>
-        prev.filter((f) => !claimKeys.has(dealImageFileKey(f))),
-      )
-      assetImagesRef.current = assetImagesRef.current.filter(
-        (f) => !claimKeys.has(dealImageFileKey(f)),
-      )
 
       try {
         let materialized: File[]
         try {
           materialized = await materializeDealImageFiles(pending)
         } catch (e) {
-          setAssetImages((prev) => [...prev, ...pending])
-          assetImagesRef.current = [...assetImagesRef.current, ...pending]
           const message =
             e instanceof Error && e.message
               ? e.message
@@ -303,18 +459,28 @@ export function CreateDealPage() {
         }
         const up = await postDealOfferingGalleryUploads(dealId, materialized)
         if (!up.ok) {
-          setAssetImages((prev) => [...prev, ...pending])
-          assetImagesRef.current = [...assetImagesRef.current, ...pending]
           return up
         }
+        lastImageUploadErrorRef.current = null
         for (const f of pending) {
           uploadedImageKeysRef.current.add(dealImageFileKey(f))
         }
-        if (up.newPaths.length > 0) {
-          setRetainedPropertyImagePaths((prev) =>
-            dedupeStoredImagePathSegments([...prev, ...up.newPaths]),
-          )
-        }
+        const fromDeal = segmentsFromAssetImagePath(up.deal.assetImagePath)
+        const segs =
+          fromDeal.length > 0
+            ? fromDeal
+            : dedupeStoredImagePathSegments([
+                ...retainedPropertyImagePathsRef.current,
+                ...up.newPaths,
+              ])
+        setRetainedPropertyImagePaths(segs)
+        const room = Math.max(0, ASSET_MAX_IMAGE_COUNT - segs.length)
+        const keepPending = (files: File[]) =>
+          files
+            .filter((f) => !claimKeys.has(dealImageFileKey(f)))
+            .slice(0, room)
+        setAssetImages((prev) => keepPending(prev))
+        assetImagesRef.current = keepPending(assetImagesRef.current)
         return { ok: true, newPaths: up.newPaths }
       } finally {
         galleryUploadInFlightRef.current = false
@@ -378,9 +544,10 @@ export function CreateDealPage() {
         const persistedId = editDealId ?? backendDealIdRef.current
         const { deal, asset, step: st } = latestCreateDealDraftRef.current
         const imgsSnapshot = [...assetImagesRef.current]
-        const imageOpts = editDealId
-          ? { retainedAssetImagePath: retainedPropertyImagePaths }
-          : undefined
+        const imageOpts =
+          editDealId || retainedPropertyImagePathsRef.current.length > 0
+            ? { retainedAssetImagePath: retainedPropertyImagePathsRef.current }
+            : undefined
 
         if (!editDealId) {
           const draftCheck: CreateDealFormDraft = {
@@ -394,8 +561,14 @@ export function CreateDealPage() {
           if (!createDealDraftHasContent(draftCheck)) return
         }
 
+        const dealForPersist =
+          editDealId != null
+            ? dealDraftForBackendPersist(deal)
+            : dealDraftForCreateAutosave(deal)
+        if (!dealForPersist) return
+
         const formData = buildCreateDealFormDataForAutosave(
-          dealDraftForBackendPersist(deal),
+          dealForPersist,
           asset,
           [],
           imageOpts,
@@ -422,10 +595,14 @@ export function CreateDealPage() {
                     backendDealId: recreate.dealId,
                   })
                   notifyDealsListRefetch()
-                  await uploadPendingDealGalleryImages(
+                  const up = await uploadPendingDealGalleryImages(
                     recreate.dealId,
                     imgsSnapshot,
                   )
+                  if (!up.ok && lastImageUploadErrorRef.current !== up.message) {
+                    lastImageUploadErrorRef.current = up.message
+                    toast.error("Could not upload image", up.message)
+                  }
                 } else if (import.meta.env.DEV) {
                   console.warn(
                     "[Create deal] Autosave recreate failed:",
@@ -440,8 +617,14 @@ export function CreateDealPage() {
                 persistedId,
                 imgsSnapshot,
               )
-              if (!up.ok && import.meta.env.DEV) {
-                console.warn("[Create deal] Image upload failed:", up.message)
+              if (!up.ok) {
+                if (lastImageUploadErrorRef.current !== up.message) {
+                  lastImageUploadErrorRef.current = up.message
+                  toast.error("Could not upload image", up.message)
+                }
+                if (import.meta.env.DEV) {
+                  console.warn("[Create deal] Image upload failed:", up.message)
+                }
               }
             }
             /* Intentionally no notifyDealsListRefetch on PUT — refetching the whole
@@ -452,13 +635,18 @@ export function CreateDealPage() {
           return
         }
 
-        if (createPostInFlightRef.current) return
+        if (createPostInFlightRef.current) {
+          pendingBackendAutosaveRef.current = true
+          return
+        }
         createPostInFlightRef.current = true
         backendAutosaveInFlightRef.current = true
+        let createdDealId: string | null = null
         try {
           const result = await createDealMultipart(formData)
           if (result.ok) {
               if (result.dealId) {
+                createdDealId = result.dealId
                 backendDealIdRef.current = result.dealId
                 setBackendDealId(result.dealId)
                 saveCreateDealDraft({
@@ -467,10 +655,14 @@ export function CreateDealPage() {
                   step: st,
                   backendDealId: result.dealId,
                 })
-                await uploadPendingDealGalleryImages(
+                const up = await uploadPendingDealGalleryImages(
                   result.dealId,
                   imgsSnapshot,
                 )
+                if (!up.ok && lastImageUploadErrorRef.current !== up.message) {
+                  lastImageUploadErrorRef.current = up.message
+                  toast.error("Could not upload image", up.message)
+                }
               }
             notifyDealsListRefetch()
           } else if (import.meta.env.DEV)
@@ -478,6 +670,27 @@ export function CreateDealPage() {
         } finally {
           createPostInFlightRef.current = false
           backendAutosaveInFlightRef.current = false
+        }
+
+        if (createdDealId && pendingBackendAutosaveRef.current) {
+          pendingBackendAutosaveRef.current = false
+          const latest = latestCreateDealDraftRef.current
+          const dealForFlush = dealDraftForCreateAutosave(latest.deal)
+          if (dealForFlush) {
+            const flushData = buildCreateDealFormDataForAutosave(
+              dealForFlush,
+              latest.asset,
+              [],
+            )
+            backendAutosaveInFlightRef.current = true
+            try {
+              await updateDealMultipart(createdDealId, flushData)
+            } finally {
+              backendAutosaveInFlightRef.current = false
+            }
+          }
+        } else {
+          pendingBackendAutosaveRef.current = false
         }
       })()
     }, 1200)
@@ -513,9 +726,23 @@ export function CreateDealPage() {
     })
   }
 
+  function openBillableStageNotice(next: DealStageOption | "") {
+    persistableDealStageRef.current = next
+    setBillableStageNoticeStage(next)
+    const complete = isDealStepRequiredDataFilled({
+      ...dealDraft,
+      dealStage: next,
+    })
+    setBillableStageNoticeMode(complete ? "billing" : "complete_deal")
+    setBillableStageNoticeOpen(true)
+  }
+
   function handleDealStageSelect(next: DealStageOption | "") {
     if (!editDealId || !initialDealStageCanonical) {
       patchDeal({ dealStage: next })
+      if (isDealStageSaasBillable(next)) {
+        openBillableStageNotice(next)
+      }
       return
     }
     const nextCanon = formDealStageToCanonical(next)
@@ -526,10 +753,16 @@ export function CreateDealPage() {
     if (nextCanon === initialDealStageCanonical) {
       patchDeal({ dealStage: next })
       setStageConfirmedInSession(null)
+      if (isDealStageSaasBillable(next)) {
+        openBillableStageNotice(next)
+      }
       return
     }
     if (stageConfirmedInSession === nextCanon) {
       patchDeal({ dealStage: next })
+      if (isDealStageSaasBillable(next)) {
+        openBillableStageNotice(next)
+      }
       return
     }
     setPendingStageFormValue(next)
@@ -556,9 +789,153 @@ export function CreateDealPage() {
       patchDeal({ dealStage: pendingStageFormValue })
       const canon = formDealStageToCanonical(pendingStageFormValue)
       if (canon) setStageConfirmedInSession(canon)
+      if (isDealStageSaasBillable(pendingStageFormValue)) {
+        openBillableStageNotice(pendingStageFormValue)
+      }
     }
     setStageChangeModalOpen(false)
     setPendingStageFormValue("")
+  }
+
+  const closeBillableStageNotice = useCallback(() => {
+    if (billableStageNoticeBusy) return
+    if (billableStageNoticeMode === "complete_deal" || !saasPaidRef.current) {
+      const formStage = initialDealStageCanonical
+        ? canonicalDealStageToFormValue(initialDealStageCanonical)
+        : "Draft"
+      patchDeal({ dealStage: formStage })
+      persistableDealStageRef.current = formStage
+    }
+    setBillableStageNoticeOpen(false)
+  }, [
+    billableStageNoticeBusy,
+    billableStageNoticeMode,
+    initialDealStageCanonical,
+  ])
+
+  async function ensureDealPersistedForBillableStage(
+    stage: DealStageOption | "",
+  ): Promise<string | null> {
+    if (backendAutosaveTimerRef.current) {
+      clearTimeout(backendAutosaveTimerRef.current)
+      backendAutosaveTimerRef.current = null
+    }
+
+    const nextStage = stage || latestCreateDealDraftRef.current.deal.dealStage
+    persistableDealStageRef.current = nextStage
+    if (!String(nextStage ?? "").trim() || !isDealStageSaasBillable(nextStage)) {
+      toast.error(
+        "Choose Capital Raising or Asset Managing before opening billing.",
+      )
+      return null
+    }
+
+    for (
+      let i = 0;
+      i < 80 &&
+      (createPostInFlightRef.current || backendAutosaveInFlightRef.current);
+      i++
+    ) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+
+    const { deal, asset, step: st } = latestCreateDealDraftRef.current
+    // Persist CR/AM immediately. Edit autosave otherwise keeps the previous stage until Save.
+    const dealForPersist: DealStepDraft = { ...deal, dealStage: nextStage }
+    const persistedId = (editDealId ?? backendDealIdRef.current ?? "").trim()
+    const imageOpts = editDealId
+      ? { retainedAssetImagePath: retainedPropertyImagePaths }
+      : undefined
+    const formData = buildCreateDealFormDataForAutosave(
+      dealForPersist,
+      asset,
+      [],
+      imageOpts,
+    )
+
+    const canon = formDealStageToCanonical(nextStage)
+    const rememberPersistedStage = (dealId: string) => {
+      if (saasPaidRef.current && canon) {
+        setInitialDealStageCanonical(canon)
+        setStageConfirmedInSession(canon)
+      } else {
+        setInitialDealStageCanonical("draft")
+        setStageConfirmedInSession(null)
+      }
+      const storedStage =
+        saasPaidRef.current && nextStage ? nextStage : "Draft"
+      saveCreateDealDraft({
+        deal: { ...deal, dealStage: storedStage },
+        asset,
+        step: st,
+        backendDealId: dealId,
+      })
+      notifyDealsListRefetch()
+    }
+
+    backendAutosaveInFlightRef.current = true
+    try {
+      if (persistedId) {
+        const result = await updateDealMultipart(persistedId, formData)
+        if (!result.ok) {
+          toast.error(result.message || "Could not save deal stage.")
+          return null
+        }
+        rememberPersistedStage(persistedId)
+        return persistedId
+      }
+
+      createPostInFlightRef.current = true
+      const result = await createDealMultipart(formData)
+      if (!result.ok || !result.dealId) {
+        toast.error(result.ok ? "Could not save deal." : result.message)
+        return null
+      }
+      backendDealIdRef.current = result.dealId
+      setBackendDealId(result.dealId)
+      rememberPersistedStage(result.dealId)
+      return result.dealId
+    } finally {
+      createPostInFlightRef.current = false
+      backendAutosaveInFlightRef.current = false
+    }
+  }
+
+  async function confirmBillableStageNotice() {
+    if (billableStageNoticeBusy) return
+    if (billableStageNoticeMode === "complete_deal") {
+      patchDeal({ dealStage: "Draft" })
+      persistableDealStageRef.current = "Draft"
+      setBillableStageNoticeOpen(false)
+      validateDeal()
+      return
+    }
+    setBillableStageNoticeBusy(true)
+    try {
+      const stage = billableStageNoticeStage || dealDraft.dealStage
+      const dealId = await ensureDealPersistedForBillableStage(stage)
+      if (!dealId) return
+      try {
+        const detail = await fetchDealById(dealId)
+        const canon = formDealStageToCanonical(detail.dealStage) ?? "draft"
+        const formStage = canonicalDealStageToFormValue(canon)
+        patchDeal({ dealStage: formStage })
+        persistableDealStageRef.current = formStage
+        setInitialDealStageCanonical(canon)
+        saasPaidRef.current = dealSaasPaymentCompleteFromDetail(detail)
+      } catch {
+        if (!saasPaidRef.current) {
+          patchDeal({ dealStage: "Draft" })
+          persistableDealStageRef.current = "Draft"
+        }
+      }
+      setBillableStageNoticeOpen(false)
+      navigate(
+        dealSaasBillingSettingsPath(dealId, dealDraft.dealName),
+      )
+    } finally {
+      setBillableStageNoticeBusy(false)
+    }
   }
 
   function patchAsset(patch: Partial<AssetStepDraft>) {
@@ -633,7 +1010,7 @@ export function CreateDealPage() {
         dealDraft,
         assetDraft,
         [],
-        editDealId
+        editDealId || retainedPropertyImagePaths.length > 0
           ? { retainedAssetImagePath: retainedPropertyImagePaths }
           : undefined,
       )
@@ -675,7 +1052,13 @@ export function CreateDealPage() {
         }
       }
       const nextCanon = formDealStageToCanonical(dealDraft.dealStage)
-      if (nextCanon) setInitialDealStageCanonical(nextCanon)
+      if (nextCanon) {
+        if (isDealStageSaasBillable(nextCanon) && !saasPaidRef.current) {
+          setInitialDealStageCanonical("draft")
+        } else {
+          setInitialDealStageCanonical(nextCanon)
+        }
+      }
       setStageConfirmedInSession(null)
       setPendingStageFormValue("")
       setStageChangeModalOpen(false)
@@ -736,6 +1119,29 @@ export function CreateDealPage() {
     step === 0
       ? "Deal details, stage, and subscription settings."
       : "Primary asset location and images."
+
+  if (saasPaywallDeal) {
+    return (
+      <div className="deals_list_page deals_detail_page deals_create_flow">
+        <p className="deals_list_not_found">
+          {saasPaywallDeal.dealName.trim()
+            ? `Pay monthly SaaS (MRR) for “${saasPaywallDeal.dealName.trim()}” to continue.`
+            : "Pay monthly SaaS (MRR) for this deal to continue."}{" "}
+          <Link to="/deals" className="deals_list_inline_back">
+            <ArrowLeft size={18} strokeWidth={2} aria-hidden />
+            Back to deals
+          </Link>
+        </p>
+        <DealSaasPaywallModal
+          deal={saasPaywallDeal}
+          onClose={() => {
+            setSaasPaywallDeal(null)
+            navigate("/deals", { replace: true })
+          }}
+        />
+      </div>
+    )
+  }
 
   if (loadingDeal) {
     return (
@@ -844,16 +1250,11 @@ export function CreateDealPage() {
                 imageFiles={assetImages}
                 onChange={patchAsset}
                 onImageFilesChange={setAssetImages}
-                existingImageUrls={
-                  editDealId ? existingPropertyImageUrls : undefined
-                }
-                onRemoveExistingImage={
-                  editDealId
-                    ? (i: number) =>
-                        setRetainedPropertyImagePaths((prev) =>
-                          prev.filter((_, j: number) => j !== i),
-                        )
-                    : undefined
+                existingImageUrls={existingPropertyImageUrls}
+                onRemoveExistingImage={(i: number) =>
+                  setRetainedPropertyImagePaths((prev) =>
+                    prev.filter((_, j: number) => j !== i),
+                  )
                 }
               />
             )}
@@ -923,6 +1324,15 @@ export function CreateDealPage() {
           onCancel={closeStageChangeModal}
         />
       ) : null}
+
+      <DealBillableStageNoticeModal
+        open={billableStageNoticeOpen}
+        dealStage={billableStageNoticeStage || dealDraft.dealStage}
+        mode={billableStageNoticeMode}
+        confirming={billableStageNoticeBusy}
+        onOk={() => void confirmBillableStageNotice()}
+        onClose={closeBillableStageNotice}
+      />
     </div>
   )
 }

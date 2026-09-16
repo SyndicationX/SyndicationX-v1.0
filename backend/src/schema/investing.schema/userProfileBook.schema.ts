@@ -26,6 +26,8 @@ export const userInvestorProfiles = pgTable("user_investor_profiles", {
   addedBy: varchar("added_by", { length: 255 }).notNull().default(""),
   investmentsCount: integer("investments_count").notNull().default(0),
   archived: boolean("archived").notNull().default(false),
+  /** True while add-profile wizard autosave is in progress; cleared on final Save. */
+  isDraft: boolean("is_draft").notNull().default(false),
   lastEditReason: text("last_edit_reason"),
   /**
    * Multi-step add/edit form as JSON; matches the portal “Add profile” wizard (names, SSN, distribution, etc.).
@@ -49,6 +51,27 @@ export const userInvestorProfiles = pgTable("user_investor_profiles", {
     .default(""),
   /** Free-text distribution instructions when method is `other`. */
   bankAccountQuery: text("bank_account_query").notNull().default(""),
+  /**
+   * Stripe Connect recipient account. Bank details stay with Stripe and are
+   * collected through hosted Connect onboarding; never populate this from the
+   * legacy routing/account-number fields above.
+   */
+  stripeConnectAccountId: varchar("stripe_connect_account_id", { length: 255 }),
+  stripeConnectDetailsSubmitted: boolean("stripe_connect_details_submitted")
+    .notNull()
+    .default(false),
+  stripeConnectChargesEnabled: boolean("stripe_connect_charges_enabled")
+    .notNull()
+    .default(false),
+  stripeConnectPayoutsEnabled: boolean("stripe_connect_payouts_enabled")
+    .notNull()
+    .default(false),
+  stripeConnectStatus: varchar("stripe_connect_status", { length: 32 })
+    .notNull()
+    .default("not_started"),
+  stripeConnectUpdatedAt: timestamp("stripe_connect_updated_at", {
+    withTimezone: true,
+  }),
   checkPayeeName: varchar("check_payee_name", { length: 255 })
     .notNull()
     .default(""),

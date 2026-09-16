@@ -8,6 +8,7 @@ import { requestedOrganizationIdFromRequest } from "../../services/org/orgResolu
 import { getAddDealFormById } from "../../services/deal/dealForm.service.js";
 import { sendMyInvestNowEsignIfNeeded } from "../../services/deal/dealLpInvestNowMyEsignSend.service.js";
 import { evaluateLpInvestNowEligibility } from "../../services/deal/dealLpInvestNowEligibility.service.js";
+import { dealSaasLockHttpPayload } from "../../services/billing/dealBilling.service.js";
 import { resolveLpViewerEmailNorm } from "../../services/deal/dealLpViewerIdentity.service.js";
 
 function bodyString(v: unknown): string {
@@ -18,6 +19,27 @@ function bodyString(v: unknown): string {
   }
   if (v != null) return String(v);
   return "";
+}
+
+function investNowEsignSendHttpStatus(message: string): number {
+  const m = message.toLowerCase();
+  if (
+    m.includes("not configured") ||
+    m.includes("not reachable") ||
+    m.includes("temporarily unavailable") ||
+    m.includes("429") ||
+    m.includes("too many requests") ||
+    m.includes("rate limit")
+  ) {
+    return 503;
+  }
+  if (
+    m.includes("save your investment") ||
+    m.includes("enter your investment amount")
+  ) {
+    return 409;
+  }
+  return 400;
 }
 
 /**
@@ -63,6 +85,13 @@ export async function postDealLpInvestorMyInvestNowEsignSend(
     }
 
     const dealRow = await getAddDealFormById(dealId.trim());
+    if (dealRow) {
+      const saasLock = await dealSaasLockHttpPayload(dealRow);
+      if (saasLock) {
+        res.status(402).json(saasLock);
+        return;
+      }
+    }
     const investEligibility = evaluateLpInvestNowEligibility(dealRow);
     if (!investEligibility.ok) {
       res.status(403).json({ message: investEligibility.message });
@@ -101,7 +130,9 @@ export async function postDealLpInvestorMyInvestNowEsignSend(
     });
 
     if (!result.ok) {
-      res.status(400).json({ message: result.message });
+      res.status(investNowEsignSendHttpStatus(result.message)).json({
+        message: result.message,
+      });
       return;
     }
 

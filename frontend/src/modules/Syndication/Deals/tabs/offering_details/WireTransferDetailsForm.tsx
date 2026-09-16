@@ -1,4 +1,5 @@
 import { useId } from "react"
+import { digitsFromAbaRoutingInput } from "@/common/bank/usAbaRoutingNumber"
 import { InfoIconPanel } from "./FieldInfoHeading"
 
 const WIRE_REFERENCE_HELP =
@@ -26,6 +27,7 @@ type WireTransferDetailsFormProps = {
   onReferenceChange: (value: string) => void
   otherInstructions: string
   onOtherInstructionsChange: (value: string) => void
+  routingNumberError?: string
 }
 
 type WireTextRowProps = {
@@ -94,6 +96,7 @@ export function WireTransferDetailsForm({
   onReferenceChange,
   otherInstructions,
   onOtherInstructionsChange,
+  routingNumberError,
 }: WireTransferDetailsFormProps) {
   const accountTypeGroupId = useId()
   const referenceLabelId = `${baseId}-wire-reference-label`
@@ -117,12 +120,41 @@ export function WireTransferDetailsForm({
           value={bankAddress}
           onChange={onBankAddressChange}
         />
-        <WireTextRow
-          id={`${baseId}-routing-number`}
-          label="Routing number"
-          value={routingNumber}
-          onChange={onRoutingNumberChange}
-        />
+        <div className="deal_fi_wire_row deal_fi_wire_row_stacked_field">
+          <label className="deal_fi_wire_label" htmlFor={`${baseId}-routing-number`}>
+            Routing number
+          </label>
+          <input
+            id={`${baseId}-routing-number`}
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            className={[
+              "deal_fi_wire_input",
+              routingNumberError ? "um_field_input_invalid" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            value={routingNumber}
+            onChange={(e) =>
+              onRoutingNumberChange(digitsFromAbaRoutingInput(e.target.value))
+            }
+            aria-invalid={Boolean(routingNumberError)}
+            aria-describedby={
+              routingNumberError ? `${baseId}-routing-number-err` : undefined
+            }
+            maxLength={9}
+          />
+          {routingNumberError ? (
+            <p
+              id={`${baseId}-routing-number-err`}
+              className="deal_fi_field_error"
+              role="alert"
+            >
+              {routingNumberError}
+            </p>
+          ) : null}
+        </div>
         <WireTextRow
           id={`${baseId}-account-number`}
           label="Account number"

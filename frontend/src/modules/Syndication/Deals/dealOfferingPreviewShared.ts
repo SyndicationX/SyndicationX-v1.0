@@ -63,12 +63,12 @@ export function previewTargetDisplay(
   classes: DealInvestorClass[],
 ): string {
   const n = targetAmountNumberForDeal(detail.listRow, classes)
-  if (Number.isFinite(n) && n > 0) return formatUsdDashboardAmount(n)
+  if (Number.isFinite(n) && n > 0) return formatMoneyFieldDisplay(String(n))
   const raw =
     detail.offeringSize?.trim() ||
     detail.listRow.raiseTarget?.trim() ||
     ""
-  if (raw && raw !== "—") return raw
+  if (raw && raw !== "—") return formatMoneyFieldDisplay(raw)
   return "—"
 }
 
@@ -176,6 +176,32 @@ export function investmentTypeLabelForOverview(
   return investmentTypeDisplay(detail, allClasses)
 }
 
+/** Investor class highlighted on offering overview (by id), else earliest-created class. */
+export function resolveOfferingOverviewInvestorClass(
+  classes: readonly DealInvestorClass[],
+  offeringOverviewClassId?: string | null,
+): DealInvestorClass | null {
+  const id = offeringOverviewClassId?.trim()
+  if (id) {
+    const match = classes.find((c) => c.id === id)
+    if (match) return match
+  }
+  return firstCreatedInvestorClass(classes)
+}
+
+/** Minimum investment for the offering overview class (or lowest across classes). */
+export function offeringOverviewMinimumInvestmentDisplay(
+  classes: DealInvestorClass[],
+  offeringOverviewClassId?: string | null,
+): string {
+  const cls = resolveOfferingOverviewInvestorClass(
+    classes,
+    offeringOverviewClassId,
+  )
+  if (cls) return minimumInvestmentDisplayForClass(cls)
+  return previewMinimumInvestmentDisplay(classes)
+}
+
 /** Lowest class minimum for the sticky summary column. */
 export function previewMinimumInvestmentDisplay(
   classes: DealInvestorClass[],
@@ -186,7 +212,7 @@ export function previewMinimumInvestmentDisplay(
     const raw = ic.minimumInvestment?.trim()
     if (!raw) continue
     const n = parseMoneyDigits(raw)
-    if (Number.isFinite(n) && n >= 0) {
+    if (Number.isFinite(n) && n > 0) {
       if (best === null || n < best) best = n
     } else if (!fallback) fallback = raw
   }
@@ -232,7 +258,10 @@ export function buildOfferingSidebarSummaryRows(
   return [
     {
       label: "Minimum investment",
-      value: previewMinimumInvestmentDisplay(classes),
+      value: offeringOverviewMinimumInvestmentDisplay(
+        classes,
+        detail.offeringOverviewClassId,
+      ),
       iconKey: "minimum",
     },
     { label: "Offering size", value: offeringSize, iconKey: "offering_size" },
@@ -376,13 +405,13 @@ export function keyHighlightRowsFromJson(
 }
 
 /**
- * Investor class name for the Key Highlights value column (Offering details + preview).
+ * Investor class created earliest on the deal (by `createdAt`, then list order).
  * Uses the earliest `createdAt`; if dates are missing, uses the first class from the API list.
  */
-export function firstCreatedInvestorClassName(
-  classes: DealInvestorClass[],
-): string {
-  if (!classes.length) return "Class"
+export function firstCreatedInvestorClass(
+  classes: readonly DealInvestorClass[],
+): DealInvestorClass | null {
+  if (!classes.length) return null
   const dated = classes
     .map((c, index) => ({
       c,
@@ -392,11 +421,21 @@ export function firstCreatedInvestorClassName(
     .filter((x) => Number.isFinite(x.t))
   if (dated.length > 0) {
     dated.sort((a, b) => a.t - b.t || a.index - b.index)
-    const name = dated[0]?.c.name?.trim()
-    if (name) return name
+    return dated[0]?.c ?? null
   }
-  const firstName = classes[0]?.name?.trim()
-  return firstName || "Class"
+  return classes[0] ?? null
+}
+
+/**
+ * Investor class name for the Key Highlights value column (Offering details + preview).
+ */
+export function firstCreatedInvestorClassName(
+  classes: DealInvestorClass[],
+): string {
+  const first = firstCreatedInvestorClass(classes)
+  if (!first) return "Class"
+  const name = first.name?.trim()
+  return name || "Class"
 }
 
 export interface KeyHighlightPreviewOptions {

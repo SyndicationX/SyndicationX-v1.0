@@ -12,6 +12,34 @@ export function buildSignFlowEditorUrlClient(
   return `${path}?${new URLSearchParams({ apiKey: key }).toString()}`
 }
 
+/** Client-side SignFlow embed signing URL — adds apiKey + parent portal origin for iframe embed. */
+export function buildSignFlowEmbedSignUrlClient(
+  signUrl: string,
+  opts?: {
+    embedApiKey?: string | null
+    parentOrigin?: string | null
+  },
+): string {
+  const raw = signUrl.trim()
+  if (!raw) return raw
+  try {
+    const u = new URL(raw)
+    const key = opts?.embedApiKey?.trim()
+    if (key && !u.searchParams.has("apiKey")) {
+      u.searchParams.set("apiKey", key)
+    }
+    const parent =
+      opts?.parentOrigin?.trim() ||
+      (typeof window !== "undefined" ? window.location.origin : "")
+    if (parent && !u.searchParams.has("parentOrigin")) {
+      u.searchParams.set("parentOrigin", parent)
+    }
+    return u.toString()
+  } catch {
+    return raw
+  }
+}
+
 export function canOpenSignFlowEditorInstantly(
   file: {
     signflowDocumentId?: string

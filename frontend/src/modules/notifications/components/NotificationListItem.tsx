@@ -57,7 +57,9 @@ export function NotificationListItem({
             </time>
           </span>
           <span className="notifications_item_message">{item.message}</span>
-          {!compact ? (
+          {item.actionLabel ? (
+            <span className="notifications_item_action">{item.actionLabel}</span>
+          ) : !compact ? (
             <span className="notifications_item_category">{meta.label}</span>
           ) : null}
         </span>

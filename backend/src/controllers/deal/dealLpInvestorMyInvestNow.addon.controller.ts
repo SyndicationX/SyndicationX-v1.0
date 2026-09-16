@@ -14,6 +14,7 @@ import {
 import { applyMyInvestNowCommitmentAddon } from "../../services/deal/dealLpInvestorMyInvestNowCommitment.addon.service.js";
 import { readMyInvestNowCommitment } from "../../services/deal/dealLpInvestorMyInvestNowCommitment.read.service.js";
 import { evaluateLpInvestNowEligibility } from "../../services/deal/dealLpInvestNowEligibility.service.js";
+import { dealSaasLockHttpPayload } from "../../services/billing/dealBilling.service.js";
 
 function bodyString(v: unknown): string {
   if (typeof v === "string") return v;
@@ -89,6 +90,13 @@ export async function patchDealLpInvestorMyInvestNowAddon(
     }
 
     const dealRow = await getAddDealFormById(dealId.trim());
+    if (dealRow) {
+      const saasLock = await dealSaasLockHttpPayload(dealRow);
+      if (saasLock) {
+        res.status(402).json(saasLock);
+        return;
+      }
+    }
     const investEligibility = evaluateLpInvestNowEligibility(dealRow);
     if (!investEligibility.ok) {
       res.status(403).json({ message: investEligibility.message });

@@ -25,6 +25,14 @@ export interface StoredDealInvestorEsignSend {
   investorPdfVersion?: number;
   /** Fully executed PDF (investor + sponsor). Sponsor workspace only. */
   fullSignedRelativePath?: string;
+  /** Sponsor notified after investor signed (sequential workflow emails). */
+  sponsorNotifiedAtInvestorSigned?: string;
+  /** Investor notified after sponsor counter-signed. */
+  investorNotifiedAtSponsorSigned?: string;
+  /** Sequential workflow: investor notified when prior signers finished and it is their turn. */
+  investorNotifiedAtSignTurnAvailable?: string;
+  /** Fully executed doc promoted to LP offering documents section. */
+  promotedToInvestorDocumentsAt?: string;
   documents?: DealInvestorEsignDocumentRef[];
 }
 
@@ -138,6 +146,24 @@ function parseSendRecord(o: Record<string, unknown>): StoredDealInvestorEsignSen
   const fullSignedRelativePath = String(
     o.fullSignedRelativePath ?? o.full_signed_relative_path ?? "",
   ).trim();
+  const sponsorNotifiedAtInvestorSigned = String(
+    o.sponsorNotifiedAtInvestorSigned ??
+      o.sponsor_notified_at_investor_signed ??
+      "",
+  ).trim();
+  const investorNotifiedAtSponsorSigned = String(
+    o.investorNotifiedAtSponsorSigned ??
+      o.investor_notified_at_sponsor_signed ??
+      "",
+  ).trim();
+  const investorNotifiedAtSignTurnAvailable = String(
+    o.investorNotifiedAtSignTurnAvailable ??
+      o.investor_notified_at_sign_turn_available ??
+      "",
+  ).trim();
+  const promotedToInvestorDocumentsAt = String(
+    o.promotedToInvestorDocumentsAt ?? o.promoted_to_investor_documents_at ?? "",
+  ).trim();
   return {
     sentAt,
     viewedAt: o.viewedAt ? String(o.viewedAt).trim() : null,
@@ -152,6 +178,16 @@ function parseSendRecord(o: Record<string, unknown>): StoredDealInvestorEsignSen
       ? { investorPdfVersion: investorPdfVersion as number }
       : {}),
     ...(fullSignedRelativePath ? { fullSignedRelativePath } : {}),
+    ...(sponsorNotifiedAtInvestorSigned
+      ? { sponsorNotifiedAtInvestorSigned }
+      : {}),
+    ...(investorNotifiedAtSponsorSigned
+      ? { investorNotifiedAtSponsorSigned }
+      : {}),
+    ...(investorNotifiedAtSignTurnAvailable
+      ? { investorNotifiedAtSignTurnAvailable }
+      : {}),
+    ...(promotedToInvestorDocumentsAt ? { promotedToInvestorDocumentsAt } : {}),
     documents,
   };
 }

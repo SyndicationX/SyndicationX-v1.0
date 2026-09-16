@@ -1,5 +1,7 @@
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import {
+  Fragment,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -8,6 +10,8 @@ import {
   type ReactNode,
 } from "react";
 import { DataTablePagination } from "../DataTablePagination/DataTablePagination";
+import { attachHorizontalScrollBehavior } from "../../utils/horizontalScrollRegion";
+import { FloatingTableHScroll } from "./FloatingTableHScroll";
 import "./data-table.css";
 
 export type DataTableColumn<T> = {
@@ -82,10 +86,28 @@ type DataTableProps<T> = {
    */
   stripedRows?: boolean;
   /**
-   * Always enable horizontal scroll (investors / deal members tables with many columns).
-   * Skipped when the table body is empty.
+   * Enable horizontal scroll class / gestures. Defaults to `true` for
+   * `visualVariant="members"` so Investors, Contacts, Distributions, etc. scroll.
+   * Skipped when the table body is empty. Pass `false` to opt out.
    */
   forceHorizontalScroll?: boolean;
+  /**
+   * Documents-style left/right arrows + drag track. Defaults to `true`.
+   * Hidden when the table does not overflow. Pass `false` to opt out.
+   */
+  floatingHorizontalScroll?: boolean;
+  /** Accessible name for the floating left/right control group. */
+  floatingHorizontalScrollLabel?: string;
+  /**
+   * Optional content rendered in a full-width row immediately under that body
+   * row (e.g. nested class details under a distribution).
+   */
+  renderExpandedContent?: (row: T, rowIndex: number) => ReactNode;
+  /**
+   * Rendered between the table scroll region and pagination
+   * (e.g. column totals that should stay visible while the table scrolls).
+   */
+  tableFooter?: ReactNode;
 };
 
 function sortHeaderLabel(header: ReactNode, columnId: string): string {
@@ -139,11 +161,15 @@ function TableScrollRegion({
   children,
   measureKey,
   forceHorizontalScroll = false,
+  floatingHorizontalScroll = true,
+  floatingHorizontalScrollLabel = "Columns",
 }: {
   className: string;
   children: ReactNode;
   measureKey: string;
   forceHorizontalScroll?: boolean;
+  floatingHorizontalScroll?: boolean;
+  floatingHorizontalScrollLabel?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [overflowX, setOverflowX] = useState(false);
@@ -155,13 +181,13 @@ function TableScrollRegion({
       return;
     }
     const measure = () => {
-      const table = el.querySelector("table");
-      if (!table) {
-        setOverflowX(false);
-        return;
-      }
       const regionWidth = el.clientWidth;
-      if (regionWidth <= 0) {
+      el.style.setProperty(
+        "--data-table-scroll-port-width",
+        regionWidth > 0 ? `${regionWidth}px` : "100%",
+      );
+      const table = el.querySelector("table");
+      if (!table || regionWidth <= 0) {
         setOverflowX(false);
         return;
       }
@@ -181,19 +207,40 @@ function TableScrollRegion({
     };
   }, [measureKey]);
 
+  /** Horizontal gestures / Shift+wheel / drag pan — never steals vertical page scroll. */
+  useEffect(() => {
+    const scroller = ref.current;
+    if (!scroller) return;
+    return attachHorizontalScrollBehavior(scroller, {
+      hoverVerticalToHorizontal: false,
+      edgeScroll: false,
+    });
+  }, [measureKey, overflowX, forceHorizontalScroll]);
+
   const regionClass = [
     className,
     overflowX || forceHorizontalScroll
       ? "data_table_scroll_region--overflow-x"
       : "",
+    floatingHorizontalScroll ? "data_table_scroll_region--floating-hscroll" : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   return (
-    <div ref={ref} className={regionClass}>
-      {children}
-    </div>
+    <>
+      <div ref={ref} className={regionClass}>
+        {children}
+      </div>
+      {floatingHorizontalScroll ? (
+        <FloatingTableHScroll
+          scrollerRef={ref}
+          syncKey={measureKey}
+          active={overflowX || forceHorizontalScroll}
+          ariaLabel={floatingHorizontalScrollLabel}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -214,8 +261,14 @@ export function DataTable<T>({
   stickyColumnCount: stickyColumnCountProp,
   isLoading = false,
   stripedRows = true,
-  forceHorizontalScroll = false,
+  forceHorizontalScroll: forceHorizontalScrollProp,
+  floatingHorizontalScroll = true,
+  floatingHorizontalScrollLabel = "Columns",
+  renderExpandedContent,
+  tableFooter,
 }: DataTableProps<T>) {
+  const forceHorizontalScroll =
+    forceHorizontalScrollProp ?? visualVariant === "members";
   const stickyColumnCount =
     stickyColumnCountProp ??
     (stickyFirstColumnProp === false
@@ -435,12 +488,17 @@ export function DataTable<T>({
                 colSpan={columns.length}
                 className="data_table_empty_members_cell data_table_members_loading_cell"
                 role="status"
-                aria-label="Loading"
+                aria-label={emptyLabel?.trim() || "Loading"}
               >
-                <div
-                  className="data_table_loader_spinner"
-                  aria-hidden
-                />
+                <div className="data_table_members_loading_inner">
+                  <div
+                    className="data_table_loader_spinner"
+                    aria-hidden
+                  />
+                  <p className="data_table_members_loading_label">
+                    {emptyLabel?.trim() || "Loading…"}
+                  </p>
+                </div>
               </td>
             </tr>
           ) : rows.length === 0 && visualVariant === "members" ? (
@@ -465,7 +523,11 @@ export function DataTable<T>({
                   : "data_table_row_even"
                 : "";
               const extraClass = getRowClassName?.(row, i);
-              const rowClass = [stripeClass, extraClass]
+              const rowClass = [
+                stripeClass,
+                extraClass,
+                onBodyRowClick ? "data_table_row_clickable" : "",
+              ]
                 .filter(Boolean)
                 .join(" ") || undefined;
               function handleRowClick(e: MouseEvent<HTMLTableRowElement>) {
@@ -476,9 +538,11 @@ export function DataTable<T>({
                   return;
                 onBodyRowClick(row, i);
               }
+              const rowKey = getRowKey(row, i);
+              const expandedContent = renderExpandedContent?.(row, i);
               return (
+              <Fragment key={rowKey}>
               <tr
-                key={getRowKey(row, i)}
                 className={rowClass || undefined}
                 onClick={onBodyRowClick ? handleRowClick : undefined}
               >
@@ -504,6 +568,17 @@ export function DataTable<T>({
                   );
                 })}
               </tr>
+              {expandedContent ? (
+                <tr className="data_table_expanded_row">
+                  <td
+                    className="data_table_expanded_cell"
+                    colSpan={columns.length}
+                  >
+                    {expandedContent}
+                  </td>
+                </tr>
+              ) : null}
+              </Fragment>
             );
             })
           )}
@@ -536,25 +611,21 @@ export function DataTable<T>({
       forceHorizontalScroll={
         forceHorizontalScroll && rows.length > 0 && !isLoading
       }
+      floatingHorizontalScroll={
+        floatingHorizontalScroll && rows.length > 0 && !isLoading
+      }
+      floatingHorizontalScrollLabel={floatingHorizontalScrollLabel}
     >
       {tableEl}
     </TableScrollRegion>
   );
 
   if (visualVariant === "members") {
-    const tableBlock =
-      membersShell === "plain" ? (
-        stickyColumnsEnabled ? (
-          scrollRegion(scrollRegionClass)
-        ) : (
-          tableEl
-        )
-      ) : (
-        scrollRegion(scrollRegionClass)
-      );
+    const tableBlock = scrollRegion(scrollRegionClass)
     return (
       <div className={wrapClass}>
         {tableBlock}
+        {tableFooter}
         {pagination && pagination.totalItems > 0 ? (
           <DataTablePagination
             page={pagination.page}
@@ -571,11 +642,8 @@ export function DataTable<T>({
 
   return (
     <div className={wrapClass}>
-      {stickyColumnsEnabled ? (
-        scrollRegion(scrollRegionClass)
-      ) : (
-        tableEl
-      )}
+      {scrollRegion(scrollRegionClass)}
+      {tableFooter}
       {pagination && pagination.totalItems > 0 ? (
         <DataTablePagination
           page={pagination.page}

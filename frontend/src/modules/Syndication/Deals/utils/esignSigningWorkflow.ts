@@ -34,7 +34,7 @@ export function signingWorkflowSummary(file: {
 }): string {
   const workflowType = resolveEsignSignflowWorkflowType(file)
   if (workflowType === "parallel") {
-    return "Parallel — investor and sponsor can sign at the same time"
+    return "Parallel — any investor may sign; sponsor countersigns after each investor"
   }
   const order = resolveEsignSignflowSigningOrder(file)
   return order === "sponsor_first"

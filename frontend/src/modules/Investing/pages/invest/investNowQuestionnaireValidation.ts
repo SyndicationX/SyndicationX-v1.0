@@ -4,6 +4,7 @@ import {
 } from "@/common/phone/usPhoneNumber"
 import { einFieldError, nineDigitsFromEinInput } from "@/common/tax/usEin"
 import {
+  isInvestorQuestionnaireQuestionVisible,
   questionsForSection,
   resolveQuestionForDisplay,
   type InvestorQuestionnaireConfig,
@@ -100,6 +101,7 @@ export function validateInvestNowQuestionnaireSection({
     resolveQuestionForDisplay,
   )
   for (const question of questions) {
+    if (!isInvestorQuestionnaireQuestionVisible(question, answers)) continue
     if (question.fieldType === "phone") {
       const phoneErr = validatePhoneAnswer(answers[question.id], question.required)
       if (phoneErr === "required") {

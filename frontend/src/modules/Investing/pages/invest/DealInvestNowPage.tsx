@@ -4,7 +4,7 @@ import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { getSessionUserEmail } from "@/common/auth/sessionUserEmail"
 import { FormHeadingWithInfo } from "@/common/components/form-heading/FormHeadingWithInfo"
 import { toast } from "@/common/components/Toast"
-import { focusFirstFormErrorAfterUpdate } from "@/common/utils/scrollToFirstFormError"
+import { focusFirstFormErrorAfterUpdate, scrollMultiStepFormToTopAfterUpdate } from "@/common/utils/scrollToFirstFormError"
 import { setAppDocumentTitle } from "@/common/utils/appDocumentTitle"
 import { usePortalMode } from "@/modules/Investing/context/PortalModeContext"
 import type { SavedAddress } from "@/modules/Investing/pages/profiles/address.types"
@@ -13,11 +13,14 @@ import {
   normalizeInvestorProfileListRow,
 } from "@/modules/Investing/pages/profiles/investingProfileBookApi"
 import type { InvestorProfileListRow } from "@/modules/Investing/pages/profiles/investor-profiles.types"
+import { isInvestorProfileListRowIncomplete } from "@/modules/Investing/pages/profiles/addProfileDraftListRow"
 import { upsertRuntimeInvestmentRow } from "@/modules/Investing/pages/investments/investmentsRuntimeStore"
 import {
   fetchInvestmentSignStatus,
   type InvestmentSignStatusPayload,
 } from "@/modules/Investing/api/investmentSignatureApi"
+// Investor contributions: workflow — Stripe Checkout disabled for now
+// import { startInvestorInvestmentCheckout } from "@/modules/Investing/api/stripeInvestorPaymentsApi"
 import {
   fetchMyLpDealInvestNowCommitment,
   patchMyLpDealInvestNowCommitment,
@@ -49,9 +52,15 @@ import {
   type DealInvestorRow,
 } from "@/modules/Syndication/Deals/types/deal-investors.types"
 import type { DealInvestorClass } from "@/modules/Syndication/Deals/types/deal-investor-class.types"
+import { investorOnboardingSelectableClasses } from "@/modules/Syndication/Deals/utils/investorClassOverviewFields"
 import { canInvestorCommitInvestOrOnboard } from "@/modules/Syndication/Deals/constants/deal-lifecycle"
 import { dealWorkspacePath } from "@/modules/Syndication/Deals/utils/dealWorkspacePath"
 import { dealInvestNowPath } from "@/modules/Syndication/Deals/utils/dealInvestNowPath"
+import { DealSaasPaywallModal } from "@/modules/Syndication/Deals/components/DealSaasPaywallModal"
+import {
+  isDealSaasPaymentRequiredError,
+  type DealSaasPaywallDeal,
+} from "@/modules/Syndication/Deals/utils/dealSaasAccess"
 import {
   buildBlockedProfileKeysForInvestNow,
   lpProfileUseKey,
@@ -76,6 +85,7 @@ import {
 import { readOfferingPreviewSponsorAttributionForDeal, writeOfferingPreviewSponsorAttribution } from "@/modules/Syndication/Deals/utils/offeringPreviewSponsorRef"
 import {
   buildInvestNowQuestionnairePrefill,
+  buildQuestionnaireAddressPrefillFromW9,
   mergeInvestNowQuestionnaireAnswers,
 } from "./investNowQuestionnairePrefill"
 import {
@@ -101,6 +111,7 @@ import {
   buildInvestNowW9Prefill,
   investNowW9FormApiPayload,
   mergeInvestNowW9Values,
+  ssnFromAnyInvestorProfile,
 } from "./investNowW9FormUtils"
 import {
   type InvestNowFieldErrors,
@@ -108,6 +119,7 @@ import {
   hasInvestNowFieldErrors,
   investNowFieldErrorKeys,
   investNowFieldPreferSelector,
+  investNowBelowMinimumAmountNotice,
   validateInvestNowInvestorFields,
   validateInvestNowInvestmentFields,
   validateInvestNowW9Fields,
@@ -169,6 +181,8 @@ export function DealInvestNowPage() {
     ],
   )
 
+  const [saasPaywallDeal, setSaasPaywallDeal] =
+    useState<DealSaasPaywallDeal | null>(null)
   const [loading, setLoading] = useState(true)
   const [resumeLoading, setResumeLoading] = useState(entryMode === "resume")
   const [resumeLoadError, setResumeLoadError] = useState("")
@@ -182,6 +196,7 @@ export function DealInvestNowPage() {
   const pendingAutoFinishRef = useRef(false)
   const finishStartedRef = useRef(false)
   const investNowFormRef = useRef<HTMLFormElement>(null)
+  const stepScrollBootRef = useRef(true)
   const [stepIndex, setStepIndex] = useState(0)
   const [error, setError] = useState("")
   const [fieldErrors, setFieldErrors] = useState<InvestNowFieldErrors>({})
@@ -229,6 +244,9 @@ export function DealInvestNowPage() {
   const [esignSignatureRequestId, setEsignSignatureRequestId] = useState<
     string | null
   >(null)
+  const [sequentialSignTurnOpen, setSequentialSignTurnOpen] = useState(true)
+  const [awaitingSequentialSignTurn, setAwaitingSequentialSignTurn] =
+    useState(false)
   const [investNowInvestmentId, setInvestNowInvestmentId] = useState<
     string | null
   >(null)
@@ -240,21 +258,41 @@ export function DealInvestNowPage() {
   const [status, setStatus] = useState("")
   const [docSignedDate, setDocSignedDate] = useState("")
 
+  const selectableInvestorClasses = useMemo(
+    () => investorOnboardingSelectableClasses(investorClasses),
+    [investorClasses],
+  )
+
   const minimumInvestmentHint = useMemo(() => {
-    const cls = investorClasses.find((c) => c.id === selectedInvestorClassId)
+    const cls = selectableInvestorClasses.find(
+      (c) => c.id === selectedInvestorClassId,
+    )
     const display = minimumInvestmentDisplayForClass(cls)
     if (!display || display === "—") return ""
     return `Minimum is ${display}`
-  }, [investorClasses, selectedInvestorClassId])
+  }, [selectableInvestorClasses, selectedInvestorClassId])
 
   const investmentClassOptions = useMemo(
     () =>
-      investorClasses.map((c) => ({
+      selectableInvestorClasses.map((c) => ({
         value: c.id,
         label: c.name.trim() || "Unnamed class",
       })),
-    [investorClasses],
+    [selectableInvestorClasses],
   )
+
+  /** GP classes are not selectable during investor onboarding. */
+  useEffect(() => {
+    if (!selectedInvestorClassId.trim()) return
+    if (
+      selectableInvestorClasses.some(
+        (c) => c.id === selectedInvestorClassId.trim(),
+      )
+    ) {
+      return
+    }
+    setSelectedInvestorClassId(investNowDefaultInvestorClassId(investorClasses))
+  }, [selectableInvestorClasses, selectedInvestorClassId, investorClasses])
 
   const esignCategoryId = useMemo(
     () => esignCategoryIdFromCommitmentProfile(profileId),
@@ -353,15 +391,34 @@ export function DealInvestNowPage() {
     setStepIndex((index) => Math.min(index, Math.max(0, flowSteps.length - 1)))
   }, [flowSteps.length])
 
+  useEffect(() => {
+    if (stepScrollBootRef.current) {
+      stepScrollBootRef.current = false
+      return
+    }
+    scrollMultiStepFormToTopAfterUpdate({ container: investNowFormRef.current })
+  }, [stepIndex])
+
   const minimumInvestmentAmount = useMemo(() => {
-    const cls = investorClasses.find((c) => c.id === selectedInvestorClassId)
+    const cls = selectableInvestorClasses.find(
+      (c) => c.id === selectedInvestorClassId,
+    )
     const display = cls
       ? minimumInvestmentDisplayForClass(cls)
-      : previewMinimumInvestmentDisplay(investorClasses)
+      : previewMinimumInvestmentDisplay(selectableInvestorClasses)
     if (!display || display === "—") return null
     const n = parseMoneyDigits(display)
     return Number.isFinite(n) && n > 0 ? n : null
-  }, [investorClasses, selectedInvestorClassId])
+  }, [selectableInvestorClasses, selectedInvestorClassId])
+
+  const belowMinimumAmountNotice = useMemo(
+    () =>
+      investNowBelowMinimumAmountNotice({
+        amount,
+        minimumInvestmentAmount,
+      }),
+    [amount, minimumInvestmentAmount],
+  )
 
   const backTo = useMemo(() => {
     if (investNowNav.returnTo) return investNowNav.returnTo
@@ -388,6 +445,7 @@ export function DealInvestNowPage() {
     }
     let cancelled = false
     setLoading(true)
+    setSaasPaywallDeal(null)
     const em = getSessionUserEmail()?.trim().toLowerCase() ?? ""
     void (async () => {
       try {
@@ -481,8 +539,17 @@ export function DealInvestNowPage() {
             viewerInvestorClass: viewerClass,
           }),
         )
-      } catch {
-        if (!cancelled) exitInvestNowFlow({ replace: true })
+      } catch (err) {
+        if (!cancelled) {
+          if (isDealSaasPaymentRequiredError(err)) {
+            setSaasPaywallDeal({
+              ...err.payload,
+              id: err.payload.id || dealId,
+            })
+          } else {
+            exitInvestNowFlow({ replace: true })
+          }
+        }
       } finally {
         if (!cancelled) {
           setBookLoading(false)
@@ -514,7 +581,11 @@ export function DealInvestNowPage() {
       }
       const saved = res.payload
       if (saved.userInvestorProfileId) {
-        setSavedUserProfileId(saved.userInvestorProfileId)
+        const resumeProfileId = saved.userInvestorProfileId.trim()
+        const resumeProfile = bookProfileRows.find((p) => p.id === resumeProfileId)
+        if (resumeProfile && !isInvestorProfileListRowIncomplete(resumeProfile)) {
+          setSavedUserProfileId(resumeProfileId)
+        }
       }
       if (saved.profileId) setProfileId(saved.profileId)
       if (saved.investmentId) {
@@ -526,8 +597,10 @@ export function DealInvestNowPage() {
       if (saved.fundingMethod?.trim()) setFundingMethod(saved.fundingMethod.trim())
       if (saved.investorClass?.trim()) {
         setSelectedInvestorClassId((prev) =>
-          resolveDealInvestorClassId(investorClasses, saved.investorClass) ||
-          prev,
+          resolveDealInvestorClassId(
+            selectableInvestorClasses,
+            saved.investorClass,
+          ) || prev,
         )
       }
       if (saved.status?.trim()) setStatus(saved.status.trim())
@@ -573,7 +646,7 @@ export function DealInvestNowPage() {
     return () => {
       cancelled = true
     }
-  }, [entryMode, dealId, loading, resumeScope, bookProfileRows, bookAddresses, investorClasses])
+  }, [entryMode, dealId, loading, resumeScope, bookProfileRows, bookAddresses, investorClasses, selectableInvestorClasses])
 
   const profileScopeRef = useRef({ savedUserProfileId: "", profileId: "" })
 
@@ -592,15 +665,23 @@ export function DealInvestNowPage() {
     setFundingMethod("")
   }, [savedUserProfileId, entryMode])
 
-  /** SSN is entered fresh on each Invest Now run (not copied from saved profile or questionnaire). */
+  /** Prefill SSN from the user's earliest saved profile; never overwrite session entries. */
   useEffect(() => {
-    setW9Values((prev) => ({ ...prev, ssn: "" }))
-    setQuestionnaireAnswers((prev) => {
-      if (!String(prev.social_security_number ?? "").trim()) return prev
-      const { social_security_number: _omit, ...rest } = prev
-      return rest
+    const knownSsn = ssnFromAnyInvestorProfile(bookProfileRows)
+    if (!knownSsn) return
+
+    setW9Values((prev) => {
+      if (prev.ssn.trim()) return prev
+      return prev.ssn === knownSsn ? prev : { ...prev, ssn: knownSsn }
     })
-  }, [savedUserProfileId])
+    setQuestionnaireAnswers((prev) => {
+      const current = String(prev.social_security_number ?? "").trim()
+      if (current) return prev
+      return current === knownSsn
+        ? prev
+        : { ...prev, social_security_number: knownSsn }
+    })
+  }, [savedUserProfileId, bookProfileRows])
 
   const investNowEsignScope = useMemo(
     () => ({
@@ -650,7 +731,6 @@ export function DealInvestNowPage() {
       addresses: bookAddresses,
       savedUserProfileId,
       config: questionnaireConfig,
-      sectionId: "personal",
     })
     setQuestionnaireAnswers((prev) =>
       mergeInvestNowQuestionnaireAnswers(prev, prefill),
@@ -699,6 +779,15 @@ export function DealInvestNowPage() {
   ])
 
   useEffect(() => {
+    if (!savedUserProfileId.trim()) return
+    const addressPrefill = buildQuestionnaireAddressPrefillFromW9(w9Values)
+    if (Object.keys(addressPrefill).length === 0) return
+    setQuestionnaireAnswers((prev) =>
+      mergeInvestNowQuestionnaireAnswers(prev, addressPrefill),
+    )
+  }, [savedUserProfileId, w9Values])
+
+  useEffect(() => {
     if (stepIndex !== w9StepIndex || w9StepIndex < 0 || !savedUserProfileId.trim()) {
       return
     }
@@ -719,7 +808,9 @@ export function DealInvestNowPage() {
   ])
 
   const profileDropdownOptions = useMemo(() => {
-    const active = bookProfileRows.filter((p) => p.profileName?.trim())
+    const active = bookProfileRows.filter(
+      (p) => p.profileName?.trim() && !isInvestorProfileListRowIncomplete(p),
+    )
     return active.map((p) => {
       const pid = commitmentProfileIdFromBookProfile(p)
       const key = lpProfileUseKey(pid, p.id)
@@ -733,6 +824,15 @@ export function DealInvestNowPage() {
       )
     })
   }, [bookProfileRows, blockedProfileKeys])
+
+  useEffect(() => {
+    const selected = savedUserProfileId.trim()
+    if (!selected) return
+    const row = bookProfileRows.find((p) => p.id === selected)
+    if (row && isInvestorProfileListRowIncomplete(row)) {
+      setSavedUserProfileId("")
+    }
+  }, [bookProfileRows, savedUserProfileId])
 
   const clearInvestNowFieldErrors = useCallback((...keys: string[]) => {
     if (keys.length === 0) {
@@ -996,6 +1096,7 @@ export function DealInvestNowPage() {
       amount,
       fundingMethod,
       investorClasses,
+      selectedInvestorClassId,
       minimumInvestmentAmount,
     })
     if (hasInvestNowFieldErrors(nextFieldErrors)) {
@@ -1059,6 +1160,9 @@ export function DealInvestNowPage() {
   const loadEsignStepData = useCallback(async (): Promise<boolean> => {
     if (!dealId.trim()) return false
     if (esignSendInFlightRef.current) return false
+    const commitmentProfileId = profileId.trim()
+    if (!commitmentProfileId) return false
+    if (resumeLoading || bookLoading) return false
     esignSendInFlightRef.current = true
     setEsignLoading(true)
     setEsignSendError(null)
@@ -1066,12 +1170,31 @@ export function DealInvestNowPage() {
     let trackedInvestmentId = investNowInvestmentIdRef.current?.trim() || null
     const w9Payload = investNowW9FormApiPayload(w9Values)
     try {
+      if (!trackedInvestmentId && savedUserProfileId.trim()) {
+        const n = parseMoneyDigits(String(amount).trim())
+        if (Number.isFinite(n) && n > 0) {
+          const saveErr = await persistInvestNowProgress({
+            committedAmount: String(n),
+            w9Form: w9Payload,
+            ...(Object.keys(questionnaireAnswers).length > 0
+              ? { questionnaireAnswers }
+              : {}),
+          })
+          if (saveErr) {
+            setEsignSendError(saveErr)
+            setEsignSendOk(false)
+            return false
+          }
+          trackedInvestmentId = investNowInvestmentIdRef.current?.trim() || null
+        }
+      }
+
       const sendRes = await postMyLpDealInvestNowEsignSend(dealId, {
-        profileId: profileId.trim(),
+        profileId: commitmentProfileId,
         memberDisplayName: investorDisplayName,
         userInvestorProfileId: savedUserProfileId.trim() || undefined,
         investmentId: trackedInvestmentId ?? undefined,
-        ...(questionnaireInFlow && Object.keys(questionnaireAnswers).length > 0
+        ...(Object.keys(questionnaireAnswers).length > 0
           ? { questionnaireAnswers }
           : {}),
         w9Form: w9Payload,
@@ -1099,6 +1222,9 @@ export function DealInvestNowPage() {
         profileId: profileId.trim() || undefined,
       }
       const docs = await fetchDealMyEsignDocuments(dealId, scopeForFetch)
+      setSequentialSignTurnOpen(docs.sequentialSignTurnOpen !== false)
+      setAwaitingSequentialSignTurn(Boolean(docs.awaitingSequentialSignTurn))
+      const signTurnOpen = docs.sequentialSignTurnOpen !== false
       const profileDocs = filterMyEsignDocumentsForCategory(
         docs.documents,
         esignCategoryIdFromCommitmentProfile(profileId.trim()),
@@ -1135,8 +1261,8 @@ export function DealInvestNowPage() {
           name,
           url: "",
           status: "pending" as const,
-          canSign: true,
-          signatureRequestId: fallbackSigId,
+          canSign: signTurnOpen,
+          signatureRequestId: signTurnOpen ? fallbackSigId : undefined,
         }))
       }
       setEsignDocuments(mappedRows)
@@ -1182,6 +1308,10 @@ export function DealInvestNowPage() {
     w9Values,
     investNowInvestmentId,
     refreshWebhookSignStatus,
+    resumeLoading,
+    bookLoading,
+    amount,
+    persistInvestNowProgress,
   ])
 
   const loadEsignStepDataRef = useRef(loadEsignStepData)
@@ -1190,8 +1320,18 @@ export function DealInvestNowPage() {
   /** Load e-sign step data when entering the step — not on every callback identity change. */
   useEffect(() => {
     if (stepIndex !== esignStepIndex || esignStepIndex < 0 || !dealId) return
+    if (resumeLoading || bookLoading) return
+    if (!profileId.trim()) return
     void loadEsignStepDataRef.current()
-  }, [stepIndex, esignStepIndex, dealId, profileId, savedUserProfileId])
+  }, [
+    stepIndex,
+    esignStepIndex,
+    dealId,
+    profileId,
+    savedUserProfileId,
+    resumeLoading,
+    bookLoading,
+  ])
 
   useEffect(() => {
     const invId = investNowInvestmentId?.trim()
@@ -1256,6 +1396,9 @@ export function DealInvestNowPage() {
     const err = await persistInvestNowProgress({
       committedAmount: String(n),
       w9Form: investNowW9FormApiPayload(w9Values),
+      ...(Object.keys(questionnaireAnswers).length > 0
+        ? { questionnaireAnswers }
+        : {}),
     })
     if (err) return err
     toast.success(
@@ -1263,7 +1406,7 @@ export function DealInvestNowPage() {
       "Your investment commitment was saved. Continue to sign your documents.",
     )
     return null
-  }, [amount, w9Values, persistInvestNowProgress])
+  }, [amount, w9Values, questionnaireAnswers, persistInvestNowProgress])
 
   const onContinueFromCurrentStep = useCallback(async () => {
     const stepDef = flowSteps[stepIndex]
@@ -1347,6 +1490,7 @@ export function DealInvestNowPage() {
         amount,
         fundingMethod,
         investorClasses,
+        selectedInvestorClassId,
         minimumInvestmentAmount,
       })
       if (hasInvestNowFieldErrors(investmentFieldErrors)) {
@@ -1419,6 +1563,35 @@ export function DealInvestNowPage() {
     setSubmitting(true)
     const n = parseMoneyDigits(String(amount).trim())
 
+    // Investor contributions: workflow — Stripe Checkout disabled for now
+    // if (fundingMethod.trim() === "stripe_checkout") {
+    //   const investmentId = investNowInvestmentIdRef.current?.trim() ?? ""
+    //   if (!investmentId) {
+    //     finishStartedRef.current = false
+    //     setSubmitting(false)
+    //     setError("Could not identify the saved investment for payment.")
+    //     return
+    //   }
+    //   try {
+    //     const checkout = await startInvestorInvestmentCheckout(
+    //       dealId,
+    //       investmentId,
+    //     )
+    //     window.location.assign(checkout.url)
+    //     return
+    //   } catch (err) {
+    //     finishStartedRef.current = false
+    //     setSubmitting(false)
+    //     setError(
+    //       err instanceof Error
+    //         ? err.message
+    //         : "Could not start Stripe Checkout.",
+    //     )
+    //     focusFirstFormErrorAfterUpdate({ container: investNowFormRef.current })
+    //     return
+    //   }
+    // }
+
     const em = getSessionUserEmail()?.trim().toLowerCase() ?? ""
     let investedAmount = n
     try {
@@ -1463,6 +1636,7 @@ export function DealInvestNowPage() {
     profileId,
     dealName,
     amount,
+    fundingMethod,
     offeringSize,
     closeDate,
     navigate,
@@ -1502,6 +1676,23 @@ export function DealInvestNowPage() {
     return (
       <div className="deals_list_page deals_detail_page invest_now_flow_page">
         <p className="deals_list_not_found">Missing deal.</p>
+      </div>
+    )
+  }
+
+  if (saasPaywallDeal) {
+    return (
+      <div className="deals_list_page deals_detail_page invest_now_flow_page">
+        <p className="deals_list_not_found">
+          {saasPaywallDeal.dealName.trim()
+            ? `Contact your sponsor for access to “${saasPaywallDeal.dealName.trim()}”.`
+            : "Contact your sponsor for access to this deal."}
+        </p>
+        <DealSaasPaywallModal
+          deal={saasPaywallDeal}
+          investorFacing
+          onClose={() => exitInvestNowFlow({ replace: true })}
+        />
       </div>
     )
   }
@@ -1609,6 +1800,7 @@ export function DealInvestNowPage() {
           amount={amount}
           fundingMethod={fundingMethod}
           minimumHint={minimumInvestmentHint}
+          belowMinimumNotice={belowMinimumAmountNotice}
           onAmountChange={(v) => {
             setAmount(v)
             clearInvestNowFieldErrors(INVEST_NOW_FIELD.amount)
@@ -1722,6 +1914,8 @@ export function DealInvestNowPage() {
         esignDocuments={esignDocuments}
         esignPending={esignPending}
         esignCompleted={esignCompleted}
+        sequentialSignTurnOpen={sequentialSignTurnOpen}
+        awaitingSequentialSignTurn={awaitingSequentialSignTurn}
         esignWorkflowLabel={esignWorkflowLabel}
         webhookSignStatus={webhookSignStatus}
         signStatusLoading={signStatusLoading}

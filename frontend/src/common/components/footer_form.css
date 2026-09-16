@@ -17,8 +17,8 @@
   max-width: 100%;
   box-sizing: border-box;
   border-radius: var(--portal-pill-radius, 4px);
-  background: rgba(244, 241, 235, 0.94);
-  border: 1px solid color-mix(in srgb, var(--auth-landing-gold, #c9973a) 22%, transparent);
+  /* background: rgba(244, 241, 235, 0.94); */
+  /* border: 1px solid color-mix(in srgb, var(--auth-landing-gold, #c9973a) 22%, transparent); */
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
@@ -31,9 +31,9 @@
 }
 
 .auth_card .poweredBy img {
-  height: 1.35rem;
+  /* height: 1.35rem; */
   width: auto;
-  max-width: min(100%, 8.5rem);
+  /* max-width: min(100%, 8.5rem); */
   opacity: 1;
   filter: none;
   display: block;

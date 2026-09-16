@@ -2,6 +2,9 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../../database/db.js";
 import { parseUsPhoneToE164 } from "../../utils/usPhone.js";
 import {
+  dealInvestment,
+  dealLpInvestor,
+  investorDistributionPayouts,
   userBeneficiaries,
   userInvestorProfiles,
   userSavedAddresses,
@@ -62,6 +65,15 @@ export class InvestorProfileDuplicateError extends Error {
   constructor() {
     super("A profile with this name and type already exists.");
     this.name = "InvestorProfileDuplicateError";
+  }
+}
+
+export class InvestorProfileInUseError extends Error {
+  constructor() {
+    super(
+      "This profile is used on investments or payouts. Archive it instead of deleting.",
+    );
+    this.name = "InvestorProfileInUseError";
   }
 }
 
@@ -244,6 +256,7 @@ export type ProfileBookSnapshot = {
     investmentsCount: number;
     dateCreated: string;
     archived: boolean;
+    isDraft: boolean;
     lastEditReason: string | null;
     /** Add-profile wizard; maps to DB `form_snapshot` (jsonb). */
     profileWizardState: unknown | null;
@@ -326,7 +339,14 @@ export async function getProfileBookForUser(
 
 export async function createInvestorProfileForUser(
   userId: string,
-  input: { profileName: string; profileType: string; profileWizardState: string | null },
+  input: {
+    profileName: string;
+    profileType: string;
+    profileWizardState: string | null;
+    isDraft?: boolean;
+    /** When true, skip duplicate name+type check (in-progress wizard autosave). */
+    autosave?: boolean;
+  },
 ): Promise<ProfileBookSnapshot["profiles"][0] | null> {
   const [u] = await db
     .select({
@@ -341,7 +361,12 @@ export async function createInvestorProfileForUser(
 
   const profileName = (input.profileName ?? "").trim() || "—";
   const profileType = (input.profileType ?? "").trim() || "—";
-  if (await activeProfileDuplicateExists(userId, profileName, profileType)) {
+  const autosave = Boolean(input.autosave);
+  const isDraft = autosave || Boolean(input.isDraft);
+  if (
+    !autosave &&
+    (await activeProfileDuplicateExists(userId, profileName, profileType))
+  ) {
     throw new InvestorProfileDuplicateError();
   }
 
@@ -355,6 +380,7 @@ export async function createInvestorProfileForUser(
       profileName,
       profileType,
       addedBy,
+      isDraft,
       formSnapshot,
       ...distributionBankDbValues(distributionBank),
     })
@@ -378,6 +404,49 @@ export async function setInvestorProfileArchived(
     .returning();
   if (!row) return null;
   return mapProfileRow(row);
+}
+
+export async function deleteInvestorProfileForUser(
+  userId: string,
+  profileId: string,
+): Promise<boolean> {
+  const [owned] = await db
+    .select({ id: userInvestorProfiles.id })
+    .from(userInvestorProfiles)
+    .where(
+      and(eq(userInvestorProfiles.id, profileId), eq(userInvestorProfiles.userId, userId)),
+    )
+    .limit(1);
+  if (!owned) return false;
+
+  const [payout] = await db
+    .select({ id: investorDistributionPayouts.id })
+    .from(investorDistributionPayouts)
+    .where(eq(investorDistributionPayouts.userInvestorProfileId, profileId))
+    .limit(1);
+  if (payout) throw new InvestorProfileInUseError();
+
+  const [investment] = await db
+    .select({ id: dealInvestment.id })
+    .from(dealInvestment)
+    .where(eq(dealInvestment.userInvestorProfileId, profileId))
+    .limit(1);
+  if (investment) throw new InvestorProfileInUseError();
+
+  const [lp] = await db
+    .select({ id: dealLpInvestor.id })
+    .from(dealLpInvestor)
+    .where(eq(dealLpInvestor.userInvestorProfileId, profileId))
+    .limit(1);
+  if (lp) throw new InvestorProfileInUseError();
+
+  const deleted = await db
+    .delete(userInvestorProfiles)
+    .where(
+      and(eq(userInvestorProfiles.id, profileId), eq(userInvestorProfiles.userId, userId)),
+    )
+    .returning({ id: userInvestorProfiles.id });
+  return deleted.length > 0;
 }
 
 export async function createBeneficiaryForUser(
@@ -538,6 +607,7 @@ function mapProfileRow(
     investmentsCount: row.investmentsCount,
     dateCreated: row.createdAt.toISOString(),
     archived: row.archived,
+    isDraft: row.isDraft,
     lastEditReason: row.lastEditReason != null && String(row.lastEditReason).trim()
       ? String(row.lastEditReason).trim()
       : null,
@@ -583,14 +653,32 @@ export async function updateInvestorProfileForUser(
   input: {
     profileName: string;
     profileType: string;
-    lastEditReason: string;
+    lastEditReason?: string;
     /** Omit to leave `form_snapshot` unchanged. */
     profileWizardState?: string | null;
+    /** Debounced wizard autosave — no audit reason required. */
+    autosave?: boolean;
+    /** Explicit `false` clears draft on final Save from the add wizard. */
+    isDraft?: boolean;
   },
 ): Promise<ProfileBookSnapshot["profiles"][0] | null> {
   const profileName = (input.profileName ?? "").trim() || "—";
   const profileType = (input.profileType ?? "").trim() || "—";
-  if (await activeProfileDuplicateExists(userId, profileName, profileType, profileId)) {
+  const autosave = Boolean(input.autosave);
+
+  const [existing] = await db
+    .select({ isDraft: userInvestorProfiles.isDraft })
+    .from(userInvestorProfiles)
+    .where(
+      and(eq(userInvestorProfiles.id, profileId), eq(userInvestorProfiles.userId, userId)),
+    )
+    .limit(1);
+  if (!existing) return null;
+
+  if (
+    !autosave &&
+    (await activeProfileDuplicateExists(userId, profileName, profileType, profileId))
+  ) {
     throw new InvestorProfileDuplicateError();
   }
 
@@ -604,6 +692,16 @@ export async function updateInvestorProfileForUser(
   const distributionBank = hasWizard
     ? distributionBankFromFormSnapshot(formSnapshot)
     : null;
+
+  let nextIsDraft = existing.isDraft;
+  if (autosave) {
+    nextIsDraft = true;
+  } else if (input.isDraft === false) {
+    nextIsDraft = false;
+  } else if (input.isDraft === true) {
+    nextIsDraft = true;
+  }
+
   const [row] = await db
     .update(userInvestorProfiles)
     .set(
@@ -611,6 +709,7 @@ export async function updateInvestorProfileForUser(
         ? {
             profileName,
             profileType,
+            isDraft: nextIsDraft,
             lastEditReason: reason || null,
             formSnapshot,
             ...distributionBankDbValues(distributionBank!),
@@ -618,6 +717,7 @@ export async function updateInvestorProfileForUser(
         : {
             profileName,
             profileType,
+            isDraft: nextIsDraft,
             lastEditReason: reason || null,
           },
     )

@@ -3,6 +3,7 @@ import { isAccessibleCompanyId } from "../../../../common/auth/sessionMembership
 import {
   organizationIdQueryParam,
   portalAuthHeaders,
+  PORTAL_OMIT_ACTIVE_ORG_HEADER,
 } from "../../../../common/auth/portalAuthHeaders"
 import { getApiV1Base } from "../../../../common/utils/apiBaseUrl"
 import {
@@ -51,6 +52,14 @@ import {
   mapLegacyOfferingVisibility,
   OFFERING_VISIBILITY_OPTIONS,
 } from "../utils/offeringOverviewForm"
+import {
+  DealSaasPaymentRequiredError,
+  parseDealSaasPaymentRequiredBody,
+} from "../utils/dealSaasAccess"
+import {
+  parseExtraCompanyUserPaymentBody,
+  type ExtraCompanyUserPaymentRequired,
+} from "../utils/extraCompanyUserBilling"
 
 export { DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER } from "../constants/investor-profile"
 
@@ -94,22 +103,36 @@ export interface DealDetailApi {
   internalName?: string
   /** Asset row ids selected for offering overview (persisted). */
   offeringOverviewAssetIds?: string[]
+  /** Investor class selected on Offering overview (drives public offering economics). */
+  offeringOverviewClassId?: string | null
   /** Upload-relative paths for offering gallery (persisted for public preview). */
   offeringGalleryPaths?: string[]
   /** Encrypted `preview` query value; persisted on `add_deal_form` for share links. */
   offeringPreviewToken?: string | null
+  /** False when the signed-in viewer is a co-sponsor (or LP) on this deal. */
+  viewerCanEditDeal?: boolean
+  viewerIsLeadSponsor?: boolean
+  suggestedPlanId?: string | null
+  needsPlanUpgrade?: boolean
+  billingPlanId?: string | null
   /**
    * JSON string `{ v, visibility, sections }` for offering preview (documents + investor toggles).
    * Synced to the server for the shared preview link.
    */
   offeringInvestorPreviewJson?: string | null
+  /** Archived deals are hidden from active lists; offering share is disabled. */
+  archived?: boolean
   listRow: DealListRow
 }
 
 function authHeaders(options?: {
   omitActiveOrganization?: boolean
 }): HeadersInit {
-  return portalAuthHeaders(options)
+  const h = { ...portalAuthHeaders(options) } as Record<string, string>
+  if (options?.omitActiveOrganization) {
+    h[PORTAL_OMIT_ACTIVE_ORG_HEADER] = "1"
+  }
+  return h
 }
 
 /**
@@ -348,6 +371,108 @@ function normalizeDealListRow(
           ),
         }
       : {}),
+    ...(() => {
+      const lead = firstDefined(r, [
+        "viewerIsLeadSponsor",
+        "viewer_is_lead_sponsor",
+      ])
+      const isLead =
+        lead === true || lead === "true" || lead === 1 || lead === "1"
+      const nextRaw = firstDefined(r, [
+        "nextBillingDate",
+        "next_billing_date",
+      ])
+      const nextBillingDate =
+        nextRaw != null && String(nextRaw).trim() !== ""
+          ? str(nextRaw)
+          : null
+      const startRaw = firstDefined(r, [
+        "saasBillingStartsAt",
+        "saas_billing_starts_at",
+      ])
+      const saasBillingStartsAt =
+        startRaw != null && String(startRaw).trim() !== ""
+          ? str(startRaw)
+          : null
+      const statusRaw = firstDefined(r, [
+        "billingSubscriptionStatus",
+        "billing_subscription_status",
+      ])
+      const planRaw = firstDefined(r, ["billingPlanId", "billing_plan_id"])
+      const suggestedRaw = firstDefined(r, [
+        "suggestedPlanId",
+        "suggested_plan_id",
+      ])
+      const upgradeRaw = firstDefined(r, [
+        "needsPlanUpgrade",
+        "needs_plan_upgrade",
+      ])
+      const lockedRaw = firstDefined(r, [
+        "billingAccessLocked",
+        "billing_access_locked",
+      ])
+      const lockReasonRaw = firstDefined(r, [
+        "billingLockReason",
+        "billing_lock_reason",
+      ])
+      const hasBilling =
+        nextBillingDate != null ||
+        saasBillingStartsAt != null ||
+        statusRaw != null ||
+        planRaw != null ||
+        suggestedRaw != null ||
+        upgradeRaw != null ||
+        lockedRaw != null
+      if (!isLead && !hasBilling) return {}
+      const lockReason = String(lockReasonRaw ?? "").trim().toLowerCase()
+      return {
+        ...(isLead ? { viewerIsLeadSponsor: true as const } : {}),
+        nextBillingDate,
+        saasBillingStartsAt,
+        billingSubscriptionStatus:
+          statusRaw != null ? str(statusRaw) : undefined,
+        billingPlanId: planRaw != null ? str(planRaw) : null,
+        suggestedPlanId:
+          suggestedRaw != null && String(suggestedRaw).trim() !== ""
+            ? str(suggestedRaw)
+            : null,
+        ...(upgradeRaw === true ||
+        upgradeRaw === "true" ||
+        upgradeRaw === 1 ||
+        upgradeRaw === "1"
+          ? { needsPlanUpgrade: true as const }
+          : {}),
+        ...(lockedRaw === true ||
+        lockedRaw === "true" ||
+        lockedRaw === 1 ||
+        lockedRaw === "1"
+          ? { billingAccessLocked: true as const }
+          : lockedRaw === false ||
+              lockedRaw === "false" ||
+              lockedRaw === 0 ||
+              lockedRaw === "0"
+            ? { billingAccessLocked: false as const }
+            : {}),
+        ...(lockReason === "unpaid" ||
+        lockReason === "expired" ||
+        lockReason === "past_due"
+          ? { billingLockReason: lockReason }
+          : {}),
+      }
+    })(),
+    ...(() => {
+      const raw = firstDefined(r, [
+        "viewerCanEditDeal",
+        "viewer_can_edit_deal",
+      ])
+      if (raw === true || raw === "true" || raw === 1 || raw === "1") {
+        return { viewerCanEditDeal: true as const }
+      }
+      if (raw === false || raw === "false" || raw === 0 || raw === "0") {
+        return { viewerCanEditDeal: false as const }
+      }
+      return {}
+    })(),
   }
 }
 
@@ -530,6 +655,18 @@ export function normalizeDealDetailApi(
     String(offeringInvestorPreviewJsonRaw).trim() !== ""
       ? str(offeringInvestorPreviewJsonRaw)
       : null
+  const archivedRaw = firstDefined(d, ["archived", "is_archived", "isArchived"])
+  const archivedFromListRow =
+    d.listRow &&
+    typeof d.listRow === "object" &&
+    Boolean((d.listRow as { archived?: boolean }).archived)
+  const archived =
+    archivedRaw === true ||
+    archivedRaw === "true" ||
+    archivedRaw === 1 ||
+    archivedRaw === "1" ||
+    Boolean(d.archived) ||
+    archivedFromListRow
   const assetIdsRaw = firstDefined(d, [
     "offeringOverviewAssetIds",
     "offering_overview_asset_ids",
@@ -551,6 +688,16 @@ export function normalizeDealDetailApi(
       offeringOverviewAssetIds = []
     }
   }
+
+  const offeringOverviewClassIdRaw = firstDefined(d, [
+    "offeringOverviewClassId",
+    "offering_overview_class_id",
+  ])
+  const offeringOverviewClassId =
+    offeringOverviewClassIdRaw != null &&
+    String(offeringOverviewClassIdRaw).trim() !== ""
+      ? str(offeringOverviewClassIdRaw)
+      : null
 
   const galleryPathsRaw = firstDefined(d, [
     "offeringGalleryPaths",
@@ -629,6 +776,7 @@ export function normalizeDealDetailApi(
     showOnInvestbase,
     internalName,
     offeringOverviewAssetIds,
+    offeringOverviewClassId,
     offeringGalleryPaths,
     assetImagePath,
     addressLine1,
@@ -638,6 +786,20 @@ export function normalizeDealDetailApi(
     ...(offeringSize !== undefined ? { offeringSize } : {}),
     offeringPreviewToken,
     offeringInvestorPreviewJson,
+    archived,
+    ...(() => {
+      const raw = firstDefined(d, [
+        "viewerCanEditDeal",
+        "viewer_can_edit_deal",
+      ])
+      if (raw === true || raw === "true" || raw === 1 || raw === "1") {
+        return { viewerCanEditDeal: true as const }
+      }
+      if (raw === false || raw === "false" || raw === 0 || raw === "0") {
+        return { viewerCanEditDeal: false as const }
+      }
+      return {}
+    })(),
   }
 }
 
@@ -651,9 +813,20 @@ export async function fetchDealById(dealId: string): Promise<DealDetailApi> {
   const data = (await res.json().catch(() => ({}))) as {
     deal?: DealDetailApi
     message?: string
+    code?: string
   }
-  if (!res.ok)
+  if (!res.ok) {
+    if (res.status === 402) {
+      throw new DealSaasPaymentRequiredError(
+        parseDealSaasPaymentRequiredBody(data, dealId) ?? {
+          id: dealId,
+          dealName: "",
+        },
+        data.message,
+      )
+    }
     throw new Error(data.message || `Could not load deal (${res.status})`)
+  }
   if (!data.deal) throw new Error("Invalid response")
   const d = data.deal as DealDetailApi & Record<string, unknown>
   return normalizeDealDetailApi(d)
@@ -866,6 +1039,15 @@ export async function fetchPublicOfferingPreview(
   )
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
   if (!res.ok) {
+    if (res.status === 402) {
+      throw new DealSaasPaymentRequiredError(
+        parseDealSaasPaymentRequiredBody(data) ?? {
+          id: "",
+          dealName: "",
+        },
+        typeof data.message === "string" ? data.message : undefined,
+      )
+    }
     throw new Error(
       typeof data.message === "string"
         ? data.message
@@ -1151,7 +1333,7 @@ export type DealSponsorEsignSignSessionResult =
       ok: false
       message: string
       code?: string
-      waitingFor?: "sponsor" | "investor"
+      waitingFor?: "sponsor" | "investor" | "prior_investor"
     }
 
 export async function fetchDealSponsorEsignSignSession(
@@ -1184,7 +1366,9 @@ export async function fetchDealSponsorEsignSignSession(
           ? data.message
           : `Could not load sponsor signing session (${res.status})`,
       ...(typeof data.code === "string" ? { code: data.code } : {}),
-      ...(data.waitingFor === "sponsor" || data.waitingFor === "investor"
+      ...(data.waitingFor === "sponsor" ||
+      data.waitingFor === "investor" ||
+      data.waitingFor === "prior_investor"
         ? { waitingFor: data.waitingFor }
         : {}),
     }
@@ -1269,6 +1453,7 @@ export type OfferingOverviewPayload = {
   dealName: string
   dealType: string
   offeringOverviewAssetIds: string[]
+  offeringOverviewClassId?: string | null
 }
 
 export async function patchDealOfferingOverview(
@@ -1297,6 +1482,11 @@ export async function patchDealOfferingOverview(
           deal_name: payload.dealName,
           deal_type: payload.dealType,
           offering_overview_asset_ids: payload.offeringOverviewAssetIds,
+          ...(payload.offeringOverviewClassId !== undefined
+            ? {
+                offering_overview_class_id: payload.offeringOverviewClassId,
+              }
+            : {}),
         }),
       },
     )
@@ -1531,21 +1721,100 @@ export async function postDealOfferingGalleryUploads(
   return { ok: true, deal: lastDeal, newPaths: allNewPaths }
 }
 
-/** Offering document uploads (Documents tab) accept PDF files only. */
-export function isDealOfferingDocumentPdfFile(file: File): boolean {
-  const name = file.name.trim().toLowerCase()
-  if (!name.endsWith(".pdf")) return false
+const DEAL_OFFERING_DOCUMENT_EXTS = new Set([
+  "pdf",
+  "doc",
+  "docx",
+  "ppt",
+  "pptx",
+  "xls",
+  "xlsx",
+])
+
+const DEAL_OFFERING_DOCUMENT_MIMES = new Set([
+  "application/pdf",
+  "application/x-pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+])
+
+export const DEAL_OFFERING_DOCUMENT_ACCEPT = [
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".xls",
+  ".xlsx",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+].join(",")
+
+export const DEAL_OFFERING_DOCUMENT_TYPES_LABEL =
+  "PDF, Word, PowerPoint, or Excel"
+
+/** Documents tab: max files and size per upload request. */
+export const MAX_DEAL_OFFERING_DOCUMENT_FILES = 50
+export const MAX_DEAL_OFFERING_DOCUMENT_FILE_BYTES = 100 * 1024 * 1024
+export const DEAL_OFFERING_DOCUMENT_LIMITS_HINT = "Up to 50 files, 100 MB each"
+
+function offeringDocumentExt(fileName: string): string {
+  const name = fileName.trim().toLowerCase()
+  const dot = name.lastIndexOf(".")
+  if (dot <= 0 || dot === name.length - 1) return ""
+  return name.slice(dot + 1)
+}
+
+/** Offering document uploads (Documents tab): PDF, Word, PowerPoint, Excel. */
+export function isDealOfferingDocumentFile(file: File): boolean {
+  const ext = offeringDocumentExt(file.name)
+  if (!DEAL_OFFERING_DOCUMENT_EXTS.has(ext)) return false
   const mime = file.type.trim().toLowerCase()
   if (
     mime === "" ||
-    mime === "application/pdf" ||
-    mime === "application/x-pdf"
+    mime === "application/octet-stream" ||
+    DEAL_OFFERING_DOCUMENT_MIMES.has(mime)
   ) {
     return true
   }
-  /* Some browsers/OS combinations send a generic type for valid PDFs. */
-  if (mime === "application/octet-stream") return true
+  if (
+    mime.startsWith("application/vnd.ms-") ||
+    mime.startsWith("application/vnd.openxmlformats-officedocument.")
+  ) {
+    return true
+  }
   return false
+}
+
+export function dealOfferingDocumentRejectMessage(
+  rejectedNames: string[],
+): string {
+  if (rejectedNames.length === 1) {
+    return `"${rejectedNames[0]!}" is not supported. Upload ${DEAL_OFFERING_DOCUMENT_TYPES_LABEL} files.`
+  }
+  return `Only ${DEAL_OFFERING_DOCUMENT_TYPES_LABEL} files can be uploaded. Skipped: ${rejectedNames.join(", ")}.`
+}
+
+export function dealOfferingDocumentTooLargeMessage(
+  fileName?: string,
+): string {
+  if (fileName?.trim()) {
+    return `"${fileName.trim()}" is larger than 100 MB. Each file must be 100 MB or smaller.`
+  }
+  return "Each file must be 100 MB or smaller."
+}
+
+export function dealOfferingDocumentCountLimitMessage(): string {
+  return `You can upload up to ${MAX_DEAL_OFFERING_DOCUMENT_FILES} files at a time.`
 }
 
 /** Upload offering documents (Documents tab) so preview / investors get stable `/uploads/...` links. */
@@ -1561,14 +1830,30 @@ export async function postDealOfferingDocumentUploads(
     return { ok: false, message: "VITE_BASE_URL is not configured." }
   if (files.length === 0)
     return { ok: false, message: "No documents to upload." }
-  const nonPdf = files.filter((f) => !isDealOfferingDocumentPdfFile(f))
-  if (nonPdf.length > 0) {
+  if (files.length > MAX_DEAL_OFFERING_DOCUMENT_FILES) {
     return {
       ok: false,
-      message:
-        nonPdf.length === 1
-          ? `"${nonPdf[0]!.name}" is not a PDF. Only PDF files can be uploaded.`
-          : `Only PDF files can be uploaded. Remove: ${nonPdf.map((f) => f.name).join(", ")}.`,
+      message: dealOfferingDocumentCountLimitMessage(),
+    }
+  }
+  const nonAllowed = files.filter((f) => !isDealOfferingDocumentFile(f))
+  if (nonAllowed.length > 0) {
+    return {
+      ok: false,
+      message: dealOfferingDocumentRejectMessage(
+        nonAllowed.map((f) => f.name),
+      ),
+    }
+  }
+  const tooLarge = files.find(
+    (f) =>
+      typeof f.size === "number" &&
+      f.size > MAX_DEAL_OFFERING_DOCUMENT_FILE_BYTES,
+  )
+  if (tooLarge) {
+    return {
+      ok: false,
+      message: dealOfferingDocumentTooLargeMessage(tooLarge.name),
     }
   }
   const fd = new FormData()
@@ -1890,6 +2175,21 @@ export function dealDetailFieldForCreateWizard(
 }
 
 /**
+ * True when required deal fields still hold autosave placeholders (see
+ * {@link buildCreateDealFormDataForAutosave}). Ignores lifecycle stage — sponsors may
+ * invite investors while the deal is still in Draft.
+ */
+export function areRequiredDealDetailFieldsIncomplete(
+  d: DealDetailApi,
+): boolean {
+  if (isAutosavePlaceholderStored(String(d.secType ?? ""))) return true
+  if (isAutosavePlaceholderStored(String(d.owningEntityName ?? ""))) return true
+  if (isAutosavePlaceholderStored(String(d.propertyName ?? ""))) return true
+  if (isAutosavePlaceholderStored(String(d.city ?? ""))) return true
+  return false
+}
+
+/**
  * True when the create/edit deal form is not fully completed: lifecycle stage is Draft
  * and/or required fields still hold autosave placeholders (see
  * {@link buildCreateDealFormDataForAutosave}).
@@ -1897,11 +2197,7 @@ export function dealDetailFieldForCreateWizard(
 export function isDealDetailFormIncomplete(d: DealDetailApi): boolean {
   const stage = String(d.dealStage ?? "").trim().toLowerCase()
   if (stage === "draft") return true
-  if (isAutosavePlaceholderStored(String(d.secType ?? ""))) return true
-  if (isAutosavePlaceholderStored(String(d.owningEntityName ?? ""))) return true
-  if (isAutosavePlaceholderStored(String(d.propertyName ?? ""))) return true
-  if (isAutosavePlaceholderStored(String(d.city ?? ""))) return true
-  return false
+  return areRequiredDealDetailFieldsIncomplete(d)
 }
 
 /**
@@ -1935,11 +2231,8 @@ export function buildCreateDealFormDataForAutosave(
   imageOpts?: CreateDealMultipartImageOptions,
 ): FormData {
   const dealName = deal.dealName.trim() || AUTOSAVE_DEFAULT_DEAL_NAME
-  const dealStageRaw = deal.dealStage || "Draft"
-  const dealStage =
-    typeof dealStageRaw === "string" && dealStageRaw.trim()
-      ? dealStageRaw
-      : "Draft"
+  /** Do not default — create autosave waits until the sponsor picks a stage explicitly. */
+  const dealStage = String(deal.dealStage ?? "").trim()
   const secType = deal.secType.trim() || AUTOSAVE_PLACEHOLDER_TEXT
   const owningEntityName =
     deal.owningEntityName.trim() || AUTOSAVE_PLACEHOLDER_TEXT
@@ -2120,6 +2413,51 @@ export async function deleteDeal(
   return {
     ok: false,
     message: data.message || `Could not delete deal (${res.status})`,
+  }
+}
+
+export async function patchDealArchived(
+  dealId: string,
+  archived: boolean,
+): Promise<
+  | { ok: true; deal: DealListRow }
+  | { ok: false; message: string }
+> {
+  const base = getApiV1Base()
+  if (!base)
+    return { ok: false, message: "VITE_BASE_URL is not configured." }
+  const res = await fetch(
+    `${base}/deals/${encodeURIComponent(dealId)}/archived`,
+    {
+      method: "PATCH",
+      headers: {
+        ...authHeaders(),
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ archived }),
+    },
+  )
+  const data = (await res.json().catch(() => ({}))) as {
+    message?: string
+    deal?: unknown
+  }
+  if (!res.ok) {
+    return {
+      ok: false,
+      message: data.message || `Could not update deal (${res.status})`,
+    }
+  }
+  const raw = data.deal
+  if (!raw || typeof raw !== "object") {
+    return { ok: false, message: "Invalid response from server." }
+  }
+  return {
+    ok: true,
+    deal: normalizeDealListRow(
+      raw as Partial<DealListRow> & Record<string, unknown>,
+      0,
+    ),
   }
 }
 
@@ -2316,6 +2654,14 @@ function normalizeInvestorRowApi(
       firstDefined(raw, ["userEmail", "user_email", "email"]),
       "—",
     ),
+    firstName: str(
+      firstDefined(raw, ["firstName", "first_name"]),
+      "",
+    ),
+    lastName: str(
+      firstDefined(raw, ["lastName", "last_name"]),
+      "",
+    ),
     contactId: str(firstDefined(raw, ["contactId", "contact_id"])),
     profileId: str(firstDefined(raw, ["profileId", "profile_id"])),
     userInvestorProfileId: str(
@@ -2353,6 +2699,11 @@ function normalizeInvestorRowApi(
       "—",
     ),
     ...(() => {
+      const email = firstDefined(raw, ["addedByEmail", "added_by_email"])
+      if (email == null || !String(email).trim()) return {}
+      return { addedByEmail: String(email).trim() }
+    })(),
+    ...(() => {
       const adder = firstDefined(raw, ["addedByUserId", "added_by_user_id"]);
       if (adder == null || !String(adder).trim()) return {}
       return { addedByUserId: String(adder).trim() }
@@ -2367,6 +2718,33 @@ function normalizeInvestorRowApi(
       }
       if (v === false || v === "false" || v === 0 || v === "0") {
         return { addedByIsCoSponsorOnDeal: false as const }
+      }
+      return {}
+    })(),
+    ...(() => {
+      const v = firstDefined(raw, [
+        "addedByCoSponsorEmailIntercept",
+        "added_by_co_sponsor_email_intercept",
+      ])
+      const t = String(v ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[_-]+/g, " ")
+      if (
+        t === "no" ||
+        t === "no intercept" ||
+        t === "false" ||
+        t === "0"
+      ) {
+        return { addedByCoSponsorEmailIntercept: "no" as const }
+      }
+      if (
+        t === "yes" ||
+        t === "yes intercept" ||
+        t === "true" ||
+        t === "1"
+      ) {
+        return { addedByCoSponsorEmailIntercept: "yes" as const }
       }
       return {}
     })(),
@@ -2431,6 +2809,34 @@ function normalizeInvestorRowApi(
     ),
     investedAtIso: str(
       firstDefined(raw, ["investedAtIso", "invested_at_iso", "createdAt", "created_at"]),
+    ),
+    percentOfClassOwnership: str(
+      firstDefined(raw, [
+        "percentOfClassOwnership",
+        "percent_of_class_ownership",
+      ]),
+      "",
+    ),
+    percentOfClassDistributions: str(
+      firstDefined(raw, [
+        "percentOfClassDistributions",
+        "percent_of_class_distributions",
+      ]),
+      "",
+    ),
+    entityOwnershipPercent: str(
+      firstDefined(raw, [
+        "entityOwnershipPercent",
+        "entity_ownership_percent",
+      ]),
+      "",
+    ),
+    distributionAllocationPercent: str(
+      firstDefined(raw, [
+        "distributionAllocationPercent",
+        "distribution_allocation_percent",
+      ]),
+      "",
     ),
   }
 }
@@ -2675,6 +3081,75 @@ export async function fetchDealMembers(
     return normalizeDealMembersResponse(data)
   } catch {
     return emptyDealMembersPayload()
+  }
+}
+
+export type CoSponsorEmailIntercept = "yes" | "no"
+
+export async function fetchCoSponsorEmailIntercept(
+  dealId: string,
+): Promise<{ applicable: boolean; intercept: CoSponsorEmailIntercept | null }> {
+  const base = getApiV1Base()
+  const did = dealId.trim()
+  if (!base || !did) return { applicable: false, intercept: null }
+  try {
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(did)}/co-sponsor-email-intercept`,
+      {
+        headers: { ...authHeaders({ omitActiveOrganization: true }) },
+        credentials: "include",
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok) return { applicable: false, intercept: null }
+    const applicable = data.applicable === true
+    const raw = String(data.intercept ?? "").trim().toLowerCase()
+    const intercept: CoSponsorEmailIntercept | null =
+      raw === "no" ? "no" : raw === "yes" ? "yes" : null
+    return { applicable, intercept: applicable ? intercept ?? "yes" : null }
+  } catch {
+    return { applicable: false, intercept: null }
+  }
+}
+
+export async function patchCoSponsorEmailIntercept(
+  dealId: string,
+  intercept: CoSponsorEmailIntercept,
+): Promise<
+  | { ok: true; intercept: CoSponsorEmailIntercept }
+  | { ok: false; message: string }
+> {
+  const base = getApiV1Base()
+  const did = dealId.trim()
+  if (!base || !did)
+    return { ok: false, message: "VITE_BASE_URL is not configured." }
+  try {
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(did)}/co-sponsor-email-intercept`,
+      {
+        method: "PATCH",
+        headers: {
+          ...authHeaders({ omitActiveOrganization: true }),
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({ intercept }),
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as {
+      intercept?: unknown
+      message?: string
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        message: data.message?.trim() || "Could not save interrupt setting.",
+      }
+    }
+    const raw = String(data.intercept ?? intercept).trim().toLowerCase()
+    return { ok: true, intercept: raw === "no" ? "no" : "yes" }
+  } catch {
+    return { ok: false, message: "Could not save interrupt setting." }
   }
 }
 
@@ -3009,6 +3484,69 @@ export type PostDealEsignCompleteEmbeddedTemplateResult =
       filesByCategory: Record<string, DealEsignTemplateFileRecord[]>
     }
   | { ok: false; message: string }
+
+export type PostDealEsignAddInvestorDataFieldResult =
+  | {
+      ok: true
+      esignLabel: string
+      label: string
+      fieldCount: number
+    }
+  | { ok: false; message: string }
+
+/** Place an investor-profile data field onto the open SignFlow draft. */
+export async function postDealEsignAddInvestorDataField(
+  dealId: string,
+  fileId: string,
+  fieldKey: string,
+  profileIds?: string[],
+): Promise<PostDealEsignAddInvestorDataFieldResult> {
+  const base = getApiV1Base()
+  if (!base) {
+    return { ok: false, message: "API base URL is not configured" }
+  }
+  try {
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(dealId)}/esign-templates/${encodeURIComponent(fileId)}/add-investor-data-field`,
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(),
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          fieldKey,
+          profileIds: profileIds ?? [],
+        }),
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as {
+      esignLabel?: unknown
+      label?: unknown
+      fieldCount?: unknown
+      message?: unknown
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        message:
+          data.message != null
+            ? String(data.message)
+            : "Could not add investor data field",
+      }
+    }
+    return {
+      ok: true,
+      esignLabel:
+        typeof data.esignLabel === "string" ? data.esignLabel : fieldKey,
+      label: typeof data.label === "string" ? data.label : fieldKey,
+      fieldCount: typeof data.fieldCount === "number" ? data.fieldCount : 0,
+    }
+  } catch {
+    return { ok: false, message: "Network error" }
+  }
+}
 
 /** Persists template_id after sponsor saves in embedded editor. */
 export async function postDealEsignCompleteEmbeddedTemplate(
@@ -3479,6 +4017,7 @@ export type InvestorQuestionnaireQuestion = {
   subtext?: string
   options?: string[]
   isDefault?: boolean
+  investorProfileFieldKey?: string
 }
 
 export type InvestorQuestionnaireProfileSectionVisibility = Record<
@@ -3608,6 +4147,14 @@ export type DealMyEsignDocumentsResult = {
   documents: DealMyEsignDocument[]
   esignCompleted: boolean
   esignPending: boolean
+  /** Sequential eSign: signed PDFs hidden until every investor has signed. */
+  investorPortalDocumentsGateOpen?: boolean
+  /** Sequential eSign: investor may sign now (prior signers finished). */
+  sequentialSignTurnOpen?: boolean
+  /** Sequential eSign: waiting for prior signers — no Sign action yet. */
+  awaitingSequentialSignTurn?: boolean
+  /** Sequential eSign: investor signed; waiting for sponsor counter-sign on their packet. */
+  awaitingSponsorCounterSign?: boolean
   /** Sent | Viewed | Signed | Completed — same workflow as Investors tab Signed column. */
   workflowLabel?: string | null
   completedAt?: string | null
@@ -3633,7 +4180,7 @@ export type DealMyEsignSignSessionResult =
       ok: false
       message: string
       code?: string
-      waitingFor?: "sponsor" | "investor"
+      waitingFor?: "sponsor" | "investor" | "prior_investor"
     }
 
 export type DealMyEsignSyncResult =
@@ -3706,7 +4253,9 @@ export async function fetchDealMyEsignSignSession(
         data.message != null ? String(data.message) : res.statusText
       const code = data.code != null ? String(data.code) : undefined
       const waitingFor =
-        data.waitingFor === "sponsor" || data.waitingFor === "investor"
+        data.waitingFor === "sponsor" ||
+        data.waitingFor === "investor" ||
+        data.waitingFor === "prior_investor"
           ? data.waitingFor
           : undefined
       return {
@@ -3880,6 +4429,10 @@ export async function fetchDealMyEsignDocuments(
       }>
       esignCompleted?: boolean
       esignPending?: boolean
+      investorPortalDocumentsGateOpen?: boolean
+      sequentialSignTurnOpen?: boolean
+      awaitingSequentialSignTurn?: boolean
+      awaitingSponsorCounterSign?: boolean
       workflowLabel?: string | null
       completedAt?: string | null
       sentAt?: string | null
@@ -3920,6 +4473,11 @@ export async function fetchDealMyEsignDocuments(
       documents,
       esignCompleted: Boolean(data.esignCompleted),
       esignPending: Boolean(data.esignPending),
+      investorPortalDocumentsGateOpen:
+        data.investorPortalDocumentsGateOpen !== false,
+      sequentialSignTurnOpen: data.sequentialSignTurnOpen !== false,
+      awaitingSequentialSignTurn: Boolean(data.awaitingSequentialSignTurn),
+      awaitingSponsorCounterSign: Boolean(data.awaitingSponsorCounterSign),
       workflowLabel: data.workflowLabel ?? null,
       completedAt: data.completedAt ?? null,
       sentAt: data.sentAt ?? null,
@@ -4058,7 +4616,13 @@ export type PostDealDocumentSharedNotificationResult =
 export async function postDealDocumentSharedNotification(
   dealId: string,
   input: {
-    recipients: { to_email: string; member_display_name?: string }[]
+    recipients?: { to_email: string; member_display_name?: string }[]
+    audience?: {
+      all_investors?: boolean
+      investor_ids?: string[]
+      sponsor_user_ids?: string[]
+      class_ids?: string[]
+    }
     document_names: string[]
   },
 ): Promise<PostDealDocumentSharedNotificationResult> {
@@ -4077,10 +4641,13 @@ export async function postDealDocumentSharedNotification(
         },
         credentials: "include",
         body: JSON.stringify({
-          recipients: input.recipients.map((r) => ({
-            to_email: r.to_email.trim(),
-            member_display_name: r.member_display_name?.trim() ?? "",
-          })),
+          recipients: (input.recipients ?? [])
+            .map((r) => ({
+              to_email: r.to_email.trim(),
+              member_display_name: r.member_display_name?.trim() ?? "",
+            }))
+            .filter((r) => r.to_email.includes("@")),
+          audience: input.audience ?? {},
           document_names: input.document_names,
         }),
       },
@@ -4197,7 +4764,11 @@ export async function patchMyLpDealCommitment(
 export type PostDealLpInvestorResult =
   | { ok: true; mode: "api"; lpInvestorId?: string }
   | { ok: true; mode: "client" }
-  | { ok: false; message: string }
+  | {
+      ok: false
+      message: string
+      extraCompanyUserPayment?: ExtraCompanyUserPaymentRequired
+    }
 
 /** JSON POST `/deals/:dealId/lp-investors` — roster row in `deal_lp_investor` (no `deal_investment`). */
 export async function postDealLpInvestor(
@@ -4214,6 +4785,12 @@ export async function postDealLpInvestor(
     investor_class: values.investorClass,
     send_invitation_mail: values.sendInvitationMail ?? "no",
     profile_id: String(values.profileId ?? "").trim(),
+    percent_of_class_ownership: values.percentOfClassOwnership?.trim() ?? "",
+    percent_of_class_distributions:
+      values.percentOfClassDistributions?.trim() ?? "",
+    entity_ownership_percent: values.entityOwnershipPercent?.trim() ?? "",
+    distribution_allocation_percent:
+      values.distributionAllocationPercent?.trim() ?? "",
   }
   const ce = values.contactEmail?.trim()
   if (ce) body.contact_email = ce
@@ -4239,9 +4816,17 @@ export async function postDealLpInvestor(
       investor?: { id?: string }
     }
     if (!res.ok) {
+      const extraCompanyUserPayment = parseExtraCompanyUserPaymentBody(
+        data,
+        dealId,
+      )
       const msg =
         data?.message != null ? String(data.message) : res.statusText
-      return { ok: false, message: msg || "Could not save LP investor" }
+      return {
+        ok: false,
+        message: msg || "Could not save LP investor",
+        ...(extraCompanyUserPayment ? { extraCompanyUserPayment } : {}),
+      }
     }
     const rawId = data.investor?.id
     const lpInvestorId =
@@ -4251,6 +4836,41 @@ export async function postDealLpInvestor(
     return { ok: true, mode: "api", lpInvestorId }
   } catch {
     return { ok: false, message: "Network error" }
+  }
+}
+
+/**
+ * GET `/deals/:dealId/lp-investors/:id` — fetch that LP roster row for Edit.
+ * Pass `contactId` when the list row id may be a `deal_investment` id.
+ */
+export async function fetchDealLpInvestorForEdit(
+  dealId: string,
+  params: { id: string; contactId?: string | null },
+): Promise<DealInvestorRow | null> {
+  const base = getApiV1Base()
+  if (!base) return null
+  const id = String(params.id ?? "").trim()
+  if (!dealId.trim() || !id) return null
+  const qs = new URLSearchParams()
+  const contactId = String(params.contactId ?? "").trim()
+  if (contactId) qs.set("contactId", contactId)
+  const q = qs.toString()
+  try {
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(dealId)}/lp-investors/${encodeURIComponent(id)}${q ? `?${q}` : ""}`,
+      {
+        headers: authHeaders(),
+        credentials: "include",
+      },
+    )
+    if (!res.ok) return null
+    const data = (await res.json().catch(() => ({}))) as {
+      investor?: Record<string, unknown>
+    }
+    if (!data.investor || typeof data.investor !== "object") return null
+    return normalizeInvestorRowApi(data.investor, 0)
+  } catch {
+    return null
   }
 }
 
@@ -4270,6 +4890,12 @@ export async function putDealLpInvestor(
     investor_class: values.investorClass,
     send_invitation_mail: values.sendInvitationMail ?? "no",
     profile_id: String(values.profileId ?? "").trim(),
+    percent_of_class_ownership: values.percentOfClassOwnership?.trim() ?? "",
+    percent_of_class_distributions:
+      values.percentOfClassDistributions?.trim() ?? "",
+    entity_ownership_percent: values.entityOwnershipPercent?.trim() ?? "",
+    distribution_allocation_percent:
+      values.distributionAllocationPercent?.trim() ?? "",
   }
   const ce = values.contactEmail?.trim()
   if (ce) body.contact_email = ce
@@ -4294,9 +4920,17 @@ export async function putDealLpInvestor(
       message?: unknown
     }
     if (!res.ok) {
+      const extraCompanyUserPayment = parseExtraCompanyUserPaymentBody(
+        data,
+        dealId,
+      )
       const msg =
         data?.message != null ? String(data.message) : res.statusText
-      return { ok: false, message: msg || "Could not update LP investor" }
+      return {
+        ok: false,
+        message: msg || "Could not update LP investor",
+        ...(extraCompanyUserPayment ? { extraCompanyUserPayment } : {}),
+      }
     }
     return { ok: true, mode: "api" }
   } catch {
@@ -4307,7 +4941,11 @@ export async function putDealLpInvestor(
 export type PostDealInvestmentResult =
   | { ok: true; mode: "api"; investmentId?: string }
   | { ok: true; mode: "client" }
-  | { ok: false; message: string }
+  | {
+      ok: false
+      message: string
+      extraCompanyUserPayment?: ExtraCompanyUserPaymentRequired
+    }
 
 function appendDealInvestmentMultipartFields(
   fd: FormData,
@@ -4374,9 +5012,17 @@ export async function postDealInvestment(
       investor?: { id?: string }
     }
     if (!res.ok) {
+      const extraCompanyUserPayment = parseExtraCompanyUserPaymentBody(
+        data,
+        dealId,
+      )
       const msg =
         data?.message != null ? String(data.message) : res.statusText
-      return { ok: false, message: msg || "Could not save investment" }
+      return {
+        ok: false,
+        message: msg || "Could not save investment",
+        ...(extraCompanyUserPayment ? { extraCompanyUserPayment } : {}),
+      }
     }
     const rawId = data.investor?.id
     const investmentId =
@@ -4449,9 +5095,17 @@ export async function putDealInvestment(
       message?: unknown
     }
     if (!res.ok) {
+      const extraCompanyUserPayment = parseExtraCompanyUserPaymentBody(
+        data,
+        dealId,
+      )
       const msg =
         data?.message != null ? String(data.message) : res.statusText
-      return { ok: false, message: msg || "Could not update investment" }
+      return {
+        ok: false,
+        message: msg || "Could not update investment",
+        ...(extraCompanyUserPayment ? { extraCompanyUserPayment } : {}),
+      }
     }
     if (import.meta.env.DEV) {
       console.info("[Edit investment] Stored in DB (PUT)", {

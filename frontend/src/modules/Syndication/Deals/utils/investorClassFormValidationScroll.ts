@@ -1,5 +1,6 @@
 import { toast } from "../../../../common/components/Toast"
 import {
+  scrollMultiStepFormToTop,
   scrollToFirstFormError,
   scrollValidationAlertIntoView,
 } from "../../../../common/utils/scrollToFirstFormError"
@@ -235,15 +236,7 @@ function highlightInvestorClassFormField(el: HTMLElement): void {
 function scrollInvestorClassFormToTop(
   container: ParentNode | null | undefined,
 ): void {
-  const root = resolveRoot(container)
-  const scrollEl = root.querySelector<HTMLElement>(
-    ".deals_add_deal_asset_form_scroll, .deal_inv_ic_modal_form_grid",
-  )
-  if (scrollEl) {
-    scrollEl.scrollTo({ top: 0, behavior: "smooth" })
-  }
-  const alert = root.querySelector<HTMLElement>(".um_msg_error, .um_modal_form_error")
-  alert?.scrollIntoView({ behavior: "smooth", block: "start" })
+  scrollMultiStepFormToTop({ container })
 }
 
 export function isInvestorClassAllocationValidationMessage(

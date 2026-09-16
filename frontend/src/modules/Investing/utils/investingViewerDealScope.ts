@@ -14,6 +14,7 @@ import type {
   DealInvestorsPayload,
 } from "@/modules/Syndication/Deals/types/deal-investors.types"
 import type { DealListRow } from "@/modules/Syndication/Deals/types/deals.types"
+import { isDealListRowIncomplete } from "@/modules/Syndication/Deals/api/dealsApi"
 import { dealHasInvestNowDraftForViewer } from "@/modules/Investing/pages/invest/investNowDraftUtils"
 import {
   investorCommittedVisibleToViewer,
@@ -22,6 +23,16 @@ import {
   investorRowMatchesViewerEmail,
 } from "@/modules/Syndication/Deals/utils/investorEsignStatus"
 import { investorRowCommittedAmountNumeric } from "@/modules/Syndication/Deals/utils/offeringMoneyFormat"
+
+/** Draft / incomplete create-deal wizard rows are sponsor-only — hide from investors.
+ * Also drop deals the API marked unreadable (e.g. contact offering visibility). */
+export function filterDealListRowsVisibleToInvestors(
+  rows: DealListRow[],
+): DealListRow[] {
+  return rows.filter(
+    (row) => !isDealListRowIncomplete(row) && row.rosterReadable !== false,
+  )
+}
 
 /**
  * Committed (USD) visible to the signed-in investor (hidden until eSign completes).
@@ -139,17 +150,23 @@ const SPONSOR_ROLE_DISPLAY_ORDER = [
   "Co-Sponsor",
 ] as const
 
+const SPONSOR_ROLE_STORED_VALUES = new Set([
+  "Lead Sponsor",
+  "admin sponsor",
+  "Co-sponsor",
+])
+
 function sponsorRoleDisplayLabel(stored: string | undefined): string | null {
   const t = String(stored ?? "").trim()
   if (!t || t === "—") return null
   const byVal = INVESTOR_ROLE_SELECT_OPTIONS.find((o) => o.value === t)
-  if (byVal?.label) {
+  if (byVal?.label && SPONSOR_ROLE_STORED_VALUES.has(byVal.value)) {
     if (byVal.label === "Admin sponsor") return "Admin Sponsor"
     if (byVal.label === "Co-sponsor") return "Co-Sponsor"
     return byVal.label
   }
   const byLabel = INVESTOR_ROLE_SELECT_OPTIONS.find((o) => o.label === t)
-  if (byLabel?.label) {
+  if (byLabel?.label && SPONSOR_ROLE_STORED_VALUES.has(byLabel.value)) {
     if (byLabel.label === "Admin sponsor") return "Admin Sponsor"
     if (byLabel.label === "Co-sponsor") return "Co-Sponsor"
     return byLabel.label
@@ -299,7 +316,9 @@ export async function filterDealListToViewerInvested(
 ): Promise<DealListRow[]> {
   const viewerEmailNorm = investingViewerEmailNorm()
   if (!viewerEmailNorm) return []
-  const toScan = applyLpSessionDealIdScope(rows)
+  const toScan = filterDealListRowsVisibleToInvestors(
+    applyLpSessionDealIdScope(rows),
+  )
   const withPayload = await Promise.all(
     toScan.map(async (row) => {
       if (!dealRowSupportsRosterApiPrefetch(row)) {
@@ -385,8 +404,9 @@ export async function mapInvestingDealsPageScope(
 ): Promise<InvestingDealsPageScopeEntry[]> {
   const viewerEmailNorm = investingViewerEmailNorm()
   if (!viewerEmailNorm) return []
+  const investorVisible = filterDealListRowsVisibleToInvestors(rows)
   const withPayload = await Promise.all(
-    rows.map(async (row) => {
+    investorVisible.map(async (row) => {
       const { payload, members, leadSponsorDisplayName } =
         await loadDealRosterForInvestingScope(row)
       return { row, payload, members, leadSponsorDisplayName }
@@ -406,8 +426,9 @@ export async function mapInvestingInvestmentsPageScope(
 ): Promise<InvestingDealsPageScopeEntry[]> {
   const viewerEmailNorm = investingViewerEmailNorm()
   if (!viewerEmailNorm) return []
+  const investorVisible = filterDealListRowsVisibleToInvestors(rows)
   const withPayload = await Promise.all(
-    rows.map(async (row) => {
+    investorVisible.map(async (row) => {
       const { payload, members, leadSponsorDisplayName } =
         await loadDealRosterForInvestingScope(row)
       return { row, payload, members, leadSponsorDisplayName }

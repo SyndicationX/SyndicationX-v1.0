@@ -11,6 +11,8 @@ export const dealLpInvestor = pgTable(
   "deal_lp_investor",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    /** Denormalized investor full name (from contact / user / client display name). */
+    investorName: text("investor_name").notNull().default(""),
     dealId: uuid("deal_id")
       .notNull()
       .references(() => addDealForm.id, { onDelete: "cascade" }),
@@ -27,6 +29,22 @@ export const dealLpInvestor = pgTable(
       { onDelete: "set null" },
     ),
     investorClass: text("investor_class").notNull().default(""),
+    /** Percent of class (ownership), e.g. `25.00%`. */
+    percentOfClassOwnership: text("percent_of_class_ownership")
+      .notNull()
+      .default(""),
+    /** Percent of class (distributions), e.g. `25.00%`. */
+    percentOfClassDistributions: text("percent_of_class_distributions")
+      .notNull()
+      .default(""),
+    /** Entity Ownership % — optional; separate from percent_of_class_ownership. */
+    entityOwnershipPercent: text("entity_ownership_percent")
+      .notNull()
+      .default(""),
+    /** Distribution Allocation % — optional; separate from percent_of_class_distributions. */
+    distributionAllocationPercent: text("distribution_allocation_percent")
+      .notNull()
+      .default(""),
     sendInvitationMail: text("send_invitation_mail").notNull().default("no"),
     committed_amount: text("committed_amount").notNull().default(""),
     /** Calendar date when signed, or `pending` after eSign is sent. */

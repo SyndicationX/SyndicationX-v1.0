@@ -24,6 +24,8 @@ export type InvestorProfileListRow = {
   dateCreated: string
   /** When true, show under Archived; omitted/false = Active. */
   archived?: boolean
+  /** True while add-profile wizard autosave is in progress. */
+  isDraft?: boolean
   /** Note from the last time this profile was edited (audit). */
   lastEditReason?: string | null
   /**
@@ -40,9 +42,13 @@ export type NewInvestorProfilePayload = {
   profileType: string
   /** Serializable `FormState` from the add profile wizard. */
   profileWizardState: Record<string, unknown>
+  /** Debounced wizard autosave — creates an `isDraft` row. */
+  autosave?: boolean
 }
 
-/** PUT update — requires a non-empty reason for the audit trail. */
+/** PUT update — reason required for edits to completed profiles; optional when completing a draft. */
 export type UpdateInvestorProfilePayload = NewInvestorProfilePayload & {
-  lastEditReason: string
+  lastEditReason?: string
+  /** Explicit `false` clears draft on final Save from the add wizard. */
+  isDraft?: boolean
 }

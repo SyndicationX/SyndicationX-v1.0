@@ -114,7 +114,7 @@ export default function PlatformMetricsPage() {
               strokeWidth={1.75}
               aria-hidden
             />
-            Platform metrics
+            Platform Metrics
           </h2>
           <div className="pm_header_actions">
             <Link
@@ -167,7 +167,7 @@ export default function PlatformMetricsPage() {
             loading={loading}
             footer={
               metrics
-                ? `${metrics.usersByRole.length} roles`
+                ? `${formatCount(metrics.userCount)} registered · ${metrics.usersByRole.length} roles`
                 : "All organizations"
             }
           />

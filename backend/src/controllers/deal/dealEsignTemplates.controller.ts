@@ -28,6 +28,7 @@ import {
   updateDealEsignTemplateSigningWorkflow,
 } from "../../services/deal/dealEsignTemplates.service.js";
 import { isPdfUploadFile } from "../../services/deal/esignPdfMerge.service.js";
+import { validatePdfUploadFiles } from "../../utils/uploadFileValidation.js";
 import {
   groupEsignFilesByCategoryWithInvestorFilled,
 } from "../../services/deal/dealEsignTemplateInvestorFilled.service.js";
@@ -361,6 +362,11 @@ export async function postDealEsignTemplateUploads(
   }
   if (!isPdfUploadFile(fileList[0]!)) {
     res.status(400).json({ message: "Only PDF files can be used for eSign templates." });
+    return;
+  }
+  const pdfValidation = validatePdfUploadFiles(fileList, "eSign template");
+  if (!pdfValidation.ok) {
+    res.status(400).json({ message: pdfValidation.message });
     return;
   }
   if (fileList.length > 1) {

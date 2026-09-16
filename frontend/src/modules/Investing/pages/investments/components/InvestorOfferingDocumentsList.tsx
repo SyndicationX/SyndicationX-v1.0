@@ -1,28 +1,72 @@
+import { DocumentsTableScroll } from "@/modules/Syndication/Deals/tabs/documents/DocumentsTableScroll"
 import { ChevronDown, Download, Eye } from "lucide-react"
-import { useState } from "react"
+import { useContext, useState } from "react"
 import type {
   InvestmentDetailDocumentRow,
   InvestmentDetailDocumentSectionGroup,
 } from "../utils/investmentDetailDocuments"
 import { isInvestorOfferingDocumentSectionExcluded } from "@/modules/Syndication/Deals/utils/offeringPreviewDocSections"
+import { NotificationsContext } from "@/modules/notifications/context/notificationsContext"
+import {
+  isNewlySharedOfferingDoc,
+  markOfferingDocSeen,
+  sharedOfferingDocumentNotificationId,
+} from "@/modules/notifications/utils/sharedOfferingDocumentNotification"
 
 function safeDownloadFilename(name: string): string {
   const base = name.trim() || "document"
   return base.replace(/[/\\?%*:|"<>]/g, "-").slice(0, 200)
 }
 
-function InvestorDocumentRow({ doc }: { doc: InvestmentDetailDocumentRow }) {
+function InvestorDocumentRow({
+  dealId,
+  doc,
+}: {
+  dealId: string
+  doc: InvestmentDetailDocumentRow
+}) {
+  const notifications = useContext(NotificationsContext)
   const url = doc.url?.trim() || ""
   const displayName = doc.name.trim() || "Document"
+  const noteId = sharedOfferingDocumentNotificationId(dealId, doc.id)
+  const [isNew, setIsNew] = useState(() =>
+    isNewlySharedOfferingDoc(dealId, doc.id),
+  )
+
+  function markOpened() {
+    markOfferingDocSeen(dealId, doc.id)
+    notifications?.markRead(noteId)
+    setIsNew(false)
+  }
 
   return (
     <tr className="deal_docs_ui_tr">
       <td className="deal_docs_ui_td deal_docs_ui_td_doc">
         <div className="deal_docs_ui_doc_cell">
           <div className="deal_docs_ui_doc_name_wrap">
-            <span className="deal_docs_ui_doc_name_text" title={displayName}>
-              {displayName}
-            </span>
+            {url ? (
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="deal_docs_ui_doc_name_link"
+                title={displayName}
+                aria-label={`View ${displayName}`}
+                onClick={markOpened}
+              >
+                <span className="deal_docs_ui_doc_name_text">{displayName}</span>
+                {isNew ? (
+                  <span className="investment_detail_offering_doc_new">New</span>
+                ) : null}
+              </a>
+            ) : (
+              <span className="deal_docs_ui_doc_name_text" title={displayName}>
+                {displayName}
+                {isNew ? (
+                  <span className="investment_detail_offering_doc_new">New</span>
+                ) : null}
+              </span>
+            )}
           </div>
           {url ? (
             <div className="deal_docs_ui_doc_quick">
@@ -33,6 +77,7 @@ function InvestorDocumentRow({ doc }: { doc: InvestmentDetailDocumentRow }) {
                 className="deal_docs_ui_doc_icon_btn deal_docs_ui_doc_icon_link"
                 title="View"
                 aria-label={`View ${displayName}`}
+                onClick={markOpened}
               >
                 <Eye size={16} strokeWidth={2} aria-hidden />
               </a>
@@ -43,6 +88,7 @@ function InvestorDocumentRow({ doc }: { doc: InvestmentDetailDocumentRow }) {
                 className="deal_docs_ui_doc_icon_btn deal_docs_ui_doc_icon_link"
                 title="Download"
                 aria-label={`Download ${displayName}`}
+                onClick={markOpened}
               >
                 <Download size={16} strokeWidth={2} aria-hidden />
               </a>
@@ -60,10 +106,12 @@ function InvestorDocumentRow({ doc }: { doc: InvestmentDetailDocumentRow }) {
 }
 
 type InvestorOfferingDocumentsListProps = {
+  dealId: string
   sections: InvestmentDetailDocumentSectionGroup[]
 }
 
 export function InvestorOfferingDocumentsList({
+  dealId,
   sections,
 }: InvestorOfferingDocumentsListProps) {
   const [expandedSections, setExpandedSections] = useState<
@@ -131,7 +179,7 @@ export function InvestorOfferingDocumentsList({
             </div>
 
             <div id={panelId} className="deal_docs_ui_panel" hidden={!isOpen}>
-              <div className="deal_docs_ui_table_scroll">
+              <DocumentsTableScroll active={isOpen}>
                 <table className="deal_docs_ui_table investment_detail_offering_docs_table">
                   <thead>
                     <tr>
@@ -163,13 +211,14 @@ export function InvestorOfferingDocumentsList({
                       section.documents.map((doc) => (
                         <InvestorDocumentRow
                           key={`${section.sectionId}-${doc.id}`}
+                          dealId={dealId}
                           doc={doc}
                         />
                       ))
                     )}
                   </tbody>
                 </table>
-              </div>
+              </DocumentsTableScroll>
             </div>
           </div>
         )

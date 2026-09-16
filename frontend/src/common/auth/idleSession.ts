@@ -1,7 +1,7 @@
-/** Inactivity limit before automatic sign-out (matches access token lifetime). */
+/** Inactivity limit before automatic sign-out. */
 import { toast } from "../components/Toast/toastStore";
 
-export const IDLE_LOGOUT_MS = 15 * 60 * 1000;
+export const IDLE_LOGOUT_MS = 30 * 60 * 1000;
 
 export const SESSION_LAST_ACTIVITY_KEY = "lastActivityAt";
 
@@ -34,7 +34,7 @@ export function showIdleSessionTimeoutToastIfNeeded(
 
   toast.warning(
     "Session timed out",
-    "You were signed out after 15 minutes of inactivity. Sign in again to continue.",
+    "You were signed out after 30 minutes of inactivity. Sign in again to continue.",
     8000,
   );
 
@@ -71,4 +71,9 @@ export function msUntilIdleLogout(now = Date.now()): number {
   }
   const remaining = IDLE_LOGOUT_MS - (now - last);
   return remaining > 0 ? remaining : 0;
+}
+
+/** True when no user/API activity for {@link IDLE_LOGOUT_MS}. */
+export function isSessionIdle(now = Date.now()): boolean {
+  return msUntilIdleLogout(now) <= 0;
 }

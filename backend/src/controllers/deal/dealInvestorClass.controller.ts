@@ -15,6 +15,7 @@ import {
   type InvestorClassInput,
   updateInvestorClass,
 } from "../../services/deal/dealInvestorClass.service.js";
+import { fundedAmountsByInvestorClassId } from "../../services/deal/dealInvestment.service.js";
 import {
   INVESTOR_CLASS_SUBSCRIPTION_TYPES,
   normalizeInvestorClassAdvancedOptionsJson,
@@ -143,8 +144,19 @@ export async function getDealInvestorClasses(
       return;
     }
     const rows = await listInvestorClassesByDealId(dealId);
+    const fundedById = await fundedAmountsByInvestorClassId(
+      dealId,
+      rows.map((r) => ({ id: r.id, name: r.name })),
+    );
     res.status(200).json({
-      investorClasses: rows.map(mapRowToJson),
+      investorClasses: rows.map((row) => {
+        const json = mapRowToJson(row);
+        const funded = fundedById.get(row.id) ?? 0;
+        return {
+          ...json,
+          raiseAmountDistributions: String(Math.round(funded * 100) / 100),
+        };
+      }),
     });
   } catch (err) {
     console.error("getDealInvestorClasses:", err);

@@ -6,6 +6,7 @@ import {
   type PDFPage,
   type PDFFont,
 } from "pdf-lib";
+import { formatDdMmmYyyy } from "../../utils/formatDdMmmYyyy.js";
 import {
   dealAssetsAbsoluteDir,
   dealAssetsRelativePath,
@@ -354,8 +355,8 @@ export async function buildFundingInstructionsPdf(params: {
   writer.cursorTop = MARGIN_TOP + TITLE_SIZE + 16;
 
   const metaParts: string[] = [];
-  if (params.dealName?.trim()) metaParts.push(`Deal: ${params.dealName.trim()}`);
-  metaParts.push(`Generated: ${new Date().toLocaleDateString("en-US")}`);
+  if (params.dealName?.trim()) metaParts.push(`Deal Name: ${params.dealName.trim()}`);
+  metaParts.push(`Generated: ${formatDdMmmYyyy(new Date())}`);
   drawWrappedBlock(writer, metaParts.join("  ·  "), writer.fontRegular, VALUE_SIZE, maxWidth);
   writer.cursorTop += SECTION_GAP;
 

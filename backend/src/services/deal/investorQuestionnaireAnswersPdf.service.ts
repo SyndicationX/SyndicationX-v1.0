@@ -1,5 +1,10 @@
 import { PDFDocument, StandardFonts, rgb, type PDFPage, type PDFFont } from "pdf-lib";
 import { formatEinDisplay, nineDigitsFromEinInput } from "../../common/tax/usEin.js";
+import {
+  isSsnItinFieldKey,
+  maskSsnItinLast4,
+} from "../../common/tax/usSsnItin.js";
+import { formatDdMmmYyyy } from "../../utils/formatDdMmmYyyy.js";
 import type {
   InvestorQuestionnaireJson,
   InvestorQuestionnaireQuestion,
@@ -108,12 +113,18 @@ function formatAnswerForPdf(
     return value;
   }
 
-  if (question.fieldType === "ssn") {
-    const digits = value.replace(/\D/g, "").slice(0, 9);
-    if (digits.length === 9) {
-      return `${digits.slice(0, 3)}-${digits.slice(3, 5)}-${digits.slice(5)}`;
-    }
-    return value;
+  if (
+    question.fieldType === "ssn" ||
+    isSsnItinFieldKey(question.id) ||
+    isSsnItinFieldKey(question.label) ||
+    isSsnItinFieldKey(question.investorProfileFieldKey ?? "")
+  ) {
+    return maskSsnItinLast4(value);
+  }
+
+  if (question.fieldType === "date") {
+    const formatted = formatDdMmmYyyy(value);
+    return formatted === "—" ? value : formatted;
   }
 
   return value.replace(/\s+/g, " ").trim();
@@ -286,7 +297,7 @@ export async function buildInvestorQuestionnaireAnswersPdf(params: {
   if (params.investorName?.trim()) {
     metaParts.push(`Investor: ${params.investorName.trim()}`);
   }
-  metaParts.push(`Completed: ${new Date().toLocaleDateString("en-US")}`);
+  metaParts.push(`Completed: ${formatDdMmmYyyy(new Date())}`);
   drawWrappedBlock(
     writer,
     metaParts.join("  ·  "),

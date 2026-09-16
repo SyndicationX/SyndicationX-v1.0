@@ -12,7 +12,7 @@ export function ExportModalFooter({
     <footer className="deals_export_modal_footer">
       <button
         type="button"
-        className="deals_export_modal_btn_secondary"
+        className="um_btn_secondary"
         onClick={onClose}
       >
         <X size={16} strokeWidth={2} aria-hidden />

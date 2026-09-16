@@ -14,6 +14,8 @@ export interface InvestNowFormFieldProps {
   label: string
   required?: boolean
   hint?: string
+  /** Non-blocking guidance (e.g. below-minimum investment approval). */
+  notice?: string
   error?: string
   children: ReactNode
   className?: string
@@ -24,6 +26,7 @@ export function InvestNowFormField({
   label,
   required = false,
   hint,
+  notice,
   error,
   children,
   className = "",
@@ -47,6 +50,14 @@ export function InvestNowFormField({
       </span>
       {children}
       <InvestNowFieldError message={error} />
+      {notice ? (
+        <p
+          className="deals_create_hint invest_now_field_hint invest_now_step_desc_warn"
+          role="status"
+        >
+          {notice}
+        </p>
+      ) : null}
       {hint ? <p className="deals_create_hint invest_now_field_hint">{hint}</p> : null}
     </Tag>
   )

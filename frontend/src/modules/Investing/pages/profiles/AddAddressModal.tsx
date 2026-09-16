@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react"
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import {
   ArrowLeft,
@@ -8,7 +8,6 @@ import {
   Globe,
   Hash,
   Info,
-  Plus,
   Save,
   MapPin,
   MapPinned,
@@ -16,6 +15,8 @@ import {
   X,
 } from "lucide-react"
 import { toast } from "@/common/components/Toast"
+import { focusFirstFormErrorAfterUpdate } from "@/common/utils/scrollToFirstFormError"
+import { getSessionUserDisplayName } from "@/common/auth/sessionUserDisplayName"
 import { useUsCountriesNowLocations } from "@/modules/Syndication/Deals/hooks/useUsCountriesNowLocations"
 import {
   getUsCitiesForStateCode,
@@ -64,6 +65,59 @@ const ADDR_DROPDOWN_TRIGGER = `deals_add_inv_field_control ${ADDR_FIELD_PILL}`
 const TOTAL_STEPS = 2
 const STEPPER_LABELS = ["Address", "Check memo & distribution"] as const
 
+type AddressFieldErrors = {
+  fullNameOrCompany?: string
+  street1?: string
+  state?: string
+  city?: string
+  zip?: string
+}
+
+function addressFieldErrorsActive(errors: AddressFieldErrors): boolean {
+  return Object.keys(errors).length > 0
+}
+
+function buildAddressStepFieldErrors(
+  form: AddressFormDraft,
+  isUs: boolean,
+  usStateCode: string,
+  usCityOptions: readonly string[],
+): AddressFieldErrors {
+  const errors: AddressFieldErrors = {}
+  if (!form.fullNameOrCompany.trim()) {
+    errors.fullNameOrCompany = "Enter a full name or company name."
+  }
+  if (!form.street1.trim()) {
+    errors.street1 = "Enter street address line 1."
+  }
+  if (isUs) {
+    if (!usStateCode) errors.state = "Select a state."
+    if (!form.city.trim()) {
+      errors.city = "Select or enter a city."
+    } else if (
+      usCityOptions.length > 0 &&
+      !usCityOptions.includes(form.city.trim())
+    ) {
+      errors.city = "Choose a city from the list for the selected state."
+    }
+    if (!form.zip.trim()) {
+      errors.zip = "Enter a 5-digit zip code."
+    } else {
+      const zipErr = zipCodeFieldError(form.zip)
+      if (zipErr) errors.zip = zipErr
+    }
+  } else {
+    if (!form.state.trim()) errors.state = "Enter state or region."
+    if (!form.city.trim()) errors.city = "Enter city."
+    if (!form.zip.trim()) errors.zip = "Enter zip or postal code."
+  }
+  return errors
+}
+
+function addrInputClass(hasError: boolean): string {
+  return hasError ? `${ADDR_INPUT_CLASS} um_field_input_invalid` : ADDR_INPUT_CLASS
+}
+
 function AddrFieldHelp({
   label,
   tooltip,
@@ -110,9 +164,20 @@ export function AddAddressModal({
 }: AddAddressModalProps) {
   const [form, setForm] = useState<AddressFormDraft>(empty)
   const [step, setStep] = useState(1)
+  const [fieldErrors, setFieldErrors] = useState<AddressFieldErrors>({})
+  const formRef = useRef<HTMLFormElement>(null)
 
   const patch = useCallback((p: Partial<AddressFormDraft>) => {
     setForm((prev) => ({ ...prev, ...p }))
+    setFieldErrors((prev) => {
+      const next = { ...prev }
+      if ("fullNameOrCompany" in p) delete next.fullNameOrCompany
+      if ("street1" in p) delete next.street1
+      if ("state" in p) delete next.state
+      if ("city" in p) delete next.city
+      if ("zip" in p) delete next.zip
+      return next
+    })
   }, [])
 
   const isUs = isUnitedStatesCountry(form.country)
@@ -173,9 +238,13 @@ export function AddAddressModal({
         country: (initialDraft.country || DEFAULT_ASSET_COUNTRY).trim() || DEFAULT_ASSET_COUNTRY,
       })
     } else {
-      setForm({ ...empty })
+      setForm({
+        ...empty,
+        fullNameOrCompany: getSessionUserDisplayName().trim(),
+      })
     }
     setStep(1)
+    setFieldErrors({})
   }, [open, initialDraft])
 
   useEffect(() => {
@@ -187,61 +256,34 @@ export function AddAddressModal({
     return () => window.removeEventListener("keydown", onKey)
   }, [open, onClose])
 
-  const validateAddressStep = useCallback((): boolean => {
-    if (!form.fullNameOrCompany.trim()) {
-      toast.error("Name required", "Enter a full name or company name.")
+  const applyAddressStepValidation = useCallback((): boolean => {
+    const errors = buildAddressStepFieldErrors(
+      form,
+      isUs,
+      usStateCode,
+      usCityOptions,
+    )
+    if (addressFieldErrorsActive(errors)) {
+      setFieldErrors(errors)
+      focusFirstFormErrorAfterUpdate({ container: formRef.current })
       return false
     }
-    if (!form.street1.trim()) {
-      toast.error("Address incomplete", "Enter street address line 1.")
-      return false
-    }
-    if (isUs) {
-      if (!usStateCode) {
-        toast.error("State required", "Select a state.")
-        return false
-      }
-      if (!form.city.trim()) {
-        toast.error("City required", "Select or enter a city.")
-        return false
-      }
-      if (
-        usCityOptions.length > 0 &&
-        !usCityOptions.includes(form.city.trim())
-      ) {
-        toast.error("City required", "Choose a city from the list for the selected state.")
-        return false
-      }
-      if (!form.zip.trim()) {
-        toast.error("Zip code", "Enter a 5-digit zip code.")
-        return false
-      }
-      const zipErr = zipCodeFieldError(form.zip)
-      if (zipErr) {
-        toast.error("Zip code", zipErr)
-        return false
-      }
-    } else {
-      if (!form.state.trim() || !form.city.trim() || !form.zip.trim()) {
-        toast.error("Address incomplete", "Fill in state, city, and zip.")
-        return false
-      }
-    }
+    setFieldErrors({})
     return true
   }, [form, isUs, usStateCode, usCityOptions])
 
   const goNext = useCallback(() => {
     if (step !== 1) return
-    if (!validateAddressStep()) return
+    if (!applyAddressStepValidation()) return
     setStep(2)
-  }, [step, validateAddressStep])
+  }, [step, applyAddressStepValidation])
 
   const goBack = useCallback(() => {
     setStep(1)
   }, [])
 
   function handleAdd() {
-    if (!validateAddressStep()) {
+    if (!applyAddressStepValidation()) {
       if (step === 2) setStep(1)
       return
     }
@@ -353,6 +395,7 @@ export function AddAddressModal({
         </div>
 
         <form
+          ref={formRef}
           className="deals_add_inv_modal_form investing_pill_modal_form"
           onSubmit={(e) => {
             e.preventDefault()
@@ -379,14 +422,19 @@ export function AddAddressModal({
                 }
                 Icon={Building2}
                 tight
+                error={fieldErrors.fullNameOrCompany}
               >
                 <input
                   id="addr-name"
-                  className={ADDR_INPUT_CLASS}
+                  className={addrInputClass(Boolean(fieldErrors.fullNameOrCompany))}
                   value={form.fullNameOrCompany}
                   onChange={(e) => patch({ fullNameOrCompany: e.target.value })}
                   placeholder="Enter full name or company name"
                   autoComplete="name"
+                  aria-invalid={Boolean(fieldErrors.fullNameOrCompany)}
+                  aria-describedby={
+                    fieldErrors.fullNameOrCompany ? "addr-name-err" : undefined
+                  }
                 />
               </InvestingFormField>
 
@@ -445,6 +493,7 @@ export function AddAddressModal({
                     }
                     Icon={MapPin}
                     tight
+                    error={fieldErrors.state}
                   >
                     <DealsCreateDropdownSelect
                       options={[
@@ -463,6 +512,10 @@ export function AddAddressModal({
                       searchAriaLabel="Filter state list"
                       searchShowOptionCountHint
                       triggerClassName={ADDR_DROPDOWN_TRIGGER}
+                      invalid={Boolean(fieldErrors.state)}
+                      ariaDescribedBy={
+                        fieldErrors.state ? "addr-state-err" : undefined
+                      }
                     />
                     {US_LOCATION_SOURCE === "countriesNow" && countriesNow.statesError ? (
                       <p
@@ -487,6 +540,7 @@ export function AddAddressModal({
                     }
                     Icon={Building2}
                     tight
+                    error={fieldErrors.city}
                   >
                     <DealsCreateDropdownSelect
                       options={[
@@ -519,6 +573,10 @@ export function AddAddressModal({
                       searchAriaLabel="Filter city list"
                       searchShowOptionCountHint
                       triggerClassName={ADDR_DROPDOWN_TRIGGER}
+                      invalid={Boolean(fieldErrors.city)}
+                      ariaDescribedBy={
+                        fieldErrors.city ? "addr-city-err" : undefined
+                      }
                     />
                     {US_LOCATION_SOURCE === "countriesNow" && usStateCode && countriesNow.citiesError ? (
                       <p
@@ -546,14 +604,19 @@ export function AddAddressModal({
                     }
                     Icon={MapPin}
                     tight
+                    error={fieldErrors.state}
                   >
                     <input
                       id="addr-state"
-                      className={ADDR_INPUT_CLASS}
+                      className={addrInputClass(Boolean(fieldErrors.state))}
                       value={form.state}
                       onChange={(e) => patch({ state: e.target.value })}
                       placeholder="Enter state or region"
                       autoComplete="address-level1"
+                      aria-invalid={Boolean(fieldErrors.state)}
+                      aria-describedby={
+                        fieldErrors.state ? "addr-state-err" : undefined
+                      }
                     />
                   </InvestingFormField>
 
@@ -569,14 +632,19 @@ export function AddAddressModal({
                     }
                     Icon={Building2}
                     tight
+                    error={fieldErrors.city}
                   >
                     <input
                       id="addr-city"
-                      className={ADDR_INPUT_CLASS}
+                      className={addrInputClass(Boolean(fieldErrors.city))}
                       value={form.city}
                       onChange={(e) => patch({ city: e.target.value })}
                       placeholder="Enter city"
                       autoComplete="address-level2"
+                      aria-invalid={Boolean(fieldErrors.city)}
+                      aria-describedby={
+                        fieldErrors.city ? "addr-city-err" : undefined
+                      }
                     />
                   </InvestingFormField>
                 </>
@@ -594,14 +662,19 @@ export function AddAddressModal({
                     </>
                   }
                   Icon={MapPin}
+                  error={fieldErrors.street1}
                 >
                   <input
                     id="addr-line1"
-                    className={ADDR_INPUT_CLASS}
+                    className={addrInputClass(Boolean(fieldErrors.street1))}
                     value={form.street1}
                     onChange={(e) => patch({ street1: e.target.value })}
                     placeholder="Enter address line 1"
                     autoComplete="address-line1"
+                    aria-invalid={Boolean(fieldErrors.street1)}
+                    aria-describedby={
+                      fieldErrors.street1 ? "addr-line1-err" : undefined
+                    }
                   />
                 </InvestingFormField>
               </div>
@@ -631,10 +704,11 @@ export function AddAddressModal({
                   }
                   Icon={Hash}
                   tight
+                  error={fieldErrors.zip}
                 >
                   <input
                     id="addr-zip"
-                    className={ADDR_INPUT_CLASS}
+                    className={addrInputClass(Boolean(fieldErrors.zip))}
                     value={form.zip}
                     onChange={(e) =>
                       patch({
@@ -647,6 +721,10 @@ export function AddAddressModal({
                     autoComplete="postal-code"
                     inputMode={isUs ? "numeric" : undefined}
                     maxLength={isUs ? 5 : undefined}
+                    aria-invalid={Boolean(fieldErrors.zip)}
+                    aria-describedby={
+                      fieldErrors.zip ? "addr-zip-err" : undefined
+                    }
                   />
                 </InvestingFormField>
               </div>
@@ -715,7 +793,11 @@ export function AddAddressModal({
           </div>
 
           <div className="um_modal_actions add_contact_modal_actions">
-            <button type="button" className="um_btn_secondary" onClick={onClose}>
+            <button
+              type="button"
+              className="um_btn_secondary add_contact_modal_actions_leading"
+              onClick={onClose}
+            >
               <X size={16} strokeWidth={2} aria-hidden />
               Close
             </button>
@@ -737,12 +819,8 @@ export function AddAddressModal({
                 </button>
               ) : (
               <button type="submit" className="um_btn_primary">
-                {isEdit ? (
-                  <Save size={18} strokeWidth={2} aria-hidden />
-                ) : (
-                  <Plus size={18} strokeWidth={2} aria-hidden />
-                )}
-                {isEdit ? "Save changes" : "Add address"}
+                <Save size={16} strokeWidth={2} aria-hidden />
+                Save
               </button>
               )}
             </div>

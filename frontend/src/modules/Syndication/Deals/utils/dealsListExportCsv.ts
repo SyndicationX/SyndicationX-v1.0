@@ -6,6 +6,8 @@ import {
   type DealListRow,
   type DealTypeOption,
 } from "../types/deals.types"
+import { formatAmountNumberExport, parseMoneyDigits } from "./offeringMoneyFormat"
+import { formatDealListDateDisplay } from "../dealsListDisplay"
 
 function dealTypeLabel(code: string): string {
   if (code === "—" || !code) return "—"
@@ -25,6 +27,16 @@ function dealCsvCell(value: string | number | boolean | undefined | null): strin
   if (value == null) return ""
   const s = String(value).trim()
   return s === "—" ? "" : s
+}
+
+/** Money-ish deal list fields → plain number for Excel. */
+function dealMoneyCsvCell(value: string | number | undefined | null): string {
+  if (value == null) return ""
+  const s = String(value).trim()
+  if (!s || s === "—") return ""
+  const n = typeof value === "number" ? value : parseMoneyDigits(s)
+  if (!Number.isFinite(n)) return dealCsvCell(s)
+  return formatAmountNumberExport(n)
 }
 
 export function buildDealsListExportCsv(rows: DealListRow[]): string {
@@ -47,6 +59,7 @@ export function buildDealsListExportCsv(rows: DealListRow[]): string {
     "Total in progress",
     "Total accepted",
     "Raise target",
+    "Next billing",
     "Distributions",
     "Investors",
     "Investor class",
@@ -74,9 +87,14 @@ export function buildDealsListExportCsv(rows: DealListRow[]): string {
         row.investmentType,
         row.propertyType,
         row.offeringStatus,
-        row.totalInProgress,
-        row.totalAccepted,
-        row.raiseTarget,
+        dealMoneyCsvCell(row.totalInProgress),
+        dealMoneyCsvCell(row.totalAccepted),
+        dealMoneyCsvCell(row.raiseTarget),
+        row.nextBillingDate
+          ? formatDealListDateDisplay(row.nextBillingDate)
+          : row.archived
+            ? "Not billed"
+            : "",
         row.distributions,
         row.investors,
         row.investorClass,

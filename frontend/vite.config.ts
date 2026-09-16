@@ -76,7 +76,13 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      /**
+       * Listen on 0.0.0.0 so both `http://127.0.0.1:5174` and `http://localhost:5174` work.
+       * Default Vite on Windows often binds only `[::1]`, which breaks IPv4 clients and the API proxy UX.
+       */
+      host: true,
       port: 5174,
+      strictPort: true,
       /**
        * Forward `/api` and `/uploads` to the same Express process. Port is read from
        * `../backend/.env` / `.env.local` (`loadEnv` → `BACKEND_PORT`) with shell override first

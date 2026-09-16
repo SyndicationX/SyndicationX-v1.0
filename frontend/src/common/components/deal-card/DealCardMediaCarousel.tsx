@@ -6,6 +6,8 @@ interface DealCardMediaCarouselProps {
   imageUrls: string[]
   title: string
   onUploadCoverClick?: () => void
+  /** When set, clicking the visible image invokes this with the active slide index. */
+  onImageClick?: (index: number) => void
 }
 
 function stopLinkNavigation(e: MouseEvent) {
@@ -17,6 +19,7 @@ export function DealCardMediaCarousel({
   imageUrls,
   title,
   onUploadCoverClick,
+  onImageClick,
 }: DealCardMediaCarouselProps) {
   const [index, setIndex] = useState(0)
   const n = imageUrls.length
@@ -58,17 +61,36 @@ export function DealCardMediaCarousel({
   }
 
   const current = imageUrls[index] ?? ""
+  const imageAlt = title.trim()
+    ? `Property image for ${title}`
+    : "Property image"
+
+  const imageNode = (
+    <CloudinaryDeliveryImage
+      src={current}
+      alt={imageAlt}
+      className="deal_card_cover"
+      loading={index === 0 ? "eager" : "lazy"}
+      fetchPriority={index === 0 ? "high" : "auto"}
+      decoding="async"
+    />
+  )
 
   return (
     <div className="deal_card_media deal_card_media--hero deal_card_media_carousel">
-      <CloudinaryDeliveryImage
-        src={current}
-        alt={title.trim() ? `Property image for ${title}` : "Property image"}
-        className="deal_card_cover"
-        loading={index === 0 ? "eager" : "lazy"}
-        fetchPriority={index === 0 ? "high" : "auto"}
-        decoding="async"
-      />
+      {onImageClick ? (
+        <button
+          type="button"
+          className="deal_card_carousel_image_btn"
+          onClick={() => onImageClick(index)}
+          aria-haspopup="dialog"
+          aria-label={`Open image ${index + 1} of ${n} in gallery viewer`}
+        >
+          {imageNode}
+        </button>
+      ) : (
+        imageNode
+      )}
       {n > 1 ? (
         <>
           <button

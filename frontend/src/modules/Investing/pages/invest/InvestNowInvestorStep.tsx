@@ -89,7 +89,7 @@ export function InvestNowInvestorStep({
             classesLoading
               ? "Loading investment classes…"
               : investmentClassOptions.length === 0
-                ? "No investment classes on this deal"
+                ? "No investment classes available for investor onboarding"
                 : "Select investment class"
           }
           ariaLabel="Investment class"

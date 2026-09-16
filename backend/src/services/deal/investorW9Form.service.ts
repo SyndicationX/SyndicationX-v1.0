@@ -4,6 +4,7 @@ import { PDFDocument } from "pdf-lib";
 import { db } from "../../database/db.js";
 import { dealInvestment } from "../../schema/deal.schema/deal-investment.schema.js";
 import { getEsignW9PdfPath, esignW9PdfExists } from "../../config/esignW9.config.js";
+import { nineDigitsFromSsnItinInput } from "../../common/tax/usSsnItin.js";
 import type { InvestorEsignRowTarget } from "./dealMemberEsignStatus.service.js";
 
 const MAX_W9_JSON_CHARS = 16_000;
@@ -32,9 +33,7 @@ export async function getEsignW9PageCount(): Promise<number> {
 }
 
 function nineDigitsFromSsn(raw: string): string {
-  return String(raw ?? "")
-    .replace(/\D/g, "")
-    .slice(0, 9);
+  return nineDigitsFromSsnItinInput(raw);
 }
 
 function formatCityStateZip(data: InvestorW9FormData): string {
@@ -113,8 +112,9 @@ export async function buildFilledW9PdfBuffer(
   setText("f1_07[0]", street);
   setText("f1_08[0]", cityLine);
   if (ssn.length === 9) {
-    setText("f1_11[0]", ssn.slice(0, 3));
-    setText("f1_12[0]", ssn.slice(3, 5));
+    // W-9 SSN is three boxes: area / group / serial — mask all but last 4.
+    setText("f1_11[0]", "XXX");
+    setText("f1_12[0]", "XX");
     setText("f1_13[0]", ssn.slice(5, 9));
   }
 

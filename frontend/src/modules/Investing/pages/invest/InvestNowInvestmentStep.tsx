@@ -12,6 +12,7 @@ export interface InvestNowInvestmentStepProps {
   amount: string
   fundingMethod: string
   minimumHint: string
+  belowMinimumNotice?: string | null
   onAmountChange: (v: string) => void
   onFundingMethodChange: (v: string) => void
   onAmountBlur?: () => void
@@ -24,6 +25,7 @@ export function InvestNowInvestmentStep({
   amount,
   fundingMethod,
   minimumHint,
+  belowMinimumNotice,
   onAmountChange,
   onFundingMethodChange,
   onAmountBlur,
@@ -47,6 +49,7 @@ export function InvestNowInvestmentStep({
         label="Investment amount"
         required
         hint={minimumHint || undefined}
+        notice={belowMinimumNotice || undefined}
         error={fieldErrors.amount}
       >
         <div className="invest_now_money_input_wrap">

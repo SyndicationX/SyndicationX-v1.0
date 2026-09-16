@@ -128,7 +128,7 @@ export function EsignSigningWorkflowPicker({
           <SequentialFlowPreview signingOrder={signingOrder} />
         ) : (
           <div className="deal_esign_workflow_parallel_chip" role="status">
-            Investor and sponsor may sign simultaneously
+            Investors sign in any order; sponsor countersigns after each
           </div>
         )}
       </div>
@@ -170,11 +170,11 @@ export function EsignSigningWorkflowPicker({
           <span className="deal_esign_workflow_mode_copy">
             <span className="deal_esign_workflow_mode_title">Parallel</span>
             <span className="deal_esign_workflow_mode_desc">
-              Investor and sponsor can sign at the same time.
+              Any investor may sign; sponsor countersigns after each investor.
             </span>
           </span>
           <span className="deal_esign_workflow_parallel_chip deal_esign_workflow_parallel_chip--inline">
-            Both parties
+            Investor first
           </span>
         </button>
 
@@ -219,7 +219,7 @@ export function EsignSigningWorkflowPicker({
                 Investor first
               </span>
               <span className="deal_esign_workflow_sequence_desc">
-                All investors may sign in any order; sponsor signs after at least one investor finishes.
+                After all investors sign, the sponsor signs.
               </span>
             </button>
 

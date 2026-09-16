@@ -1,5 +1,5 @@
 import { ArrowLeft, Loader2 } from "lucide-react"
-import { useCallback, useEffect, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import { toast } from "@/common/components/Toast"
 import {
@@ -7,7 +7,6 @@ import {
   fetchMyProfileBook,
   putInvestorProfile,
 } from "./investingProfileBookApi"
-import { AddInvestorProfileModal } from "./AddInvestorProfileModal"
 import type { SavedAddress } from "./address.types"
 import type { InvestorProfileListRow, UpdateInvestorProfilePayload } from "./investor-profiles.types"
 import "@/modules/Syndication/usermanagement/user_management.css"
@@ -15,6 +14,8 @@ import "@/modules/Syndication/Deals/deals-list.css"
 import "@/modules/Syndication/Deals/deals-create.css"
 import "./add-investor-profile-modal.css"
 import "./investing-profiles.css"
+
+const AddInvestorProfileModal = lazy(() => import("./AddInvestorProfileModal"))
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -135,19 +136,40 @@ export function EditInvestorProfilePage() {
   }
 
   return (
-    <AddInvestorProfileModal
-      key={profile.id}
-      open
-      mode="edit"
-      variant="page"
-      editTarget={profile}
-      onClose={goBack}
-      savedAddresses={savedAddresses}
-      savedBeneficiaries={savedBeneficiaries}
-      existingProfiles={existingProfiles}
-      onAddressAdded={(row) => setSavedAddresses((prev) => [row, ...prev])}
-      onBeneficiaryAdded={(row) => setSavedBeneficiaries((prev) => [row, ...prev])}
-      onProfileUpdated={onProfileUpdated}
-    />
+    <Suspense
+      fallback={
+        <div className="deals_list_page deals_detail_page deals_add_investor_class_page deals_add_deal_asset_page deals_create_flow">
+          <section
+            className="deals_create_loading_panel"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <Loader2
+              className="deals_create_loading_icon"
+              size={28}
+              strokeWidth={2}
+              aria-hidden
+            />
+            <p className="deals_create_loading_text">Loading…</p>
+          </section>
+        </div>
+      }
+    >
+      <AddInvestorProfileModal
+        key={profile.id}
+        open
+        mode="edit"
+        variant="page"
+        editTarget={profile}
+        onClose={goBack}
+        savedAddresses={savedAddresses}
+        savedBeneficiaries={savedBeneficiaries}
+        existingProfiles={existingProfiles}
+        onAddressAdded={(row) => setSavedAddresses((prev) => [row, ...prev])}
+        onBeneficiaryAdded={(row) => setSavedBeneficiaries((prev) => [row, ...prev])}
+        onProfileUpdated={onProfileUpdated}
+      />
+    </Suspense>
   )
 }

@@ -47,6 +47,11 @@ import {
 } from "../../services/deal/dealMemberSendEsign.service.js";
 import { sendDealMemberSendEsignEmail } from "../../services/deal/dealMemberSendEsign.service.js";
 import { resolveViewerDealMemberRoleOnDeal } from "../../services/deal/dealMemberScope.service.js";
+import {
+  getViewerCoSponsorEmailIntercept,
+  normalizeCoSponsorEmailIntercept,
+  updateViewerCoSponsorEmailIntercept,
+} from "../../services/deal/dealCoSponsorEmailIntercept.service.js";
 import { requestedOrganizationIdFromRequest } from "../../services/org/orgResolution.service.js";
 import {
   decodeOfferingPreviewSponsorRefParam,
@@ -97,12 +102,14 @@ export async function getDealMembers(
           : "",
     );
 
-    const [members, viewerDealMemberRole, leadSponsorDisplayName] =
+    const [membersRaw, viewerDealMemberRole, leadSponsorDisplayName] =
       await Promise.all([
         listDealMembersMappedToInvestorApi(dealId, user.id),
         resolveViewerDealMemberRoleOnDeal(dealId, user.id),
         resolveDealLeadSponsorDisplayName(dealId),
       ]);
+    const members =
+      viewerDealMemberRole === "co_sponsor" ? [] : membersRaw;
 
     const referringSponsor = sponsorRef
       ? await resolveOfferingPreviewSponsorAttribution(dealId, sponsorRef)
@@ -490,6 +497,18 @@ export async function postDealMemberSendEsign(
       signatureId,
     });
 
+    try {
+      const { notifySequentialInvestorsSignTurnAvailable } = await import(
+        "../../services/deal/dealEsignStageNotificationEmail.service.js"
+      );
+      await notifySequentialInvestorsSignTurnAvailable(dealId);
+    } catch (err) {
+      console.warn(
+        "notifySequentialInvestorsSignTurnAvailable (member send esign):",
+        err,
+      );
+    }
+
     const result = await sendDealMemberSendEsignEmail({
       dealId,
       toEmail: toEmail.trim(),
@@ -650,5 +669,117 @@ export async function deleteDealMember(
   } catch (err) {
     console.error("deleteDealMember:", err);
     res.status(500).json({ message: "Could not remove member" });
+  }
+}
+
+async function assertDealReadableForMemberSettings(
+  req: Request,
+  res: Response,
+  userId: string,
+  userRole: string | undefined,
+): Promise<string | null> {
+  const dealId =
+    typeof req.params.dealId === "string"
+      ? req.params.dealId
+      : req.params.dealId?.[0];
+  if (!dealId) {
+    res.status(400).json({ message: "Missing deal id" });
+    return null;
+  }
+  const scope = await resolveDealViewerScope(
+    userId,
+    userRole,
+    requestedOrganizationIdFromRequest(req),
+  );
+  if (!(await assertDealIdReadableOrAssignedParticipant(dealId, scope))) {
+    res.status(404).json({ message: "Deal not found" });
+    return null;
+  }
+  return dealId;
+}
+
+/**
+ * GET /deals/:dealId/co-sponsor-email-intercept
+ * Deal-scoped intercept preference for the signed-in co-sponsor only.
+ */
+export async function getDealCoSponsorEmailIntercept(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  try {
+    const dealId = await assertDealReadableForMemberSettings(
+      req,
+      res,
+      user.id,
+      user.userRole,
+    );
+    if (!dealId) return;
+    const intercept = await getViewerCoSponsorEmailIntercept(dealId, user.id);
+    if (intercept == null) {
+      res.status(200).json({ applicable: false, intercept: null });
+      return;
+    }
+    res.status(200).json({ applicable: true, intercept });
+  } catch (err) {
+    console.error("getDealCoSponsorEmailIntercept:", err);
+    res.status(500).json({ message: "Could not load email intercept setting" });
+  }
+}
+
+/**
+ * PATCH /deals/:dealId/co-sponsor-email-intercept
+ * Co-sponsor sets yes/no intercept for lead-sponsor emails on this deal.
+ */
+export async function patchDealCoSponsorEmailIntercept(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  try {
+    const dealId = await assertDealReadableForMemberSettings(
+      req,
+      res,
+      user.id,
+      user.userRole,
+    );
+    if (!dealId) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const raw =
+      b.intercept ??
+      b.emailIntercept ??
+      b.leadSponsorEmailIntercept ??
+      b.lead_sponsor_email_intercept;
+    if (raw == null || String(raw).trim() === "") {
+      res.status(400).json({
+        message: "Field intercept is required (yes intercept or no intercept)",
+      });
+      return;
+    }
+    const value = normalizeCoSponsorEmailIntercept(raw);
+    const updated = await updateViewerCoSponsorEmailIntercept(
+      dealId,
+      user.id,
+      value,
+    );
+    if (updated == null) {
+      res.status(403).json({
+        message:
+          "Email intercept is available only for a co-sponsor on this deal.",
+      });
+      return;
+    }
+    res.status(200).json({ applicable: true, intercept: updated });
+  } catch (err) {
+    console.error("patchDealCoSponsorEmailIntercept:", err);
+    res.status(500).json({ message: "Could not save email intercept setting" });
   }
 }

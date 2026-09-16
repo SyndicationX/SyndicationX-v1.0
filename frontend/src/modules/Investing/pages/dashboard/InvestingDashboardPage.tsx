@@ -89,7 +89,7 @@ export function InvestingDashboardPage() {
           title="Total distributed"
           loading={loading}
           description={cardCompactAmountOrDash(metrics?.totalDistributedDisplay)}
-          hintTitle="Your funded rows: amount shown is the committed on each of your rows that has a funded date."
+          hintTitle="Sum of distribution payments credited to you across deals you can access."
         />
         <ToolStyleCard
           variant="metric"

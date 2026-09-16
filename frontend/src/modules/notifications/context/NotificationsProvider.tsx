@@ -1,11 +1,5 @@
-import {
-  createContext,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { FEEDBACK_PENDING_CHANGED_EVENT } from "@/modules/feedback/api/feedbackApi"
 import { fetchPortalNotifications } from "../api/fetchPortalNotifications"
 import type { PortalNotification } from "../types/notification.types"
 import {
@@ -13,20 +7,10 @@ import {
   persistAllNotificationsRead,
   persistNotificationRead,
 } from "../utils/notificationReadStorage"
+import { NotificationsContext } from "./notificationsContext"
 
-interface NotificationsContextValue {
-  notifications: PortalNotification[]
-  unreadCount: number
-  isLoading: boolean
-  loadError: string | null
-  refresh: () => Promise<void>
-  markRead: (id: string) => void
-  markAllRead: () => void
-}
-
-export const NotificationsContext = createContext<
-  NotificationsContextValue | undefined
->(undefined)
+export { NotificationsContext } from "./notificationsContext"
+export type { NotificationsContextValue } from "./notificationsContext"
 
 function applyReadState(
   items: Omit<PortalNotification, "read">[],
@@ -63,8 +47,18 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     function onFocus() {
       void refresh()
     }
+    function onFeedbackChanged() {
+      void refresh()
+    }
     window.addEventListener("focus", onFocus)
-    return () => window.removeEventListener("focus", onFocus)
+    window.addEventListener(FEEDBACK_PENDING_CHANGED_EVENT, onFeedbackChanged)
+    return () => {
+      window.removeEventListener("focus", onFocus)
+      window.removeEventListener(
+        FEEDBACK_PENDING_CHANGED_EVENT,
+        onFeedbackChanged,
+      )
+    }
   }, [refresh])
 
   const unreadCount = useMemo(

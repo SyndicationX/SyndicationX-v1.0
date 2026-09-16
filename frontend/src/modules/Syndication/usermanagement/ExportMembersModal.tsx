@@ -3,6 +3,7 @@ import { ExportModalFooter } from "../../../common/components/modal/ExportModalF
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import "../Deals/components/export-deals-modal.css"
 import { formatUsPhoneStoredForUi } from "../../../common/phone/usPhoneNumber"
+import { displayEmail, isDisplayableEmail } from "../../../common/utils/displayEmail"
 import {
   accountStatusLabel,
   formatMemberUsername,
@@ -256,8 +257,8 @@ export function ExportMembersModal({
                       {memberDisplayLabel(row)}
                     </span>
                     <span className="deals_export_modal_row_meta">
-                      {formatValue(row.email) !== "—"
-                        ? formatValue(row.email)
+                      {isDisplayableEmail(row.email)
+                        ? displayEmail(row.email)
                         : formatMemberUsername(row.username)}
                     </span>
                   </label>
@@ -270,7 +271,7 @@ export function ExportMembersModal({
         <ExportModalFooter onClose={onClose}>
           <button
             type="button"
-            className="deals_export_modal_btn_primary"
+            className="um_btn_primary"
             onClick={handleExportExcel}
             disabled={selectedKeys.size === 0}
           >

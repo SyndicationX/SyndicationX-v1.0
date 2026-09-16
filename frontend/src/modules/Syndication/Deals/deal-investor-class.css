@@ -358,7 +358,11 @@ a.deal_offering_add_ic_btn.um_btn_primary {
   border-bottom: none;
 }
 
-/* Classes toolbar: allocation notice + search left / Add Class right */
+/* Classes list: allocation notice above Assets-style toolbar */
+.deal_classes_datatable_panel > .deal_inv_class_allocation_notice_wrap {
+  margin-bottom: 0.75em;
+}
+
 .deal_inv_class_toolbar {
   flex-direction: column;
   align-items: stretch;
@@ -373,17 +377,17 @@ a.deal_offering_add_ic_btn.um_btn_primary {
 
 .deal_inv_class_allocation_notice_wrap {
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   width: 100%;
   box-sizing: border-box;
 }
 
 .deal_inv_class_allocation_notice_wrap .deal_inv_class_allocation_notice {
-  flex: 0 1 auto;
-  width: auto;
-  max-width: min(42em, 100%);
-  justify-content: center;
-  text-align: center;
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: none;
+  justify-content: flex-start;
+  text-align: left;
 }
 
 .deal_inv_class_toolbar_search {
@@ -398,7 +402,7 @@ a.deal_offering_add_ic_btn.um_btn_primary {
   gap: 0.5em;
   flex: 1 1 16rem;
   min-width: min(100%, 14rem);
-  max-width: 42em;
+  max-width: none;
   margin: 0;
   padding: 0.5em 0.7em;
   border-radius: var(--portal-card-radius, 4px);

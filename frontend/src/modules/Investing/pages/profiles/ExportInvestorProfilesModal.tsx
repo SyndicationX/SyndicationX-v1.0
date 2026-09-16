@@ -266,7 +266,7 @@ export function ExportInvestorProfilesModal({
         <ExportModalFooter onClose={onClose}>
           <button
             type="button"
-            className="deals_export_modal_btn_secondary"
+            className="um_btn_secondary"
             onClick={handleExportSelected}
             disabled={selectedIds.size === 0}
           >
@@ -274,7 +274,7 @@ export function ExportInvestorProfilesModal({
           </button>
           <button
             type="button"
-            className="deals_export_modal_btn_primary"
+            className="um_btn_primary"
             onClick={handleExportAll}
             disabled={profiles.length === 0}
           >

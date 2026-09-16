@@ -18,19 +18,7 @@
 }
 
 /* —— Scrollbars —— */
-:root[data-theme="dark"] .app_shell,
-:root[data-theme="dark"] .app_shell * {
-  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
-}
-
-:root[data-theme="dark"] .app_shell ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-}
-
-:root[data-theme="dark"] .app_shell ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.24);
-}
+/* Tokens + chrome live in portal-scrollbars.css / portal-theme.css */
 
 /* —— Modals —— */
 :root[data-theme="dark"] .um_modal_overlay {
@@ -68,6 +56,85 @@
 :root[data-theme="dark"] .modal_close_btn:hover {
   background: rgba(255, 255, 255, 0.08);
   color: var(--portal-text);
+}
+
+/* —— Export modals (contacts, deals, members, etc.) —— */
+:root[data-theme="dark"] .deals_export_modal_overlay {
+  background: var(--portal-modal-overlay);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+:root[data-theme="dark"] .deals_export_modal {
+  background: var(--portal-modal-bg);
+  border: 1px solid var(--portal-border);
+  box-shadow: var(--portal-modal-shadow);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .deals_export_modal_title {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .deals_export_modal_hint {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .deals_export_modal_close {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .deals_export_modal_close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .deals_export_modal_search_icon {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .deals_export_modal_select_all,
+:root[data-theme="dark"] .deals_export_modal_row_name {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .deals_export_modal_select_all_meta,
+:root[data-theme="dark"] .deals_export_modal_row_meta,
+:root[data-theme="dark"] .deals_export_modal_empty {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .deals_export_modal_row_label:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .deals_export_modal_btn_secondary {
+  background: transparent;
+  color: var(--portal-text);
+  border-color: var(--portal-border);
+}
+
+:root[data-theme="dark"] .deals_export_modal_btn_secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--portal-text);
+  border-color: color-mix(
+    in srgb,
+    var(--portal-text) 18%,
+    var(--portal-border)
+  );
+}
+
+:root[data-theme="dark"] .deals_export_modal_footer .um_btn_primary,
+:root[data-theme="dark"] .deals_export_modal .um_btn_primary {
+  background: var(--ui-button-background-add, var(--sidebar-bg-color));
+  color: var(--ui-button-text, var(--sidebar-active-text));
+  border-color: var(--ui-button-border, var(--sidebar-active-text));
+}
+
+:root[data-theme="dark"] .deals_export_modal_footer .um_btn_primary:hover:not(:disabled),
+:root[data-theme="dark"] .deals_export_modal .um_btn_primary:hover:not(:disabled) {
+  background: var(--ui-button-hover);
+  color: var(--ui-button-text, var(--sidebar-active-text));
 }
 
 /* —— Menus / dropdowns —— */
@@ -199,49 +266,7 @@
   border-color: var(--portal-table-border);
 }
 
-/* Table horizontal scroll — match app shell scroll chrome (gold-tinted thumb on hover). */
-:root[data-theme="dark"] .app_shell .data_table_scroll,
-:root[data-theme="dark"] .app_shell .data_table_scroll_region,
-:root[data-theme="dark"] .app_shell .um_table_wrap.data_table_shell,
-:root[data-theme="dark"] .app_shell .deals_list_table_panel .data_table_scroll_region,
-:root[data-theme="dark"] .app_shell .deal_inv_table_panel .data_table_scroll_region {
-  scrollbar-color: var(--portal-table-scroll-thumb, rgba(255, 255, 255, 0.14)) transparent;
-}
-
-:root[data-theme="dark"] .app_shell .data_table_scroll::-webkit-scrollbar-thumb,
-:root[data-theme="dark"] .app_shell .data_table_scroll_region::-webkit-scrollbar-thumb,
-:root[data-theme="dark"] .app_shell .um_table_wrap.data_table_shell::-webkit-scrollbar-thumb,
-:root[data-theme="dark"]
-  .app_shell
-  .deals_list_table_panel
-  .data_table_scroll_region::-webkit-scrollbar-thumb,
-:root[data-theme="dark"]
-  .app_shell
-  .deal_inv_table_panel
-  .data_table_scroll_region::-webkit-scrollbar-thumb {
-  background: var(--portal-table-scroll-thumb, rgba(255, 255, 255, 0.14));
-  border: 2px solid transparent;
-  border-radius: 999px;
-  background-clip: padding-box;
-}
-
-:root[data-theme="dark"] .app_shell .data_table_scroll::-webkit-scrollbar-thumb:hover,
-:root[data-theme="dark"] .app_shell .data_table_scroll_region::-webkit-scrollbar-thumb:hover,
-:root[data-theme="dark"] .app_shell .um_table_wrap.data_table_shell::-webkit-scrollbar-thumb:hover,
-:root[data-theme="dark"]
-  .app_shell
-  .deals_list_table_panel
-  .data_table_scroll_region::-webkit-scrollbar-thumb:hover,
-:root[data-theme="dark"]
-  .app_shell
-  .deal_inv_table_panel
-  .data_table_scroll_region::-webkit-scrollbar-thumb:hover {
-  background: var(
-    --portal-table-scroll-thumb-hover,
-    color-mix(in srgb, var(--portal-gold-accent, #d4af37) 28%, rgba(255, 255, 255, 0.22))
-  );
-  background-clip: padding-box;
-}
+/* Table scroll thumbs inherit portal-scrollbars.css + theme tokens. */
 
 :root[data-theme="dark"] .app_shell .um_table_pagination {
   background: var(--portal-surface, rgba(255, 255, 255, 0.04));
@@ -312,4 +337,161 @@
   background: var(--portal-table-empty-bg);
   border-color: var(--portal-table-empty-border);
   color: var(--portal-table-empty-text);
+}
+
+/* —— Quill rich text (snow theme) —— */
+:root[data-theme="dark"] .ql-toolbar.ql-snow,
+:root[data-theme="dark"] .ql-snow .ql-toolbar {
+  border-color: var(--portal-border);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:root[data-theme="dark"] .ql-container.ql-snow {
+  border-color: var(--portal-border);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .ql-snow .ql-editor {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .ql-snow .ql-editor.ql-blank::before {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .ql-snow .ql-stroke {
+  stroke: rgba(255, 255, 255, 0.78);
+}
+
+:root[data-theme="dark"] .ql-snow .ql-stroke-miter {
+  stroke: rgba(255, 255, 255, 0.78);
+}
+
+:root[data-theme="dark"] .ql-snow .ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-stroke.ql-fill {
+  fill: rgba(255, 255, 255, 0.78);
+}
+
+:root[data-theme="dark"] .ql-snow .ql-picker,
+:root[data-theme="dark"] .ql-snow .ql-picker-label {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:hover,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:focus,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:focus,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button.ql-active,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button.ql-active {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:hover,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:focus,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:focus,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button.ql-active,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button.ql-active,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-label:hover,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-label:hover,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-label.ql-active,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-label.ql-active,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-item:hover,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-item:hover,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-item.ql-selected,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-item.ql-selected {
+  color: var(--portal-gold-accent, #d4af37);
+}
+
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover .ql-stroke,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:hover .ql-stroke,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:focus .ql-stroke,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:focus .ql-stroke,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button.ql-active .ql-stroke,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button.ql-active .ql-stroke,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-label:hover .ql-stroke,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-label:hover .ql-stroke,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-label.ql-active .ql-stroke,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-label.ql-active .ql-stroke,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-item:hover .ql-stroke,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-item:hover .ql-stroke,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-item.ql-selected .ql-stroke,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-item.ql-selected .ql-stroke,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover .ql-stroke-miter,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:hover .ql-stroke-miter,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:focus .ql-stroke-miter,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:focus .ql-stroke-miter,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button.ql-active .ql-stroke-miter,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button.ql-active .ql-stroke-miter {
+  stroke: var(--portal-gold-accent, #d4af37);
+}
+
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover .ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:hover .ql-fill,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:focus .ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:focus .ql-fill,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button.ql-active .ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button.ql-active .ql-fill,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-label:hover .ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-label:hover .ql-fill,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-label.ql-active .ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-label.ql-active .ql-fill,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-item:hover .ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-item:hover .ql-fill,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-item.ql-selected .ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-toolbar .ql-picker-item.ql-selected .ql-fill,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover .ql-stroke.ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:hover .ql-stroke.ql-fill,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:focus .ql-stroke.ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button:focus .ql-stroke.ql-fill,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button.ql-active .ql-stroke.ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-toolbar button.ql-active .ql-stroke.ql-fill {
+  fill: var(--portal-gold-accent, #d4af37);
+}
+
+:root[data-theme="dark"] .ql-snow .ql-picker-options {
+  background-color: color-mix(
+    in srgb,
+    var(--portal-page-bg, #0a0f1a) 92%,
+    rgba(255, 255, 255, 0.1)
+  );
+  border-color: var(--portal-border);
+  box-shadow: var(--portal-dropdown-shell-shadow);
+}
+
+:root[data-theme="dark"] .ql-snow .ql-picker-options .ql-picker-item {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .ql-toolbar.ql-snow .ql-picker.ql-expanded .ql-picker-label,
+:root[data-theme="dark"] .ql-toolbar.ql-snow .ql-picker.ql-expanded .ql-picker-options {
+  border-color: var(--portal-border);
+}
+
+:root[data-theme="dark"] .ql-snow .ql-tooltip {
+  background-color: color-mix(
+    in srgb,
+    var(--portal-page-bg, #0a0f1a) 92%,
+    rgba(255, 255, 255, 0.1)
+  );
+  border-color: var(--portal-border);
+  color: var(--portal-text);
+  box-shadow: var(--portal-dropdown-shell-shadow);
+}
+
+:root[data-theme="dark"] .ql-snow .ql-tooltip input[type="text"] {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--portal-border);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .deal_offering_quill,
+:root[data-theme="dark"] .email_preview_quill_host {
+  border-color: var(--portal-border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"] .deal_offering_quill .ql-toolbar.ql-snow {
+  background: rgba(255, 255, 255, 0.08);
+  border-bottom-color: var(--portal-border);
 }

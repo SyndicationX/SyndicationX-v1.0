@@ -82,8 +82,8 @@
 }
 
 .deal_esign_create_modal.um_modal.deals_add_inv_modal_panel {
-  width: min(36rem, calc(100vw - 2rem));
-  max-height: min(90vh, 720px);
+  width: min(44rem, calc(100vw - 2rem));
+  max-height: min(92vh, 800px);
   display: flex;
   flex-direction: column;
   background: var(--portal-surface, #fff);
@@ -126,7 +126,7 @@
 
 .deal_esign_create_modal_lead {
   margin: 0;
-  max-width: 32rem;
+  max-width: 40rem;
   font-size: 0.8125rem;
   line-height: 1.5;
   color: var(--portal-text-muted, #64748b);
@@ -314,15 +314,40 @@
 
 .deal_esign_create_step_workflow .deal_esign_workflow_picker--modal {
   margin: 0;
-  padding: 0.9rem 0.95rem 0.95rem;
-  border-radius: calc(var(--portal-card-radius, 4px) + 2px);
-  border: 1px solid var(--portal-border, #e2e8f0);
-  background: linear-gradient(
-    165deg,
-    color-mix(in srgb, var(--portal-chrome-bg, #f8fafc) 55%, var(--portal-surface, #fff)) 0%,
-    var(--portal-surface, #fff) 62%
-  );
-  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Signing-order step: wider modal + side-by-side cards — avoid inner vertical scroll */
+.deal_esign_create_modal .deal_esign_workflow_mode_grid,
+.deal_esign_create_modal .deal_esign_workflow_sequence_grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.deal_esign_create_modal_body:has(.deal_esign_create_step_workflow) {
+  overflow-y: visible;
+  padding-bottom: 0.5rem;
+}
+
+.deal_esign_create_modal .deal_esign_workflow_picker--modal {
+  gap: 0.75rem;
+}
+
+.deal_esign_create_modal .deal_esign_workflow_mode_card {
+  padding: 0.75rem 0.85rem;
+}
+
+.deal_esign_create_modal .deal_esign_workflow_sequence_card {
+  padding: 0.7rem 0.75rem;
+}
+
+@media (max-width: 520px) {
+  .deal_esign_create_modal .deal_esign_workflow_mode_grid,
+  .deal_esign_create_modal .deal_esign_workflow_sequence_grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Document source: deal library vs local upload */
@@ -706,12 +731,8 @@
 }
 
 :root[data-theme="dark"] .deal_esign_create_step_workflow .deal_esign_workflow_picker--modal {
-  background: linear-gradient(
-    165deg,
-    color-mix(in srgb, var(--portal-surface, #1a1a1a) 96%, #fff) 0%,
-    var(--portal-surface, #1a1a1a) 62%
-  );
-  border-color: var(--portal-border);
+  background: transparent;
+  border-color: transparent;
   box-shadow: none;
 }
 

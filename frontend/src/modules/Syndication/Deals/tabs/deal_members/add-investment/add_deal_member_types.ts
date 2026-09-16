@@ -14,6 +14,14 @@ export interface AddInvestmentFormValues {
   /** Mirrors DB `fund_approved` on save (Approved vs Not Approved). */
   fundApproved?: boolean
   investorClass: string
+  /** Percent of class (ownership). Optional. */
+  percentOfClassOwnership?: string
+  /** Percent of class (distributions). Optional. */
+  percentOfClassDistributions?: string
+  /** Entity Ownership %. Optional. */
+  entityOwnershipPercent?: string
+  /** Distribution Allocation %. Optional. */
+  distributionAllocationPercent?: string
   docSignedDate: string
   commitmentAmount: string
   extraContributionAmounts: string[]

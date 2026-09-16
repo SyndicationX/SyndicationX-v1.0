@@ -182,13 +182,20 @@ function collapseInvestmentsListRowsByDeal(
 }
 
 export async function getMergedInvestmentListRows(): Promise<InvestmentListRow[]> {
-  const nameByBook = await fetchUserInvestorProfileNameMap()
   const [fromApi, fromLocal] = await Promise.all([
-    loadInvestmentListRowsFromDeals(nameByBook),
+    loadInvestmentListRowsFromDeals(),
     Promise.resolve(readRuntimeInvestmentRows()),
   ])
   const merged = mergeInvestmentLists(fromApi, fromLocal)
   const collapsed = collapseInvestmentsListRowsByDeal(merged)
+  const needsProfileBook = collapsed.some(
+    (r) =>
+      (r.userInvestorProfileId ?? "").trim() ||
+      (r.commitmentProfileId ?? "").trim(),
+  )
+  const nameByBook = needsProfileBook
+    ? await fetchUserInvestorProfileNameMap()
+    : new Map<string, string>()
   return collapsed.map((r) => enrichInvestmentListRow(r, nameByBook))
 }
 
@@ -212,7 +219,10 @@ export function mergeServerInvestmentDetailWithLocal(
       id: li.id,
       dealId: (li.dealId ?? a.dealId ?? "").trim() || a.dealId,
       investedAmount: li.investedAmount,
-      distributedAmount: li.distributedAmount,
+      distributedAmount: Math.max(
+        Number(a.distributedAmount) || 0,
+        Number(li.distributedAmount) || 0,
+      ),
       investmentName: (li.investmentName ?? "").trim() || a.investmentName,
       offeringName: (li.offeringName ?? "").trim() || a.offeringName,
       investmentProfile: (li.investmentProfile ?? "").trim() || a.investmentProfile,

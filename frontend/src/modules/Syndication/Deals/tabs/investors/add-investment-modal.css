@@ -2,11 +2,14 @@
 
 .deals_add_inv_modal_overlay.um_modal_overlay {
   z-index: 1100;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .deals_add_inv_modal_panel.um_modal.um_modal_view {
   max-width: min(44em, 100%);
-  max-height: none;
+  max-height: min(90dvh, calc(100dvh - 2rem));
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   padding: 1em 1.15em 0.95em;
@@ -39,7 +42,9 @@
   display: flex;
   flex-direction: column;
   gap: 0;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow: hidden;
   font-family: var(--deals-add-inv-font-family);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -51,18 +56,22 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
   /* padding: 0 0.2em 0.75em 0; */
   margin-bottom: 0.25em;
 }
 
-/* No inner scroll — form fits compact layout; page scrolls only if viewport is very short */
+/* Tall forms stay inside the viewport — header/footer stay put, body scrolls */
 .deals_add_inv_modal_body {
-  flex: 0 1 auto;
-  overflow: visible;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 0;
 }
 
 .deals_add_inv_modal_panel .um_modal_head {
+  flex-shrink: 0;
   margin-bottom: 0.65em;
 }
 

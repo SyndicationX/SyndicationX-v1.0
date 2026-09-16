@@ -6,11 +6,10 @@ import {
   Search,
   TrendingUp,
 } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { usePortalMode } from "@/modules/Investing/context/PortalModeContext"
 import { dealInvestNowPath } from "@/modules/Syndication/Deals/utils/dealInvestNowPath"
-import { dealWorkspacePath } from "@/modules/Syndication/Deals/utils/dealWorkspacePath"
 import {
   DealAvatarIconRing,
 } from "@/common/components/entity-avatar/EntityAvatarNameCell"
@@ -20,6 +19,8 @@ import {
   type DataTableColumn,
 } from "@/common/components/data-table/DataTable"
 import { TableCompactAmountCell } from "@/common/components/card-compact-amount/CardCompactAmount"
+import { toast } from "@/common/components/Toast"
+import { syncInvestorInvestmentCheckout } from "@/modules/Investing/api/stripeInvestorPaymentsApi"
 // import { DealsListPage } from "@/modules/Syndication/Deals/DealsListPage"
 import { DealRowActions } from "@/modules/Syndication/Deals/components/DealRowActions"
 import {
@@ -43,6 +44,9 @@ import type { InvestNowDraftProgress } from "@/modules/Investing/pages/invest/in
 import type { InvestNowStepperPhase } from "@/modules/Investing/pages/invest/investNowFlowSteps"
 import { getMergedInvestmentListRows } from "./investmentsRuntimeData"
 import type { InvestmentListRow } from "./investments.types"
+import {
+  investmentRowArchivedForInvestorView,
+} from "@/modules/Investing/utils/investorDealArchiveView"
 import "@/common/components/data-table/data-table.css"
 import "./investments-page.css"
 
@@ -79,11 +83,7 @@ function InvestmentDealNameCell({
   const nameLink = dealId ? (
     <Link
       className="deals_table_name_link"
-      to={
-        pendingOnboarding
-          ? dealWorkspacePath(dealId)
-          : `/investing/investments/${encodeURIComponent(dealId)}`
-      }
+      to={`/investing/investments/${encodeURIComponent(dealId)}`}
       onClick={() => switchToInvesting()}
       state={
         pendingOnboarding
@@ -138,6 +138,20 @@ function InvestmentProgressCell({
       </div>
     </div>
   )
+}
+
+function InvestmentsEmptyDash() {
+  return (
+    <span className="investments_empty_dash" aria-hidden>
+      —
+    </span>
+  )
+}
+
+function investmentsTextOrDash(value: string | null | undefined) {
+  const t = String(value ?? "").trim()
+  if (!t || t === "—") return <InvestmentsEmptyDash />
+  return t
 }
 
 type InvestmentsTablePanelProps = {
@@ -281,7 +295,7 @@ const INVESTMENTS_TABLE_COL_WIDTH = {
   owningEntity: "9rem",
   startDate: "7.5rem",
   closeDate: "7.5rem",
-  investedAs: "12rem",
+  investedAs: "8rem",
   invested: "7.5rem",
   distributed: "8rem",
   valuation: "8rem",
@@ -298,6 +312,62 @@ export default function InvestmentsPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [exportModalOpen, setExportModalOpen] = useState(false)
+  const checkoutReturnHandledRef = useRef(false)
+
+  useEffect(() => {
+    if (checkoutReturnHandledRef.current) return
+    const result = searchParams.get("investment_payment")
+    if (!result) return
+    checkoutReturnHandledRef.current = true
+    const sessionId = searchParams.get("session_id")?.trim() ?? ""
+    const clearReturnParams = () => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          next.delete("investment_payment")
+          next.delete("session_id")
+          return next
+        },
+        { replace: true },
+      )
+    }
+    if (result === "cancel") {
+      toast.warning(
+        "Payment canceled",
+        "Your commitment is saved; no payment was submitted.",
+      )
+      clearReturnParams()
+      return
+    }
+    if (result !== "success" || !sessionId) {
+      clearReturnParams()
+      return
+    }
+    void (async () => {
+      try {
+        const synced = await syncInvestorInvestmentCheckout(sessionId)
+        if (synced.paymentStatus === "succeeded") {
+          toast.success(
+            "Investment funded",
+            "Stripe confirmed your investment payment.",
+          )
+        } else {
+          toast.warning(
+            "Payment processing",
+            "ACH payments can take several business days. We’ll update the investment after Stripe confirms settlement.",
+          )
+        }
+        window.dispatchEvent(new Event(DEALS_LIST_REFETCH_EVENT))
+      } catch (err) {
+        toast.error(
+          "Could not verify payment",
+          err instanceof Error ? err.message : "The webhook will retry shortly.",
+        )
+      } finally {
+        clearReturnParams()
+      }
+    })()
+  }, [searchParams, setSearchParams])
 
   const setActiveTab = useCallback(
     (tab: InvestmentsPageTab) => {
@@ -323,7 +393,7 @@ export default function InvestmentsPage() {
     let pending = 0
     let archived = 0
     for (const r of rows) {
-      if (r.archived) {
+      if (investmentRowArchivedForInvestorView(r)) {
         archived++
         continue
       }
@@ -339,10 +409,10 @@ export default function InvestmentsPage() {
 
   const rowsForTab = useMemo(() => {
     if (activeTab === "archives") {
-      return rows.filter((r) => Boolean(r.archived))
+      return rows.filter((r) => investmentRowArchivedForInvestorView(r))
     }
     return rows.filter((r) => {
-      if (r.archived) return false
+      if (investmentRowArchivedForInvestorView(r)) return false
       return investmentRowMatchesOnboardingTab(
         r,
         activeTab === "pending" ? "pending" : "in_progress",
@@ -481,9 +551,7 @@ export default function InvestmentsPage() {
         tdClassName: "investments_col_progress",
         sortValue: (r) => r.investNowDraftProgress?.percent ?? -1,
         cell: (r) => {
-          if (!r.investNowDraftProgress) {
-            return <span className="um_status_muted">—</span>
-          }
+          if (!r.investNowDraftProgress) return <InvestmentsEmptyDash />
           return <InvestmentProgressCell progress={r.investNowDraftProgress} />
         },
       },
@@ -526,44 +594,35 @@ export default function InvestmentsPage() {
         header: "Sponsor",
         colWidth: INVESTMENTS_TABLE_COL_WIDTH.sponsor,
         sortValue: (r) => (r.dealSponsorName ?? "").toLowerCase(),
-        cell: (r) => {
-          const t = String(r.dealSponsorName ?? "").trim()
-          return t && t !== "—" ? t : "—"
-        },
+        cell: (r) => investmentsTextOrDash(r.dealSponsorName),
       },
       {
         id: "dealType",
         header: "Deal type",
         colWidth: INVESTMENTS_TABLE_COL_WIDTH.dealType,
         sortValue: (r) => (r.dealType ?? "").toLowerCase(),
-        cell: (r) => dealTypeDisplayLabel(r.dealType ?? ""),
+        cell: (r) => investmentsTextOrDash(dealTypeDisplayLabel(r.dealType ?? "")),
       },
       {
         id: "secType",
         header: "SEC type",
         colWidth: INVESTMENTS_TABLE_COL_WIDTH.secType,
         sortValue: (r) => secTypeDisplayLabel(r.secType ?? "").toLowerCase(),
-        cell: (r) => secTypeDisplayLabel(r.secType ?? ""),
+        cell: (r) => investmentsTextOrDash(secTypeDisplayLabel(r.secType ?? "")),
       },
       {
         id: "propertyName",
         header: "Property name",
         colWidth: INVESTMENTS_TABLE_COL_WIDTH.propertyName,
         sortValue: (r) => (r.propertyName ?? "").toLowerCase(),
-        cell: (r) => {
-          const t = String(r.propertyName ?? "").trim()
-          return t || "—"
-        },
+        cell: (r) => investmentsTextOrDash(r.propertyName),
       },
       {
         id: "owningEntity",
         header: "Owning entity",
         colWidth: INVESTMENTS_TABLE_COL_WIDTH.owningEntity,
         sortValue: (r) => (r.owningEntityName ?? "").toLowerCase(),
-        cell: (r) => {
-          const t = String(r.owningEntityName ?? "").trim()
-          return t || "—"
-        },
+        cell: (r) => investmentsTextOrDash(r.owningEntityName),
       },
       {
         id: "start",
@@ -573,7 +632,8 @@ export default function InvestmentsPage() {
         thClassName: "deals_th_align_center investments_col_start_date",
         tdClassName: "investments_col_start_date",
         sortValue: (r) => dateSortValue(r.startDateDisplay),
-        cell: (r) => formatDealListDateDisplay(r.startDateDisplay),
+        cell: (r) =>
+          investmentsTextOrDash(formatDealListDateDisplay(r.startDateDisplay)),
       },
       {
         id: "close",
@@ -583,7 +643,8 @@ export default function InvestmentsPage() {
         thClassName: "deals_th_align_center investments_col_date",
         tdClassName: "investments_col_date",
         sortValue: (r) => dateSortValue(r.dealCloseDate),
-        cell: (r) => formatDealListDateDisplay(r.dealCloseDate),
+        cell: (r) =>
+          investmentsTextOrDash(formatDealListDateDisplay(r.dealCloseDate)),
       },
       {
         id: "investmentProfile",
@@ -592,11 +653,18 @@ export default function InvestmentsPage() {
         thClassName: "investments_col_invested_as",
         tdClassName: "investments_col_invested_as investments_col_profile_name",
         sortValue: (r) => (r.investmentProfile ?? "").toLowerCase(),
-        cell: (r) => (
-          <span className="investments_invested_as_name investments_profile_name_text">
-            {r.investmentProfile?.trim() || "—"}
-          </span>
-        ),
+        cell: (r) => {
+          const investedAs = r.investmentProfile?.trim() || ""
+          if (!investedAs || investedAs === "—") return <InvestmentsEmptyDash />
+          return (
+            <span
+              className="investments_invested_as_name investments_profile_name_text"
+              title={investedAs}
+            >
+              {investedAs}
+            </span>
+          )
+        },
       },
       {
         id: "investedAmount",
@@ -610,7 +678,7 @@ export default function InvestmentsPage() {
           r.investedAmount > 0 ? (
             <TableCompactAmountCell amount={r.investedAmount} />
           ) : (
-            "—"
+            <InvestmentsEmptyDash />
           ),
       },
       {
@@ -625,7 +693,7 @@ export default function InvestmentsPage() {
           r.distributedAmount > 0 ? (
             <TableCompactAmountCell amount={r.distributedAmount} />
           ) : (
-            "—"
+            <InvestmentsEmptyDash />
           ),
       },
       {
@@ -633,7 +701,7 @@ export default function InvestmentsPage() {
         header: "Valuation",
         colWidth: INVESTMENTS_TABLE_COL_WIDTH.valuation,
         sortValue: (r) => (r.currentValuation ?? "").toLowerCase(),
-        cell: (r) => r.currentValuation || "—",
+        cell: (r) => investmentsTextOrDash(r.currentValuation),
       },
       // {
       //   id: "actionRequired",
@@ -652,15 +720,16 @@ export default function InvestmentsPage() {
           const dealId = (r.dealId ?? r.id ?? "").trim()
           if (!dealId) return null
           const onPendingTab = activeTab === "pending"
+          const investorArchived = investmentRowArchivedForInvestorView(r)
           const showResume =
-            !r.archived &&
+            !investorArchived &&
             onPendingTab &&
             Boolean(r.hasInvestNowDraft && r.investNowResumeScope)
           const showInvestNow =
-            !r.archived &&
+            !investorArchived &&
             (onPendingTab ? !showResume : activeTab === "in_progress")
           const actionsDisabled =
-            Boolean(r.archived) || (!showResume && !showInvestNow)
+            investorArchived || (!showResume && !showInvestNow)
           return (
             <div className="deal_members_actions_cell">
               {/* Preview deal action disabled for investments table */}
@@ -669,7 +738,7 @@ export default function InvestmentsPage() {
                 dealId={dealId}
                 dealName={r.investmentName}
                 dealStage={r.status}
-                archived={Boolean(r.archived)}
+                archived={investorArchived}
                 actionsDisabled={actionsDisabled}
                 onInvestNow={
                   showInvestNow ? () => openInvestNowFresh(dealId) : undefined

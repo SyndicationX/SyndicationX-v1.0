@@ -105,11 +105,37 @@ export function getUploadsPublicOrigin(): string {
   return "";
 }
 
+function appendUploadAccessParams(
+  url: string,
+  uploadAccess?: { previewToken?: string | null },
+): string {
+  const token = uploadAccess?.previewToken?.trim();
+  if (!token || !url.includes("/uploads/")) return url;
+  try {
+    const base =
+      typeof window !== "undefined" ? window.location.origin : "http://localhost";
+    const parsed = new URL(url, base);
+    if (!parsed.pathname.toLowerCase().includes("/uploads/")) return url;
+    parsed.searchParams.set("preview", token);
+    if (url.startsWith("http://") || url.startsWith("https://")) return parsed.toString();
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    const join = url.includes("?") ? "&" : "?";
+    return `${url}${join}preview=${encodeURIComponent(token)}`;
+  }
+}
+
 /**
  * Normalize gallery/cover `src` for `<img>`: absolute `http(s)`, `data:image/*`, or
  * root-relative `/uploads/...` resolved against the uploads origin.
+ *
+ * Pass `uploadAccess.previewToken` on public offering preview pages so `/uploads/`
+ * requests are authorized without a login session.
  */
-export function normalizeDealGallerySrc(raw: string | null | undefined): string {
+export function normalizeDealGallerySrc(
+  raw: string | null | undefined,
+  uploadAccess?: { previewToken?: string | null },
+): string {
   const s = typeof raw === "string" ? raw.trim() : String(raw ?? "").trim();
   if (!s) return "";
   /** `blob:` contains `/` (e.g. `blob:http://.../uuid`); do not treat as a relative uploads path. */
@@ -133,17 +159,17 @@ export function normalizeDealGallerySrc(raw: string | null | undefined): string 
           import.meta.env.DEV && typeof window !== "undefined"
             ? window.location.origin.replace(/\/$/, "")
             : getUploadsPublicOrigin();
-        if (root) return `${root}${normalizedPath}`;
+        if (root) return appendUploadAccessParams(`${root}${normalizedPath}`, uploadAccess);
       }
     } catch {
       /* keep original */
     }
-    return s;
+    return appendUploadAccessParams(s, uploadAccess);
   }
   if (s.startsWith("/uploads/")) {
     const root = getUploadsPublicOrigin();
-    if (root) return `${root}${s}`;
-    return s;
+    if (root) return appendUploadAccessParams(`${root}${s}`, uploadAccess);
+    return appendUploadAccessParams(s, uploadAccess);
   }
   /**
    * DB / JSON may store a path without a leading slash (e.g. `company-workspace/...`
@@ -153,11 +179,11 @@ export function normalizeDealGallerySrc(raw: string | null | undefined): string 
     const rel = dealAssetRelativePathToUploadsUrl(s);
     if (rel) {
       const root = getUploadsPublicOrigin();
-      if (root) return `${root}${rel}`;
-      return rel;
+      if (root) return appendUploadAccessParams(`${root}${rel}`, uploadAccess);
+      return appendUploadAccessParams(rel, uploadAccess);
     }
   }
-  return s;
+  return appendUploadAccessParams(s, uploadAccess);
 }
 
 /**

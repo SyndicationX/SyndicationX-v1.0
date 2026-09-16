@@ -22,6 +22,20 @@ export const OFFERING_DETAILS_ASSETS_RETURN: DealDetailReturnState = {
   returnSection: "assets",
 }
 
+/** Legacy URL/state id for the Classes accordion (now `offering_information`). */
+const LEGACY_CLASSES_SECTION_ID = "classes"
+
+export function normalizeOfferingDetailsSectionId(
+  value: string | null | undefined,
+): OfferingDetailsSectionId | null {
+  const v = String(value ?? "").trim()
+  if (!v) return null
+  if (v === LEGACY_CLASSES_SECTION_ID) return "offering_information"
+  return OFFERING_DETAILS_ACCORDION_SECTION_ORDER.some((s) => s.id === v)
+    ? (v as OfferingDetailsSectionId)
+    : null
+}
+
 export function isOfferingDetailsSectionId(
   value: string | null | undefined,
 ): value is OfferingDetailsSectionId {
@@ -51,9 +65,7 @@ export function openSectionsFromUrlSection(
   sectionFromUrl: string | null,
 ): Record<OfferingDetailsSectionId, boolean> {
   const o = {} as Record<OfferingDetailsSectionId, boolean>
-  const active = isOfferingDetailsSectionId(sectionFromUrl)
-    ? sectionFromUrl
-    : null
+  const active = normalizeOfferingDetailsSectionId(sectionFromUrl)
   OFFERING_DETAILS_ACCORDION_SECTION_ORDER.forEach(({ id }, i) => {
     o[id] = active != null ? id === active : i === 0
   })
@@ -66,8 +78,8 @@ export function buildDealDetailReturnSearch(params: {
 }): string {
   const sp = new URLSearchParams()
   if (params.tab?.trim()) sp.set(DEAL_DETAIL_TAB_QUERY_PARAM, params.tab.trim())
-  if (isOfferingDetailsSectionId(params.offeringSection))
-    sp.set(OFFERING_SECTION_QUERY_PARAM, params.offeringSection)
+  const section = normalizeOfferingDetailsSectionId(params.offeringSection)
+  if (section) sp.set(OFFERING_SECTION_QUERY_PARAM, section)
   const qs = sp.toString()
   return qs ? `?${qs}` : ""
 }

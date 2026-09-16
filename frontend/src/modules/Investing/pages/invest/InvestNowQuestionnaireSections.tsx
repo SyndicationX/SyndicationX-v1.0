@@ -1,4 +1,5 @@
 import {
+  isInvestorQuestionnaireQuestionVisible,
   questionsForSection,
   resolveQuestionForDisplay,
   type InvestorQuestionnaireConfig,
@@ -29,9 +30,11 @@ export function InvestNowQuestionnaireSections({
   return (
     <>
       {visibleSections.map((section, index) => {
-        const questions = questionsForSection(config.questions, section.id).map(
-          resolveQuestionForDisplay,
-        )
+        const questions = questionsForSection(config.questions, section.id)
+          .map(resolveQuestionForDisplay)
+          .filter((question) =>
+            isInvestorQuestionnaireQuestionVisible(question, answers),
+          )
         const subsectionNumber = subsectionStartIndex + index
 
         return (

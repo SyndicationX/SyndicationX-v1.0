@@ -7,6 +7,7 @@ import {
   Loader2,
   Mail,
   Pencil,
+  Percent,
   Plus,
   Shield,
   Tag,
@@ -25,12 +26,17 @@ import {
 } from "react"
 import type { ReactNode } from "react"
 import { toast } from "../../../../../../common/components/Toast"
+import {
+  displayEmail,
+  isDisplayableEmail,
+} from "../../../../../../common/utils/displayEmail"
 import { presentFormValidationError } from "../../../../../../common/utils/formValidationFocus"
 import { formatUsPhoneStoredForUi } from "../../../../../../common/phone/usPhoneNumber"
 import {
   DataTable,
   type DataTableColumn,
 } from "../../../../../../common/components/data-table/DataTable"
+import { TabsScrollStrip } from "../../../../../../common/components/tabs-scroll-strip/TabsScrollStrip"
 import {
   DropdownSelect,
   MODAL_DROPDOWN_SELECT_PROPS,
@@ -54,18 +60,34 @@ import {
 import { getApiV1Base } from "../../../../../../common/utils/apiBaseUrl"
 import { MEMBER_SELECT_OPTIONS } from "../../../constants/member-options"
 import {
+  DEAL_MEMBER_ROLE_VALUE,
+  DEAL_MEMBERS_TAB_ROLE_VALUES,
+  GENERAL_PARTNER_ROLE_LABEL,
+  GENERAL_PARTNER_ROLE_VALUE,
   INVESTOR_PROFILE_SELECT_OPTIONS,
   INVESTOR_ROLE_SELECT_OPTIONS,
   LEAD_SPONSOR_ROLE_VALUE,
   LP_INVESTOR_ROLE_VALUE,
   LP_INVESTORS_ROLE_LABEL,
   isAdminSponsorOrCoSponsorRole,
+  isGeneralPartnerRole,
   isLeadSponsorRole,
+  isLpInvestorRole,
   leadSponsorContactIdExcludingRow,
   leadSponsorTakenByAnotherMember,
+  type DealInvestmentModalEntry,
 } from "../../../constants/investor-profile"
 
 import type { AddInvestmentFormValues } from "./add_deal_member_types"
+import {
+  buildContactRosterDropdownOption,
+  buildDirectoryMemberRosterDropdownOption,
+} from "./dealRosterContactDuplicate"
+import {
+  ensureSelectedMemberDropdownOption,
+  resolveInvestorMemberSelectValue,
+  selectedInvestorDropdownLabel,
+} from "./resolveInvestorMemberSelectValue"
 import {
   addMemberDraftEligibleForBackendAutosave,
   addMemberDraftHasContent,
@@ -75,23 +97,50 @@ import {
   type AddMemberFormDraft,
 } from "./addMemberFormDraftStorage"
 import type { DealInvestorClass } from "../../../types/deal-investor-class.types"
+import {
+  formatDealInvestorClassOptionLabel,
+  isGpInvestorClass,
+} from "../../../utils/investorClassOverviewFields"
 import { rowDisplayName } from "../../../../usermanagement/memberAdminShared"
 import {
+  formatPercentTypeInputBare,
   moneyAmountOnBlur,
   moneyAmountOnChange,
+  sanitizePercentTypingInput,
 } from "../../../utils/offeringMoneyFormat"
 import { InfoIconPanel } from "../../offering_details/FieldInfoHeading"
 import { YesNoCardRadioGroup } from "../../../../../../common/components/YesNoCardRadioGroup/YesNoCardRadioGroup"
+import { ExtraCompanyUserPayModal } from "../../../../company/ExtraCompanyUserPayModal"
+import {
+  ExtraCompanyUserPaymentRequiredError,
+  type ExtraCompanyUserPaymentRequired,
+} from "../../../utils/extraCompanyUserBilling"
 import "../../../../contacts/contacts.css"
 import "../../../../usermanagement/user_management.css"
 import "../../../components/deal-step-form.css"
+import "../../../deal-investors-tab.css"
 import "./add_deal_modal.css"
 
 const INVESTOR_CLASS_UNAVAILABLE_HINT =
   "Please complete the Classes section to assign an investor class."
 
-const INVITATION_EMAILS_UNAVAILABLE_HINT =
+type InvestorEditSectionTab = "investor" | "profile" | "investment"
+
+const INVESTOR_EDIT_SECTION_TABS: Array<{
+  id: InvestorEditSectionTab
+  label: string
+  Icon: LucideIcon
+}> = [
+  { id: "investor", label: "Investor", Icon: UserRound },
+  { id: "profile", label: "Profile", Icon: IdCard },
+  { id: "investment", label: "Investment", Icon: Briefcase },
+]
+
+const INVITATION_EMAILS_UNAVAILABLE_HINT_MEMBER =
   "Invitation emails are unavailable while the deal is in draft or required deal details are incomplete. Finalize the deal before sending invitations. You can still choose No below."
+
+const INVITATION_EMAILS_UNAVAILABLE_HINT_INVESTOR =
+  "Invitation emails are unavailable while required deal details are incomplete. Complete the deal details before sending invitations. You can still choose No below."
 
 const PREFIX_CONTACT = "contact:"
 const PREFIX_USER = "user:"
@@ -101,16 +150,18 @@ const DROPDOWN_TRIGGER_PILL =
 
 function contactOptionLabel(c: ContactRow): string {
   const name = [c.firstName, c.lastName].filter(Boolean).join(" ").trim()
-  if (name && c.email.trim()) return `${name} — ${c.email.trim()}`
-  if (c.email.trim()) return c.email.trim()
+  if (name && isDisplayableEmail(c.email))
+    return `${name} — ${displayEmail(c.email)}`
+  if (isDisplayableEmail(c.email)) return displayEmail(c.email)
   return name || "Contact"
 }
 
 function buildMemberLabel(u: Record<string, unknown>): string {
   const name = rowDisplayName(u)
   const email = String(u.email ?? "").trim()
-  if (name && name !== "—" && email) return `${name} — ${email}`
-  if (email) return email
+  if (name && name !== "—" && isDisplayableEmail(email))
+    return `${name} — ${displayEmail(email)}`
+  if (isDisplayableEmail(email)) return displayEmail(email)
   return name !== "—" ? name : "—"
 }
 
@@ -129,16 +180,6 @@ function memberOptionFromUser(
   return { value: id, label }
 }
 
-/** Rich dropdown row: name/email + subtle “Already added” (deal roster). */
-function alreadyAddedOptionLabel(baseLabel: string) {
-  return (
-    <span className="portal_dropdown_select_option_label_row">
-      <span className="portal_dropdown_select_option_label_text">{baseLabel}</span>
-      <span className="portal_dropdown_select_option_suffix">Already added</span>
-    </span>
-  )
-}
-
 /** Field row matching Add contact (`um_field` + `um_field_label_row`). */
 function InvFormField({
   id,
@@ -150,7 +191,7 @@ function InvFormField({
 }: {
   id: string
   label: string
-  Icon: LucideIcon
+  Icon?: LucideIcon
   children: ReactNode
   tight?: boolean
   labelSuffix?: ReactNode
@@ -158,7 +199,9 @@ function InvFormField({
   return (
     <div className={tight ? "um_field add_contact_field_tight" : "um_field"}>
       <label htmlFor={id} className="um_field_label_row">
-        <Icon className="um_field_label_icon" size={17} aria-hidden />
+        {Icon ? (
+          <Icon className="um_field_label_icon" size={17} aria-hidden />
+        ) : null}
         <span>{label}</span>
         {labelSuffix}
       </label>
@@ -175,6 +218,30 @@ function withInvitationMailPolicy(
   return { ...f, sendInvitationMail: "no" }
 }
 
+function toPercentInputValue(raw: string | undefined | null): string {
+  const t = sanitizePercentTypingInput(String(raw ?? ""))
+  if (!t) return ""
+  const n = parseFloat(t)
+  if (!Number.isFinite(n)) return ""
+  return Math.max(0, Math.min(100, n)).toFixed(2)
+}
+
+function normalizePercentFormFields(
+  f: AddInvestmentFormValues,
+): AddInvestmentFormValues {
+  return {
+    ...f,
+    percentOfClassOwnership: toPercentInputValue(f.percentOfClassOwnership),
+    percentOfClassDistributions: toPercentInputValue(
+      f.percentOfClassDistributions,
+    ),
+    entityOwnershipPercent: toPercentInputValue(f.entityOwnershipPercent),
+    distributionAllocationPercent: toPercentInputValue(
+      f.distributionAllocationPercent,
+    ),
+  }
+}
+
 function emptyForm(): AddInvestmentFormValues {
   return {
     offeringId: "",
@@ -184,6 +251,10 @@ function emptyForm(): AddInvestmentFormValues {
     status: "",
     fundApproved: false,
     investorClass: "",
+    percentOfClassOwnership: "",
+    percentOfClassDistributions: "",
+    entityOwnershipPercent: "",
+    distributionAllocationPercent: "",
     docSignedDate: "",
     commitmentAmount: "",
     extraContributionAmounts: [],
@@ -208,8 +279,8 @@ interface AddInvestmentModalProps {
   initialValues?: AddInvestmentFormValues | null
   /** Stable key when opening add vs edit (e.g. investment row id) so class prefill syncs correctly. */
   prefillKey?: string
-  /** Add mode only: “Add Investor” (Investors tab) vs “Add Member” (Deal Members). */
-  addEntry?: "member" | "investor"
+  /** Add mode: Investors tab vs Deal Members vs General Partners. */
+  addEntry?: DealInvestmentModalEntry
   /**
    * Add mode: when true (“Continue editing”), restore session draft into the form.
    * When false (“Add Member”), always open an empty form; the table draft row still reflects
@@ -225,8 +296,8 @@ interface AddInvestmentModalProps {
     detail?: { createdInvestment?: boolean },
   ) => void | Promise<void>
   /**
-   * While the deal is in draft / incomplete, do not send invitation emails
-   * (save/autosave forces `send_invitation_mail` off).
+   * When true, do not send invitation emails (save/autosave forces
+   * `send_invitation_mail` off). Draft deals may still invite investors.
    */
   dealBlocksInvitationEmails?: boolean
 }
@@ -246,6 +317,7 @@ export function AddInvestmentModal({
   dealBlocksInvitationEmails = false,
 }: AddInvestmentModalProps) {
   const isInvestorEntry = addEntry === "investor"
+  const isGpEntry = addEntry === "general_partner"
   const titleId = useId()
   const addMemberDraftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -261,6 +333,11 @@ export function AddInvestmentModal({
     null,
   )
   const backendLpInvestorIdRef = useRef<string | null>(null)
+  const [extraUserPayment, setExtraUserPayment] =
+    useState<ExtraCompanyUserPaymentRequired | null>(null)
+  const pendingSaveAfterExtraPayRef = useRef<AddInvestmentFormValues | null>(
+    null,
+  )
   const backendInvAutosaveTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null)
@@ -269,10 +346,23 @@ export function AddInvestmentModal({
   const [form, setForm] = useState<AddInvestmentFormValues>(emptyForm)
   const addInvFormRef = useRef<HTMLFormElement>(null)
   const [error, setError] = useState<string | null>(null)
+  const [sectionTab, setSectionTab] =
+    useState<InvestorEditSectionTab>("investor")
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const sectionRefs = useRef<
+    Partial<Record<InvestorEditSectionTab, HTMLElement | null>>
+  >({})
+  const ignoreScrollSpyUntilRef = useRef(0)
   const [submitting, setSubmitting] = useState(false)
   const [memberRows, setMemberRows] = useState<Record<string, unknown>[]>([])
   const [contactRows, setContactRows] = useState<ContactRow[]>([])
-  const [dealClasses, setDealClasses] = useState<DealInvestorClass[]>([])
+  const [allDealClasses, setAllDealClasses] = useState<DealInvestorClass[]>([])
+  const dealClasses = useMemo(() => {
+    if (isGpEntry) return allDealClasses.filter((c) => isGpInvestorClass(c))
+    if (isInvestorEntry)
+      return allDealClasses.filter((c) => !isGpInvestorClass(c))
+    return allDealClasses
+  }, [allDealClasses, isGpEntry, isInvestorEntry])
   const [investorClassesReady, setInvestorClassesReady] = useState(false)
   const [investorClassOptions, setInvestorClassOptions] = useState<
     { value: string; label: string }[]
@@ -369,16 +459,32 @@ export function AddInvestmentModal({
               disabled: false,
             },
           ]
-        : INVESTOR_ROLE_SELECT_OPTIONS.map((o) => ({
-            value: o.value,
-            label: o.label,
-            disabled:
-              (o.value === LEAD_SPONSOR_ROLE_VALUE && leadSponsorOptionDisabled) ||
-              (adminCoBlockedForSelectedContact &&
-                (o.value === "admin sponsor" || o.value === "Co-sponsor")),
-          })),
+        : isGpEntry
+          ? [
+              {
+                value: GENERAL_PARTNER_ROLE_VALUE,
+                label: GENERAL_PARTNER_ROLE_LABEL,
+                disabled: false,
+              },
+            ]
+          : INVESTOR_ROLE_SELECT_OPTIONS.filter(
+              (o) =>
+                (!o.value || DEAL_MEMBERS_TAB_ROLE_VALUES.has(o.value)) &&
+                (o.value !== DEAL_MEMBER_ROLE_VALUE ||
+                  form.investorRole === DEAL_MEMBER_ROLE_VALUE),
+            ).map((o) => ({
+              value: o.value,
+              label: o.label,
+              disabled:
+                (o.value === LEAD_SPONSOR_ROLE_VALUE &&
+                  leadSponsorOptionDisabled) ||
+                (adminCoBlockedForSelectedContact &&
+                  (o.value === "admin sponsor" || o.value === "Co-sponsor")),
+            })),
     [
       isInvestorEntry,
+      isGpEntry,
+      form.investorRole,
       leadSponsorOptionDisabled,
       adminCoBlockedForSelectedContact,
     ],
@@ -389,13 +495,68 @@ export function AddInvestmentModal({
     refreshMemberRosterForGate()
   }, [open, refreshMemberRosterForGate])
 
+  const syncActiveTabFromScroll = useCallback(() => {
+    if (!isInvestorEntry) return
+    if (Date.now() < ignoreScrollSpyUntilRef.current) return
+    const root = scrollRef.current
+    if (!root) return
+
+    const rootTop = root.getBoundingClientRect().top
+    const marker = rootTop + Math.min(72, root.clientHeight * 0.25)
+    let active: InvestorEditSectionTab = "investor"
+
+    for (const { id } of INVESTOR_EDIT_SECTION_TABS) {
+      const section = sectionRefs.current[id]
+      if (!section) continue
+      if (section.getBoundingClientRect().top <= marker) active = id
+    }
+
+    setSectionTab((prev) => (prev === active ? prev : active))
+  }, [isInvestorEntry])
+
+  const scrollToSection = useCallback(
+    (id: InvestorEditSectionTab) => {
+      if (!isInvestorEntry) return
+      const root = scrollRef.current
+      const section = sectionRefs.current[id]
+      if (!root || !section) return
+      setSectionTab(id)
+      ignoreScrollSpyUntilRef.current = Date.now() + 600
+      const nextTop =
+        root.scrollTop +
+        (section.getBoundingClientRect().top - root.getBoundingClientRect().top)
+      root.scrollTo({ top: Math.max(0, nextTop), behavior: "smooth" })
+    },
+    [isInvestorEntry],
+  )
+
+  useEffect(() => {
+    if (!open || !isInvestorEntry) return
+    ignoreScrollSpyUntilRef.current = 0
+    const root = scrollRef.current
+    if (!root) return
+    root.scrollTop = 0
+    syncActiveTabFromScroll()
+    root.addEventListener("scroll", syncActiveTabFromScroll, { passive: true })
+    return () => root.removeEventListener("scroll", syncActiveTabFromScroll)
+  }, [open, isInvestorEntry, syncActiveTabFromScroll])
+
   useLayoutEffect(() => {
     if (!open) return
-    const lpRolePatch = isInvestorEntry
+    setSectionTab("investor")
+    const rolePatch = isInvestorEntry
       ? { investorRole: LP_INVESTOR_ROLE_VALUE }
-      : {}
+      : isGpEntry
+        ? { investorRole: GENERAL_PARTNER_ROLE_VALUE }
+        : {}
     if (mode === "edit" && initialValues) {
-      setForm({ ...emptyForm(), ...initialValues, ...lpRolePatch })
+      setForm(
+        normalizePercentFormFields({
+          ...emptyForm(),
+          ...initialValues,
+          ...rolePatch,
+        }),
+      )
       setBackendInvestmentId(null)
       backendInvestmentIdRef.current = null
       setBackendLpInvestorId(null)
@@ -404,7 +565,7 @@ export function AddInvestmentModal({
       return
     }
     if (mode === "add" && !restoreAddMemberSessionDraft) {
-      setForm({ ...emptyForm(), offeringId: "primary", ...lpRolePatch })
+      setForm({ ...emptyForm(), offeringId: "primary", ...rolePatch })
       setBackendInvestmentId(null)
       backendInvestmentIdRef.current = null
       setBackendLpInvestorId(null)
@@ -413,13 +574,25 @@ export function AddInvestmentModal({
       return
     }
     const restored = loadAddMemberDraft(dealId)
-    if (mode === "add" && restored && addMemberDraftHasContent(restored)) {
-      setForm({
-        ...emptyForm(),
-        ...restored.form,
-        offeringId: restored.form.offeringId?.trim() || "primary",
-        ...lpRolePatch,
-      })
+    const restoredRole = restored?.form?.investorRole
+    const restoredMatchesEntry = isGpEntry
+      ? isGeneralPartnerRole(restoredRole)
+      : !isGeneralPartnerRole(restoredRole) &&
+        !isLpInvestorRole(restoredRole)
+    if (
+      mode === "add" &&
+      restored &&
+      addMemberDraftHasContent(restored) &&
+      restoredMatchesEntry
+    ) {
+      setForm(
+        normalizePercentFormFields({
+          ...emptyForm(),
+          ...restored.form,
+          offeringId: restored.form.offeringId?.trim() || "primary",
+          ...rolePatch,
+        }),
+      )
       if (isInvestorEntry) {
         setBackendInvestmentId(null)
         backendInvestmentIdRef.current = null
@@ -444,7 +617,7 @@ export function AddInvestmentModal({
         }
       }
     } else {
-      setForm({ ...emptyForm(), offeringId: "primary", ...lpRolePatch })
+      setForm({ ...emptyForm(), offeringId: "primary", ...rolePatch })
       setBackendInvestmentId(null)
       backendInvestmentIdRef.current = null
       setBackendLpInvestorId(null)
@@ -459,6 +632,7 @@ export function AddInvestmentModal({
     prefillKey,
     restoreAddMemberSessionDraft,
     isInvestorEntry,
+    isGpEntry,
   ])
 
   latestAddMemberDraftRef.current = { form, step: 1 as const }
@@ -514,6 +688,7 @@ export function AddInvestmentModal({
   useEffect(() => {
     if (!getApiV1Base()) return
     if (!open || mode !== "add") return
+    if (membersLoading) return
     if (!investorClassesReady) return
     if (isInvestorEntry && dealClasses.length === 0) return
 
@@ -667,6 +842,9 @@ export function AddInvestmentModal({
     refreshMemberRosterForGate,
     dealBlocksInvitationEmails,
     isInvestorEntry,
+    membersLoading,
+    contactRows,
+    memberRows,
   ])
 
   useEffect(() => {
@@ -724,23 +902,7 @@ export function AddInvestmentModal({
       if (cancelled) return
       setMemberRows(users)
       setContactRows(contacts)
-      setDealClasses(classes)
-
-      if (classes.length > 0) {
-        setInvestorClassOptions([
-          { value: "", label: "Select investor class" },
-          ...classes.map((row) => ({
-            value: row.id,
-            label: row.name.trim() || "Unnamed class",
-          })),
-        ])
-      } else {
-        setInvestorClassOptions([
-          { value: "", label: "No investor classes defined" },
-        ])
-        setForm((prev) => ({ ...prev, investorClass: "" }))
-      }
-
+      setAllDealClasses(classes)
       setInvestorClassesReady(true)
       setMembersLoading(false)
     })()
@@ -748,6 +910,42 @@ export function AddInvestmentModal({
       cancelled = true
     }
   }, [open, dealId])
+
+  useEffect(() => {
+    if (!open) return
+    if (!investorClassesReady) {
+      setInvestorClassOptions([
+        { value: "", label: "Loading investor classes…" },
+      ])
+      return
+    }
+    if (dealClasses.length > 0) {
+      setInvestorClassOptions([
+        {
+          value: "",
+          label: isGpEntry
+            ? "Select general partner class"
+            : "Select investor class",
+        },
+        ...dealClasses.map((row) => ({
+          value: row.id,
+          label: formatDealInvestorClassOptionLabel(row),
+        })),
+      ])
+      return
+    }
+    setInvestorClassOptions([
+      {
+        value: "",
+        label: isGpEntry
+          ? "No general partner classes defined"
+          : "No investor classes defined",
+      },
+    ])
+    if (isInvestorEntry || isGpEntry) {
+      setForm((prev) => ({ ...prev, investorClass: "" }))
+    }
+  }, [open, investorClassesReady, dealClasses, isGpEntry, isInvestorEntry])
 
   useEffect(() => {
     if (!open || !investorClassesReady || dealClasses.length === 0) return
@@ -885,17 +1083,18 @@ export function AddInvestmentModal({
     ],
   )
 
-  const memberSelectValue = useMemo(() => {
-    const id = form.contactId.trim()
-    if (!id) return ""
-    if (contactRows.some((c) => c.id === id))
-      return `${PREFIX_CONTACT}${id}`
-    if (memberRows.some((u) => String(u.id) === id))
-      return `${PREFIX_USER}${id}`
-    if (MEMBER_SELECT_OPTIONS.some((o) => o.value === id))
-      return `${PREFIX_USER}${id}`
-    return id
-  }, [form.contactId, contactRows, memberRows])
+  const memberSelectValue = useMemo(
+    () =>
+      resolveInvestorMemberSelectValue({
+        contactId: form.contactId,
+        contactEmail: form.contactEmail,
+        contactRows,
+        memberRows,
+        prefixContact: PREFIX_CONTACT,
+        prefixUser: PREFIX_USER,
+      }),
+    [form.contactId, form.contactEmail, contactRows, memberRows],
+  )
 
   const memberDropdownSections = useMemo((): DropdownSelectSection[] => {
     const lsId = leadSponsorContactId?.trim() ?? ""
@@ -938,13 +1137,18 @@ export function AddInvestmentModal({
           const value = `${PREFIX_CONTACT}${c.id}`
           const baseLabel = contactOptionLabel(c)
           const onDeal = isAlreadyOnDealRoster(c.id, c.email ?? "")
-          const disabled =
-            optionDisabledForLeadSponsorConflict(value) || onDeal
+          const lsConflict = optionDisabledForLeadSponsorConflict(value)
+          const meta = buildContactRosterDropdownOption(
+            baseLabel,
+            c,
+            onDeal,
+            lsConflict,
+          )
           return {
             value,
             label: baseLabel,
-            disabled,
-            ...(onDeal ? { labelContent: alreadyAddedOptionLabel(baseLabel) } : {}),
+            disabled: meta.disabled,
+            labelContent: meta.labelContent,
           }
         }),
       })
@@ -958,13 +1162,18 @@ export function AddInvestmentModal({
           const dirRow = memberRows.find((x) => String(x.id) === o.value)
           const email = dirRow ? String(dirRow.email ?? "").trim() : ""
           const onDeal = isAlreadyOnDealRoster(o.value, email)
-          const disabled =
-            optionDisabledForLeadSponsorConflict(value) || onDeal
+          const lsConflict = optionDisabledForLeadSponsorConflict(value)
+          const meta = buildDirectoryMemberRosterDropdownOption(
+            o.label,
+            dirRow ?? {},
+            onDeal,
+            lsConflict,
+          )
           return {
             value,
             label: o.label,
-            disabled,
-            ...(onDeal ? { labelContent: alreadyAddedOptionLabel(o.label) } : {}),
+            disabled: meta.disabled,
+            labelContent: meta.labelContent,
           }
         })
       sections.push({
@@ -972,15 +1181,91 @@ export function AddInvestmentModal({
         options: directoryOptions,
       })
     }
-    return sections
+    return ensureSelectedMemberDropdownOption({
+      sections,
+      value: memberSelectValue,
+      fallbackLabel: selectedInvestorDropdownLabel({
+        displayName: form.contactDisplayName,
+        email: form.contactEmail,
+      }),
+    })
   }, [
     contactRows,
     memberRows,
     isInvestorEntry,
     leadSponsorContactId,
     form.investorRole,
+    form.contactDisplayName,
+    form.contactEmail,
     memberRosterForGate,
     excludeRowIdForLeadSponsorGate,
+    memberSelectValue,
+  ])
+
+  /** After contacts/members load on edit, keep the investor selected with email shown. */
+  useEffect(() => {
+    const id = form.contactId.trim()
+    if (!id) return
+    if (contactRows.length === 0 && memberRows.length === 0) return
+    const resolved = resolveInvestorMemberSelectValue({
+      contactId: id,
+      contactEmail: form.contactEmail,
+      contactRows,
+      memberRows,
+      prefixContact: PREFIX_CONTACT,
+      prefixUser: PREFIX_USER,
+    })
+    if (!resolved) return
+
+    let nextId = id
+    let nextEmail = String(form.contactEmail ?? "").trim()
+    let nextName = String(form.contactDisplayName ?? "").trim()
+    if (resolved.startsWith(PREFIX_CONTACT)) {
+      nextId = resolved.slice(PREFIX_CONTACT.length).trim()
+      const c = contactRows.find(
+        (row) =>
+          String(row.id).trim().toLowerCase() === nextId.toLowerCase(),
+      )
+      if (c) {
+        if (!nextEmail && isDisplayableEmail(c.email))
+          nextEmail = String(c.email).trim()
+        if (!nextName || nextName === "—") {
+          const label = contactOptionLabel(c)
+          nextName = label.split(" — ")[0]?.trim() || label
+        }
+      }
+    } else if (resolved.startsWith(PREFIX_USER)) {
+      nextId = resolved.slice(PREFIX_USER.length).trim()
+      const u = memberRows.find(
+        (row) =>
+          String(row.id ?? "")
+            .trim()
+            .toLowerCase() === nextId.toLowerCase(),
+      )
+      if (u) {
+        const em = String(u.email ?? "").trim()
+        if (!nextEmail && isDisplayableEmail(em)) nextEmail = em
+        if (!nextName || nextName === "—") {
+          const label = buildMemberLabel(u)
+          nextName = label.split(" — ")[0]?.trim() || label
+        }
+      }
+    }
+
+    const patchNext: Partial<AddInvestmentFormValues> = {}
+    if (nextId && nextId !== id) patchNext.contactId = nextId
+    if (nextEmail && nextEmail !== String(form.contactEmail ?? "").trim())
+      patchNext.contactEmail = nextEmail
+    if (nextName && nextName !== String(form.contactDisplayName ?? "").trim())
+      patchNext.contactDisplayName = nextName
+    if (Object.keys(patchNext).length > 0) patch(patchNext)
+  }, [
+    form.contactId,
+    form.contactEmail,
+    form.contactDisplayName,
+    contactRows,
+    memberRows,
+    patch,
   ])
 
   const handleContactCreated = useCallback(
@@ -1020,12 +1305,41 @@ export function AddInvestmentModal({
   const noDealClasses =
     investorClassesReady && dealClasses.length === 0
 
+  const showInvestorClassField =
+    isInvestorEntry || (isGpEntry && dealClasses.length > 0)
+
+  const showClassPercentFields = isInvestorEntry && !noDealClasses
+
+  function blurFormatPercentClamped(raw: string): string {
+    const t = sanitizePercentTypingInput(raw)
+    if (!t) return ""
+    const n = parseFloat(t)
+    if (!Number.isFinite(n)) return ""
+    return Math.max(0, Math.min(100, n)).toFixed(2)
+  }
+
+  function percentValuesEqual(a: string, b: string): boolean {
+    const ta = sanitizePercentTypingInput(a)
+    const tb = sanitizePercentTypingInput(b)
+    if (!ta && !tb) return true
+    if (!ta || !tb) return false
+    const na = parseFloat(ta)
+    const nb = parseFloat(tb)
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na === nb
+    return ta === tb
+  }
+
   function validateInvestmentStep1(): string | null {
     if (!form.offeringId.trim()) return "Select an offering."
     if (!form.contactId.trim()) {
       return isInvestorEntry
         ? "Select an investor or contact."
-        : "Select a member."
+        : isGpEntry
+          ? "Select a team member."
+          : "Select a general partner."
+    }
+    if (!isInvestorEntry && !form.investorRole.trim()) {
+      return "Select a role."
     }
     if (isInvestorEntry) {
       if (!investorClassesReady) return "Loading investor classes…"
@@ -1035,6 +1349,12 @@ export function AddInvestmentModal({
       if (!form.investorClass.trim()) return "Select an investor class."
       if (!dealClasses.some((c) => c.id === form.investorClass.trim())) {
         return "Select a valid investor class from this deal."
+      }
+    }
+    if (isGpEntry && dealClasses.length > 0) {
+      if (!form.investorClass.trim()) return "Select a general partner class."
+      if (!dealClasses.some((c) => c.id === form.investorClass.trim())) {
+        return "Select a valid general partner class from this deal."
       }
     }
     if (isInvestorEntry && !form.commitmentAmount.trim()) {
@@ -1066,11 +1386,33 @@ export function AddInvestmentModal({
     return null
   }
 
+  function focusSectionForValidation(message: string) {
+    if (!isInvestorEntry) return
+    const m = message.toLowerCase()
+    if (m.includes("profile")) {
+      scrollToSection("profile")
+      return
+    }
+    if (
+      m.includes("class") ||
+      m.includes("commitment") ||
+      m.includes("percent") ||
+      m.includes("invitation")
+    ) {
+      scrollToSection("investment")
+      return
+    }
+    scrollToSection("investor")
+  }
+
   function reportAddInvestmentValidation(message: string) {
     setError(message)
-    presentFormValidationError({
-      container: addInvFormRef.current,
-      message,
+    focusSectionForValidation(message)
+    requestAnimationFrame(() => {
+      presentFormValidationError({
+        container: addInvFormRef.current,
+        message,
+      })
     })
   }
 
@@ -1094,6 +1436,15 @@ export function AddInvestmentModal({
         clearAddMemberDraft(dealId)
       }
     } catch (err) {
+      if (err instanceof ExtraCompanyUserPaymentRequiredError) {
+        pendingSaveAfterExtraPayRef.current = withInvitationMailPolicy(
+          form,
+          dealBlocksInvitationEmails,
+        )
+        setExtraUserPayment(err.payload)
+        setError(err.message)
+        return
+      }
       setError(
         err instanceof Error ? err.message : "Could not save. Try again.",
       )
@@ -1160,7 +1511,12 @@ export function AddInvestmentModal({
       role="presentation"
     >
       <div
-        className="um_modal um_modal_view deals_add_inv_modal_panel add_contact_panel"
+        className={[
+          "um_modal um_modal_view deals_add_inv_modal_panel add_contact_panel",
+          isInvestorEntry ? "deal_inv_investor_view_modal" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -1171,10 +1527,14 @@ export function AddInvestmentModal({
               {mode === "edit"
                 ? addEntry === "investor"
                   ? "Edit Investor"
-                  : "Edit Member"
+                  : addEntry === "general_partner"
+                    ? "Edit Team Member"
+                    : "Edit General Partner"
                 : addEntry === "investor"
                   ? "Add Investor"
-                  : "Add Member"}
+                  : addEntry === "general_partner"
+                    ? "Add Team Member"
+                    : "Add General Partner"}
               {mode === "add" ? (
                 <span className="deals_add_inv_autosave_badge" aria-live="polite">
                   {/* Autosave on */}
@@ -1197,6 +1557,7 @@ export function AddInvestmentModal({
           ref={addInvFormRef}
           className={[
             "deals_add_inv_modal_form",
+            isInvestorEntry ? "deal_inv_view_form" : "",
             !isInvestorEntry ? "deals_add_member_form_stacked" : "",
           ]
             .filter(Boolean)
@@ -1204,7 +1565,55 @@ export function AddInvestmentModal({
           onSubmit={handleFormSubmit}
           noValidate
         >
-          <div className="deals_add_inv_modal_scroll">
+          {isInvestorEntry ? (
+            <div className="deals_add_inv_section_tabs_outer um_members_tabs_outer deals_tabs_outer um_segmented_tabs_outer deal_inv_view_section_tabs">
+              <TabsScrollStrip scrollClassName="deals_tabs_scroll um_segmented_tabs_scroll">
+                <div
+                  className="um_members_tabs_row deals_tabs_row um_segmented_tabs_row deals_add_inv_section_tabs_row"
+                  role="tablist"
+                  aria-label="Investor form sections"
+                >
+                  {INVESTOR_EDIT_SECTION_TABS.map(({ id, label, Icon }) => {
+                    const selected = sectionTab === id
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        id={`add-inv-tab-${id}`}
+                        role="tab"
+                        aria-selected={selected}
+                        aria-controls={`add-inv-panel-${id}`}
+                        className={`um_members_tab deals_tabs_tab um_segmented_tab${
+                          selected ? " um_members_tab_active" : ""
+                        }`}
+                        onClick={() => scrollToSection(id)}
+                      >
+                        <Icon
+                          className="deals_tabs_icon um_segmented_tab_icon"
+                          size={16}
+                          strokeWidth={2}
+                          aria-hidden
+                        />
+                        <span className="deals_tabs_label um_segmented_tab_label">
+                          {label}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </TabsScrollStrip>
+            </div>
+          ) : null}
+
+          <div
+            ref={scrollRef}
+            className={[
+              "deals_add_inv_modal_scroll",
+              isInvestorEntry ? "deal_inv_view_body" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
             {error ? (
               <p className="um_msg_error um_modal_form_error" role="alert">
                 {error}
@@ -1212,7 +1621,25 @@ export function AddInvestmentModal({
             ) : null}
 
             <>
-                <div className="add_contact_section">
+                <section
+                  ref={(el) => {
+                    sectionRefs.current.investor = el
+                  }}
+                  className={[
+                    "add_contact_section",
+                    isInvestorEntry ? "deal_inv_view_section" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  role={isInvestorEntry ? "tabpanel" : undefined}
+                  id={isInvestorEntry ? "add-inv-panel-investor" : undefined}
+                  aria-labelledby={
+                    isInvestorEntry ? "add-inv-tab-investor" : undefined
+                  }
+                >
+                  {isInvestorEntry ? (
+                    <h3 className="deal_inv_view_section_label">Investor</h3>
+                  ) : null}
                   <div className="add_contact_name_grid">
                     <InvFormField
                       id="add-inv-offering"
@@ -1238,7 +1665,13 @@ export function AddInvestmentModal({
 
                     <InvFormField
                       id="add-inv-member"
-                      label={isInvestorEntry ? "Investor" : "Member"}
+                      label={
+                        isInvestorEntry
+                          ? "Investor"
+                          : isGpEntry
+                            ? "Team Member"
+                            : "General Partner"
+                      }
                       Icon={UserRound}
                       tight
                       labelSuffix={
@@ -1260,15 +1693,21 @@ export function AddInvestmentModal({
                           membersLoading
                             ? isInvestorEntry
                               ? "Loading contacts and directory users…"
-                              : "Loading contacts and members…"
+                              : isGpEntry
+                                ? "Loading contacts and team members…"
+                                : "Loading contacts and general partners…"
                             : isInvestorEntry
                               ? "Select investor or contact"
-                              : "Select member or contact"
+                              : isGpEntry
+                                ? "Select team member or contact"
+                                : "Select general partner or contact"
                         }
                         ariaLabel={
                           isInvestorEntry
                             ? "Investor or contact"
-                            : "Member or contact"
+                            : isGpEntry
+                              ? "Team member or contact"
+                              : "General partner or contact"
                         }
                         header={
                           memberContactSelectLocked
@@ -1319,16 +1758,23 @@ export function AddInvestmentModal({
                       />
                     </div>
                   ) : null}
-                </div>
+                </section>
 
-                {isInvestorEntry ? (
+                {!isInvestorEntry ? (
                   <hr className="add_contact_section_rule" />
                 ) : null}
 
                 {isInvestorEntry ? (
-                  <>
-                    <div className="add_contact_section">
-                      <p className="add_contact_section_eyebrow">Profile</p>
+                    <section
+                      ref={(el) => {
+                        sectionRefs.current.profile = el
+                      }}
+                      className="add_contact_section deal_inv_view_section"
+                      role="tabpanel"
+                      id="add-inv-panel-profile"
+                      aria-labelledby="add-inv-tab-profile"
+                    >
+                      <h3 className="deal_inv_view_section_label">Profile</h3>
                       <div className="add_contact_name_grid deals_add_inv_profile_section_grid">
                         <InvFormField
                           id="add-inv-profile"
@@ -1360,19 +1806,34 @@ export function AddInvestmentModal({
                         Used for investor identity and invitation email context when
                         you notify them about being added to the deal.
                       </p>
-                    </div>
-                    <hr className="add_contact_section_rule" />
-                  </>
+                    </section>
                 ) : null}
 
-                <div className="add_contact_section">
+                <section
+                  ref={(el) => {
+                    sectionRefs.current.investment = el
+                  }}
+                  className={[
+                    "add_contact_section",
+                    isInvestorEntry ? "deal_inv_view_section" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  role={isInvestorEntry ? "tabpanel" : undefined}
+                  id={isInvestorEntry ? "add-inv-panel-investment" : undefined}
+                  aria-labelledby={
+                    isInvestorEntry ? "add-inv-tab-investment" : undefined
+                  }
+                >
                   {isInvestorEntry ? (
+                    <h3 className="deal_inv_view_section_label">Investment</h3>
+                  ) : (
                     <p
                       className="add_contact_section_eyebrow add_contact_section_eyebrow_spaced"
                     >
                       Investment details
                     </p>
-                  ) : null}
+                  )}
                   <div className="add_contact_name_grid">
                     <InvFormField
                       id="add-inv-role"
@@ -1380,13 +1841,17 @@ export function AddInvestmentModal({
                       Icon={Shield}
                       tight
                     >
-                      {isInvestorEntry ? (
+                      {isInvestorEntry || isGpEntry ? (
                         <input
                           id="add-inv-role"
                           type="text"
                           readOnly
                           className="deals_add_inv_field_pill deals_lp_inv_role_readonly"
-                          value={LP_INVESTORS_ROLE_LABEL}
+                          value={
+                            isGpEntry
+                              ? GENERAL_PARTNER_ROLE_LABEL
+                              : LP_INVESTORS_ROLE_LABEL
+                          }
                           aria-readonly="true"
                           aria-label="Role"
                         />
@@ -1431,13 +1896,15 @@ export function AddInvestmentModal({
                   </InvFormField> */}
                   </div>
 
-                  {isInvestorEntry ? (
+                  {showInvestorClassField ? (
                     <InvFormField
                       id="add-inv-class"
-                      label="Investor class"
+                      label={
+                        isGpEntry ? "General partner class" : "Investor class"
+                      }
                       Icon={Tag}
                       labelSuffix={
-                        noDealClasses ? (
+                        isInvestorEntry && noDealClasses ? (
                           <span className="deals_add_inv_label_info">
                             <InfoIconPanel
                               ariaLabel="More information: Investor class"
@@ -1459,14 +1926,24 @@ export function AddInvestmentModal({
                           !investorClassesReady || dealClasses.length === 0
                         }
                         onChange={(v) => patch({ investorClass: v })}
-                        placeholder="Select investor class"
-                        ariaLabel="Investor class"
+                        placeholder={
+                          isGpEntry
+                            ? "Select general partner class"
+                            : "Select investor class"
+                        }
+                        ariaLabel={
+                          isGpEntry
+                            ? "General partner class"
+                            : "Investor class"
+                        }
                         ariaDescribedBy={
-                          noDealClasses ? "add-inv-class-hint" : undefined
+                          isInvestorEntry && noDealClasses
+                            ? "add-inv-class-hint"
+                            : undefined
                         }
                         triggerClassName={DROPDOWN_TRIGGER_PILL}
                       />
-                      {noDealClasses ? (
+                      {isInvestorEntry && noDealClasses ? (
                         <p id="add-inv-class-hint" className="visually_hidden">
                           {INVESTOR_CLASS_UNAVAILABLE_HINT}
                         </p>
@@ -1474,6 +1951,154 @@ export function AddInvestmentModal({
                     </InvFormField>
                   ) : null}
                   {/* Deal Members: investor class is not collected here (assigned via Offering / investor flows). */}
+
+                  {showClassPercentFields ? (
+                    <div className="add_contact_name_grid">
+                      <InvFormField
+                        id="add-inv-pct-ownership"
+                        label="Percent of class (ownership)"
+                        tight
+                      >
+                        <input
+                          id="add-inv-pct-ownership"
+                          type="text"
+                          className="deals_add_inv_field_pill"
+                          inputMode="decimal"
+                          placeholder="0.00"
+                          value={form.percentOfClassOwnership ?? ""}
+                          onChange={(e) => {
+                            const next = formatPercentTypeInputBare(
+                              e.target.value,
+                              100,
+                            )
+                            const prevOwnership =
+                              form.percentOfClassOwnership ?? ""
+                            const dist = form.percentOfClassDistributions ?? ""
+                            const mirror =
+                              !sanitizePercentTypingInput(dist) ||
+                              percentValuesEqual(dist, prevOwnership)
+                            patch({
+                              percentOfClassOwnership: next,
+                              ...(mirror
+                                ? { percentOfClassDistributions: next }
+                                : {}),
+                            })
+                          }}
+                          onBlur={(e) => {
+                            const next = blurFormatPercentClamped(
+                              e.target.value,
+                            )
+                            const prevOwnership =
+                              form.percentOfClassOwnership ?? ""
+                            const dist = form.percentOfClassDistributions ?? ""
+                            const mirror =
+                              !sanitizePercentTypingInput(dist) ||
+                              percentValuesEqual(dist, prevOwnership)
+                            patch({
+                              percentOfClassOwnership: next,
+                              ...(mirror
+                                ? { percentOfClassDistributions: next }
+                                : {}),
+                            })
+                          }}
+                          aria-label="Percent of class (ownership)"
+                        />
+                      </InvFormField>
+
+                      <InvFormField
+                        id="add-inv-pct-distributions"
+                        label="Percent of class (distributions)"
+                        tight
+                      >
+                        <input
+                          id="add-inv-pct-distributions"
+                          type="text"
+                          className="deals_add_inv_field_pill"
+                          inputMode="decimal"
+                          placeholder="0.00"
+                          value={form.percentOfClassDistributions ?? ""}
+                          onChange={(e) =>
+                            patch({
+                              percentOfClassDistributions:
+                                formatPercentTypeInputBare(e.target.value, 100),
+                            })
+                          }
+                          onBlur={(e) =>
+                            patch({
+                              percentOfClassDistributions:
+                                blurFormatPercentClamped(e.target.value),
+                            })
+                          }
+                          aria-label="Percent of class (distributions)"
+                        />
+                      </InvFormField>
+                    </div>
+                  ) : null}
+
+                  {isInvestorEntry ? (
+                    <div className="add_contact_name_grid">
+                      <InvFormField
+                        id="add-inv-entity-ownership"
+                        label="Entity Ownership"
+                        Icon={Percent}
+                        tight
+                      >
+                        <input
+                          id="add-inv-entity-ownership"
+                          type="text"
+                          className="deals_add_inv_field_pill"
+                          inputMode="decimal"
+                          placeholder="0.00"
+                          value={form.entityOwnershipPercent ?? ""}
+                          onChange={(e) =>
+                            patch({
+                              entityOwnershipPercent: formatPercentTypeInputBare(
+                                e.target.value,
+                                100,
+                              ),
+                            })
+                          }
+                          onBlur={(e) =>
+                            patch({
+                              entityOwnershipPercent: blurFormatPercentClamped(
+                                e.target.value,
+                              ),
+                            })
+                          }
+                          aria-label="Entity Ownership"
+                        />
+                      </InvFormField>
+
+                      <InvFormField
+                        id="add-inv-distribution-allocation"
+                        label="Distribution Allocation %"
+                        Icon={Percent}
+                        tight
+                      >
+                        <input
+                          id="add-inv-distribution-allocation"
+                          type="text"
+                          className="deals_add_inv_field_pill"
+                          inputMode="decimal"
+                          placeholder="0.00"
+                          value={form.distributionAllocationPercent ?? ""}
+                          onChange={(e) =>
+                            patch({
+                              distributionAllocationPercent:
+                                formatPercentTypeInputBare(e.target.value, 100),
+                            })
+                          }
+                          onBlur={(e) =>
+                            patch({
+                              distributionAllocationPercent:
+                                blurFormatPercentClamped(e.target.value),
+                            })
+                          }
+                          aria-label="Distribution Allocation %"
+                        />
+                      </InvFormField>
+                    </div>
+                  ) : null}
 
                   {isInvestorEntry ? (
                     <div className="add_contact_name_grid">
@@ -1547,19 +2172,30 @@ export function AddInvestmentModal({
                       <span className="mail_text_label">
                         {isInvestorEntry
                           ? "Would you like to notify the investor about their addition to the deal?"
-                          : "Would you like to notify the member about their addition to the deal?"}
+                          : isGpEntry
+                            ? "Would you like to notify the team member about their addition to the deal?"
+                            : "Would you like to notify the general partner about their addition to the deal?"}
                       </span>
                       {dealBlocksInvitationEmails ? (
                         <span className="deals_add_inv_label_info">
                           <InfoIconPanel
                             ariaLabel="More information: Invitation emails"
                             infoContent={
-                              <>
-                                Invitation emails are unavailable while the deal is
-                                in draft or required deal details are incomplete.
-                                Finalize the deal before sending invitations. You
-                                can still choose <strong>No</strong> below.
-                              </>
+                              isInvestorEntry ? (
+                                <>
+                                  Invitation emails are unavailable while required
+                                  deal details are incomplete. Complete the deal
+                                  details before sending invitations. You can still
+                                  choose <strong>No</strong> below.
+                                </>
+                              ) : (
+                                <>
+                                  Invitation emails are unavailable while the deal is
+                                  in draft or required deal details are incomplete.
+                                  Finalize the deal before sending invitations. You
+                                  can still choose <strong>No</strong> below.
+                                </>
+                              )
                             }
                           />
                         </span>
@@ -1567,7 +2203,9 @@ export function AddInvestmentModal({
                     </div>
                     {dealBlocksInvitationEmails ? (
                       <p id="add-inv-send-invite-hint" className="visually_hidden">
-                        {INVITATION_EMAILS_UNAVAILABLE_HINT}
+                        {isInvestorEntry
+                          ? INVITATION_EMAILS_UNAVAILABLE_HINT_INVESTOR
+                          : INVITATION_EMAILS_UNAVAILABLE_HINT_MEMBER}
                       </p>
                     ) : null}
                     <div className="portal_yesno_field_block">
@@ -1626,7 +2264,7 @@ export function AddInvestmentModal({
                       + Add contribution
                     </button>
                   </div> */}
-                </div>
+                </section>
               </>
           </div>
 
@@ -1674,6 +2312,19 @@ export function AddInvestmentModal({
       onSave={handleAddContactSave}
       contactToEdit={null}
       existingContacts={contactRows}
+    />
+    <ExtraCompanyUserPayModal
+      payload={extraUserPayment}
+      onClose={() => {
+        setExtraUserPayment(null)
+        pendingSaveAfterExtraPayRef.current = null
+      }}
+      onPaid={() => {
+        setExtraUserPayment(null)
+        toast.success("Extra company user paid", "Saving the team member…")
+        pendingSaveAfterExtraPayRef.current = null
+        void performSave()
+      }}
     />
     </>
   )

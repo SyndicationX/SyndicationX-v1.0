@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { signInWithPassword } from "../../services/auth/auth.service.js";
 import { linkPortalSessionToAuthTokens } from "../../services/auth/token.service.js";
 import { startUserPortalSession } from "../../services/platform/userActivity.service.js";
+import { setRefreshTokenCookie } from "../../utils/authCookies.js";
 
 type SigninBody = {
   email?: unknown;
@@ -51,6 +52,8 @@ export async function postSignin(req: Request, res: Response): Promise<void> {
   } catch (err) {
     console.error("startUserPortalSession after signin:", err);
   }
+
+  setRefreshTokenCookie(res, result.refreshToken);
 
   res.status(200).json({
     message: result.message,

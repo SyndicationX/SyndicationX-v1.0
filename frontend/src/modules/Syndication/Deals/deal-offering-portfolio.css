@@ -6,9 +6,14 @@ html.deal_offer_pf_sticky_scroll body {
   overflow-x: clip;
 }
 
-/* In-app preview scrolls `.app_main_section` — same clip fix for sticky sidebar card */
+/* In-app preview scrolls `.app_main_content` — clip fix for sticky sidebar card */
 .app_main_section.deal_offer_pf_sticky_scroll {
+  overflow: hidden;
+}
+
+.app_main_section.deal_offer_pf_sticky_scroll .app_main_content.deal_offer_pf_sticky_scroll {
   overflow-x: clip;
+  overflow-y: auto;
 }
 
 /* .deal_offer_pf_page {
@@ -697,6 +702,46 @@ html.deal_offer_pf_sticky_scroll body {
   gap: 0.65rem;
 }
 
+/* Preview offering gallery — same inline carousel as dashboard deal cards */
+.deal_offer_pf_carousel_hero {
+  position: relative;
+  width: 100%;
+  min-height: min(16rem, 48vw);
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--portal-card-radius, 4px);
+  background: var(--portal-primary-soft, #f1f5f9);
+}
+
+.deal_offer_pf_carousel_hero .deal_card_media--hero {
+  position: absolute;
+  inset: 0;
+  flex: none;
+  max-width: none;
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  aspect-ratio: auto;
+}
+
+.deal_offer_pf_carousel_hero .deal_card_cover {
+  transition: transform 0.45s ease;
+}
+
+.deal_offer_pf_carousel_hero:hover .deal_card_cover {
+  transform: scale(1.03);
+}
+
+.deal_offer_pf_carousel_hero .deal_card_carousel_image_btn:hover .deal_card_cover {
+  transform: scale(1.03);
+}
+
+@media (hover: none) {
+  .deal_offer_pf_carousel_hero .deal_card_carousel_btn {
+    opacity: 1;
+  }
+}
+
 .deal_offer_pf_wireframe .deal_offer_pf_media_thumb_row {
   width: 100%;
   max-width: 100%;
@@ -1355,6 +1400,21 @@ html.deal_offer_pf_sticky_scroll body {
   font-weight: 600;
   color: var(--portal-text, #0f172a);
   word-break: break-word;
+}
+
+.deal_offer_pf_documents_name_link {
+  text-decoration: none;
+}
+
+.deal_offer_pf_documents_name_link:hover {
+  color: var(--portal-primary, #2563eb);
+  text-decoration: underline;
+}
+
+.deal_offer_pf_documents_name_link:focus-visible {
+  outline: 2px solid var(--portal-gold-accent, #d4af37);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .deal_offer_pf_documents_scope {

@@ -215,7 +215,10 @@ export function LpDealOfferingDocumentsPanel({
           ) : null}
 
           {showOfferingList ? (
-            <InvestorOfferingDocumentsList sections={filteredOfferingSections} />
+            <InvestorOfferingDocumentsList
+              dealId={dealId}
+              sections={filteredOfferingSections}
+            />
           ) : null}
         </div>
       </div>

@@ -1,5 +1,5 @@
 import { getSessionUserEmail } from "@/common/auth/sessionUserEmail"
-import { applyLpSessionDealIdScope } from "@/modules/Investing/utils/investingViewerDealScope"
+import { applyLpSessionDealIdScope, filterDealListRowsVisibleToInvestors } from "@/modules/Investing/utils/investingViewerDealScope"
 import type { InvestmentListRow } from "@/modules/Investing/pages/investments/investments.types"
 import { fetchDealsList, fetchDealInvestors } from "@/modules/Syndication/Deals/api/dealsApi"
 import { parseMoneyDigits } from "@/modules/Syndication/Deals/utils/offeringMoneyFormat"
@@ -30,7 +30,8 @@ export function countLinkedInvestmentsForUserProfileId(
  * For each “My profile” id, the number of **deal commitment** lines (one per
  * `deal_investment` row) where the viewer’s email matches, committed amount is
  * positive, and `userInvestorProfileId` equals the saved profile id. Uses the
- * same deal scope as the Investing list (LP session filter, non-archived deals).
+ * same deal scope as the Investing list (LP session filter; sponsor-archived deals
+ * with your commitments are included).
  */
 export async function fetchInvestmentCountsByUserInvestorProfileId(): Promise<
   ReadonlyMap<string, number>
@@ -44,7 +45,9 @@ export async function fetchInvestmentCountsByUserInvestorProfileId(): Promise<
   } catch {
     return new Map()
   }
-  const active = applyLpSessionDealIdScope(list).filter((r) => !r.archived)
+  const active = filterDealListRowsVisibleToInvestors(
+    applyLpSessionDealIdScope(list),
+  )
   if (active.length === 0) return new Map()
 
   const results = await Promise.all(

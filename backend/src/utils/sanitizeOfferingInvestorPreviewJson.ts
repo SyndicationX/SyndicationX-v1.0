@@ -70,7 +70,9 @@ function normalizeNested(
       ? "lp_investor"
       : sw === "offering_page"
         ? "offering_page"
-        : undefined;
+        : sw === "not_visible"
+          ? "not_visible"
+          : undefined;
   const sharedWithAllInvestors = Boolean(raw.sharedWithAllInvestors);
   const sharedDealClassIds = parseIdListField(raw.sharedDealClassIds);
   const sharedInvestorIds = sharedWithAllInvestors
@@ -97,6 +99,11 @@ function normalizeNested(
       : undefined;
   const esignAwaitingSponsorSignature = Boolean(raw.esignAwaitingSponsorSignature);
   const esignSponsorSigned = Boolean(raw.esignSponsorSigned);
+  const uploadedByUserId =
+    typeof raw.uploadedByUserId === "string" && raw.uploadedByUserId.trim()
+      ? clipStr(raw.uploadedByUserId.trim(), 120)
+      : undefined;
+  const uploadedByIsCoSponsor = raw.uploadedByIsCoSponsor === true;
   return {
     id,
     name,
@@ -108,6 +115,8 @@ function normalizeNested(
     sharedInvestorIds,
     sharedWithAllInvestors,
     sharedSponsorUserIds,
+    ...(uploadedByUserId ? { uploadedByUserId } : {}),
+    ...(uploadedByIsCoSponsor ? { uploadedByIsCoSponsor: true } : {}),
     ...(requiresProfileInvestment ? { requiresProfileInvestment: true } : {}),
     ...(esignSignatureRequestId ? { esignSignatureRequestId } : {}),
     ...(esignInvestorRowId ? { esignInvestorRowId } : {}),
@@ -140,13 +149,14 @@ function normalizeSection(raw: unknown): Record<string, unknown> | null {
       ? clipStr(raw.visibility.trim(), 120)
       : "Offering page";
   const sw = raw.sharedWithScope;
+  const legacyLower = legacyVisibility.toLowerCase();
+  /** Sections stay offering/LP only; per-file `not_visible` lives on nested docs. */
   const sharedWithScope =
     sw === "lp_investor"
       ? "lp_investor"
       : sw === "offering_page"
         ? "offering_page"
-        : legacyVisibility.toLowerCase().includes("lp") &&
-            legacyVisibility.toLowerCase().includes("investor")
+        : legacyLower.includes("lp") && legacyLower.includes("investor")
           ? "lp_investor"
           : "offering_page";
   const visibility =
@@ -199,7 +209,9 @@ function flattenSectionsToOfferingDocuments(
           ? "lp_investor"
           : item.sharedWithScope === "offering_page"
             ? "offering_page"
-            : sectionScope;
+            : item.sharedWithScope === "not_visible"
+              ? "not_visible"
+              : sectionScope;
       out.push({
         id: item.id,
         name: `${sectionLabel} — ${fileName}`,

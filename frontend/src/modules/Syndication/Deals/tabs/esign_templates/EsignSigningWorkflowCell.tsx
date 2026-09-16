@@ -35,7 +35,7 @@ export function EsignSigningWorkflowCell({ file, esignProvider }: Props) {
       <div className="deal_esign_profiles_workflow_cell">
         <span className="deal_esign_profiles_workflow_mode">Parallel</span>
         <span className="deal_esign_profiles_workflow_desc" title={summary}>
-          Investor and sponsor together
+          Investor first, any order
         </span>
       </div>
     )

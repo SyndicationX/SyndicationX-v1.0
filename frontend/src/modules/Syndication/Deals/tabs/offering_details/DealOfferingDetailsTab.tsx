@@ -3,6 +3,8 @@ import { FormTooltip } from "../../../../../common/components/form-tooltip/FormT
 import { useCallback, useEffect, useId, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import type { DealDetailApi } from "../../api/dealsApi"
+import type { ViewerDealMemberRole } from "../../utils/dealDetailTabVisibility"
+import { CoSponsorEmailInterceptCard } from "./CoSponsorEmailInterceptCard"
 import {
   OFFERING_DETAILS_ACCORDION_SECTION_ORDER,
   offeringSectionHasInvestorPreviewTarget,
@@ -42,11 +44,13 @@ import "../deal_members/add-investment/add_deal_modal.css"
 interface DealOfferingDetailsTabProps {
   detail: DealDetailApi
   onDealUpdated?: (deal: DealDetailApi) => void
+  viewerDealMemberRole?: ViewerDealMemberRole
 }
 
 export function DealOfferingDetailsTab({
   detail,
   onDealUpdated,
+  viewerDealMemberRole = null,
 }: DealOfferingDetailsTabProps) {
   const onDealUpdatedRef = useRef(onDealUpdated)
   onDealUpdatedRef.current = onDealUpdated
@@ -237,6 +241,9 @@ export function DealOfferingDetailsTab({
             <span>Preview offering</span>
           </button>
         </div>
+        {viewerDealMemberRole === "co_sponsor" ? (
+          <CoSponsorEmailInterceptCard dealId={detail.id} />
+        ) : null}
         {/* <dl
           className="deal_offering_metrics"
           aria-label="Key offering figures"

@@ -27,6 +27,7 @@ import {
 import { isPlatformAdmin } from "../../../common/auth/roleUtils";
 import { getApiV1Base } from "../../../common/utils/apiBaseUrl";
 import { dealInvestNowPath } from "../../Syndication/Deals/utils/dealInvestNowPath";
+import { resolveUnpaidLeadSponsorPricingPath } from "../../Syndication/Deals/utils/dealSaasAccess";
 import { consumeInvestNowIntent } from "../../Syndication/Deals/utils/investNowIntent";
 import {
   applyOfferingPortfolioPostAuth,
@@ -175,6 +176,15 @@ const SigninForm = () => {
       }
       if (redirectTo === "/") {
         redirectTo = isPlatformAdmin() ? "/metrics" : "/dashboard";
+      }
+      const keepExistingRedirect =
+        Boolean(portfolioIntent?.dealId) ||
+        Boolean(storedIntent?.dealId) ||
+        state?.investNow === true ||
+        (typeof from === "string" && /\/esign(?:\/|$|\?)/i.test(from));
+      if (!keepExistingRedirect) {
+        const billingPath = await resolveUnpaidLeadSponsorPricingPath();
+        if (billingPath) redirectTo = billingPath;
       }
       navigate(redirectTo, { replace: true, state: postSignInState });
     } catch {

@@ -20,7 +20,7 @@ import {
   dealInvestment,
   type DealInvestmentInsert,
 } from "../../schema/deal.schema/deal-investment.schema.js";
-import { committedNumericFromDealInvestmentRow, insertDealInvestment, isLpInvestorRole, LP_INVESTOR_ROLE_STORED, resolveFirstInvestorClassForDeal, resolveInvestorClassForDealInvestment, } from "./dealInvestment.service.js";
+import { committedNumericFromDealInvestmentRow, insertDealInvestment, isLpInvestorRole, LP_INVESTOR_ROLE_STORED, resolveFirstLpInvestorClassForDeal, resolveInvestorClassForDealInvestment, } from "./dealInvestment.service.js";
 import { resolveInvestNowViewerContactOnDeal } from "./dealInvestNowViewerContact.service.js";
 import { upsertDealLpInvestor } from "./dealLpInvestor.service.js";
 import {
@@ -113,7 +113,9 @@ function normalizeCommittedAmountStored(
 }
 
 const INVEST_NOW_FUNDING_METHODS = new Set([
+    "stripe_checkout",
     "wire_transfer",
+    // Legacy saved value; new ACH/card contributions use Stripe Checkout.
     "ach",
     "check",
 ]);
@@ -411,8 +413,10 @@ export async function applyMyInvestNowCommitmentAddon(
             ? String(params.investorClass).trim()
             : target?.investorClass?.trim() ?? "";
         const classRes = icRaw
-            ? await resolveInvestorClassForDealInvestment(params.dealId, icRaw)
-            : await resolveFirstInvestorClassForDeal(params.dealId);
+            ? await resolveInvestorClassForDealInvestment(params.dealId, icRaw, {
+                lpOnboardingOnly: true,
+              })
+            : await resolveFirstLpInvestorClassForDeal(params.dealId);
         if (!classRes.ok)
             return {
                 ok: false,
@@ -528,8 +532,9 @@ export async function applyMyInvestNowCommitmentAddon(
                 ? await resolveInvestorClassForDealInvestment(
                     params.dealId,
                     icRaw,
+                    { lpOnboardingOnly: true },
                 )
-                : await resolveFirstInvestorClassForDeal(params.dealId);
+                : await resolveFirstLpInvestorClassForDeal(params.dealId);
             if (!classRes.ok)
                 return {
                     ok: false,
@@ -602,6 +607,7 @@ export async function applyMyInvestNowCommitmentAddon(
             const classRes = await resolveInvestorClassForDealInvestment(
                 params.dealId,
                 String(params.investorClass),
+                { lpOnboardingOnly: true },
             );
             if (!classRes.ok) {
                 return { ok: false, message: classRes.message };
@@ -701,8 +707,10 @@ export async function applyMyInvestNowCommitmentAddon(
         }
         const icRaw = inv.investorClass?.trim() ?? "";
         const classRes = icRaw
-            ? await resolveInvestorClassForDealInvestment(params.dealId, icRaw)
-            : await resolveFirstInvestorClassForDeal(params.dealId);
+            ? await resolveInvestorClassForDealInvestment(params.dealId, icRaw, {
+                lpOnboardingOnly: true,
+              })
+            : await resolveFirstLpInvestorClassForDeal(params.dealId);
         if (!classRes.ok)
             return {
                 ok: false,

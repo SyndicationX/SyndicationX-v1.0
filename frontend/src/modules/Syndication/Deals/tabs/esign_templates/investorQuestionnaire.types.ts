@@ -36,6 +36,11 @@ export type InvestorQuestionnaireQuestion = {
   /** Choices when fieldType is radio. */
   options?: string[]
   isDefault?: boolean
+  /**
+   * Links this questionnaire field to an investor profile detail field for
+   * prefill. The same key may be used on multiple questions.
+   */
+  investorProfileFieldKey?: string
 }
 
 /** Per e-sign profile: sectionId → false hides that section on that profile's template. */
@@ -82,6 +87,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "text",
       isDefault: true,
+      investorProfileFieldKey: "firstName",
     },
     {
       id: "last_name",
@@ -91,6 +97,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "text",
       isDefault: true,
+      investorProfileFieldKey: "lastName",
     },
     {
       id: "telephone",
@@ -100,6 +107,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "phone",
       isDefault: true,
+      investorProfileFieldKey: "phone2",
     },
     {
       id: "address",
@@ -109,12 +117,13 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "address",
       isDefault: true,
+      investorProfileFieldKey: "taxAddress",
     },
     {
       id: "state_residency_duration",
       sectionId: "personal",
       label:
-        "How long have you been a resident of your state of residence?",
+        "How long have you been a resident of your state of residence? (years)",
       sortOrder: 4,
       required: true,
       fieldType: "text",
@@ -142,11 +151,12 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
     {
       id: "social_security_number",
       sectionId: "personal",
-      label: "Social security number",
+      label: "Social Security Number",
       sortOrder: 7,
       required: true,
       fieldType: "ssn",
       isDefault: true,
+      investorProfileFieldKey: "ssn",
     },
     {
       id: "entity_full_legal_name",
@@ -156,6 +166,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "text",
       isDefault: true,
+      investorProfileFieldKey: "entityLegalName",
     },
     {
       id: "entity_office_address",
@@ -165,6 +176,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "address",
       isDefault: true,
+      investorProfileFieldKey: "taxAddress",
     },
     {
       id: "entity_business_phone",
@@ -174,6 +186,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "phone",
       isDefault: true,
+      investorProfileFieldKey: "phone2",
     },
     {
       id: "entity_formation_date",
@@ -183,6 +196,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: false,
       fieldType: "date",
       isDefault: true,
+      investorProfileFieldKey: "entityDateFormed",
     },
     {
       id: "entity_jurisdiction_country",
@@ -210,6 +224,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "text",
       isDefault: true,
+      investorProfileFieldKey: "entityEin",
     },
     {
       id: "entity_authorized_name",
@@ -219,6 +234,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "text",
       isDefault: true,
+      investorProfileFieldKey: "fullName",
     },
     {
       id: "entity_authorized_title",
@@ -246,6 +262,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "text",
       isDefault: true,
+      investorProfileFieldKey: "legalIraName",
     },
     {
       id: "ira_entity_office_address",
@@ -255,6 +272,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "address",
       isDefault: true,
+      investorProfileFieldKey: "taxAddress",
     },
     {
       id: "ira_entity_business_phone",
@@ -264,6 +282,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "phone",
       isDefault: true,
+      investorProfileFieldKey: "phone2",
     },
     {
       id: "ira_entity_incorporation_country",
@@ -291,6 +310,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "ein",
       isDefault: true,
+      investorProfileFieldKey: "iraCustodianEin",
     },
     {
       id: "ira_entity_partner_ein",
@@ -300,6 +320,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: false,
       fieldType: "ein",
       isDefault: true,
+      investorProfileFieldKey: "iraPartnerEin",
     },
     {
       id: "ira_entity_account_holder_name",
@@ -309,6 +330,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "text",
       isDefault: true,
+      investorProfileFieldKey: "fullName",
     },
     {
       id: "ira_entity_account_holder_title",
@@ -404,6 +426,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "address",
       isDefault: true,
+      investorProfileFieldKey: "mailingAddress",
     },
     {
       id: "accreditation_categories",
@@ -591,6 +614,54 @@ export function questionsForSection(
     .sort((a, b) => a.sortOrder - b.sortOrder)
 }
 
+export const PURCHASER_REPRESENTATIVE_QUESTION_ID =
+  "relationship_purchaser_representative"
+
+/** Shown only when Purchaser Representative is Yes. */
+export const PURCHASER_REPRESENTATIVE_DETAIL_QUESTION_IDS = [
+  "relationship_consultant_name",
+  "relationship_consultant_phone",
+  "relationship_consultant_firm",
+  "relationship_address",
+] as const
+
+export function isPurchaserRepresentativeDetailQuestion(
+  questionId: string,
+): boolean {
+  return (
+    PURCHASER_REPRESENTATIVE_DETAIL_QUESTION_IDS as readonly string[]
+  ).includes(questionId)
+}
+
+export function purchaserRepresentativeSelected(
+  answers: Record<string, string>,
+): boolean {
+  return (
+    answers[PURCHASER_REPRESENTATIVE_QUESTION_ID]?.trim().toLowerCase() ===
+    "yes"
+  )
+}
+
+/** Investor onboarding: consultant fields depend on Purchaser Representative answer. */
+export function isInvestorQuestionnaireQuestionVisible(
+  question: Pick<InvestorQuestionnaireQuestion, "id">,
+  answers: Record<string, string>,
+): boolean {
+  if (!isPurchaserRepresentativeDetailQuestion(question.id)) return true
+  return purchaserRepresentativeSelected(answers)
+}
+
+export function pruneHiddenInvestorQuestionnaireAnswers(
+  answers: Record<string, string>,
+): Record<string, string> {
+  if (purchaserRepresentativeSelected(answers)) return answers
+  const next = { ...answers }
+  for (const id of PURCHASER_REPRESENTATIVE_DETAIL_QUESTION_IDS) {
+    delete next[id]
+  }
+  return next
+}
+
 const DEFAULT_QUESTION_BY_ID = new Map(
   DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS.map((q) => [q.id, q]),
 )
@@ -633,6 +704,18 @@ function syncStoredDefaultQuestion(
   const subtext = stored.subtext?.trim()
   if (subtext) next.subtext = subtext
   else delete next.subtext
+
+  const catalogProfileKey = catalog.investorProfileFieldKey?.trim()
+  const storedProfileKey = stored.investorProfileFieldKey?.trim()
+  if (catalogProfileKey) {
+    if (storedProfileKey !== catalogProfileKey) {
+      next.investorProfileFieldKey = catalogProfileKey
+      changed = true
+    }
+  } else if (storedProfileKey) {
+    delete next.investorProfileFieldKey
+    changed = true
+  }
 
   return { question: next, changed }
 }

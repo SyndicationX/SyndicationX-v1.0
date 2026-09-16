@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, constants as fsConstants, mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { eq } from "drizzle-orm";
 import { getActiveEsignProvider } from "../../config/esignProvider.config.js";
@@ -31,6 +31,7 @@ import {
   type EsignSignflowSigningOrder,
   type EsignSignflowWorkflowType,
 } from "../../constants/esignSigningWorkflow.js";
+import type { SignFlowField } from "../esign/signflow.service.js";
 import {
   buildStoredAssetName,
   type DealMemoryUploadFile,
@@ -76,6 +77,28 @@ export type EsignTemplateFileRecord = {
   signflowWorkflowType?: EsignSignflowWorkflowType;
   /** When sequential — who signs first. */
   signflowSigningOrder?: EsignSignflowSigningOrder;
+  /** Sponsor-placed SignFlow fields snapshot (persisted when template is saved). */
+  signflowTemplateFields?: SignFlowField[];
+  /**
+   * SynX-side bindings for sponsor-added investor data fields.
+   * Survives SignFlow embed saves that may strip custom props like dataKey/profileTypes.
+   */
+  signflowInvestorDataFieldBindings?: SignflowInvestorDataFieldBinding[];
+  /**
+   * Set after the first auto-place / questionnaire seed onto the SignFlow draft.
+   * Resume must not re-seed once this is set, or deleted fields reappear.
+   */
+  signflowFieldsSeededAt?: string;
+};
+
+/** Binding for a sponsor-placed investor data field (Choose field panel). */
+export type SignflowInvestorDataFieldBinding = {
+  dataKey: string;
+  esignLabel: string;
+  profileTypes: string[];
+  page: number;
+  x: number;
+  y: number;
 };
 
 export function resolveEsignTemplateProvider(
@@ -218,6 +241,22 @@ export function resolveEsignTemplateAbsolutePath(relativePath: string): string {
   return path.join(getUploadsPhysicalRoot(), rel);
 }
 
+export const ESIGN_TEMPLATE_PDF_MISSING_MESSAGE =
+  "Template PDF was not found on the server. Remove this template and upload it again.";
+
+/** Read an on-disk eSign template PDF or throw a user-facing error when missing. */
+export async function readEsignTemplatePdfBuffer(
+  relativePath: string,
+): Promise<Buffer> {
+  const absPath = resolveEsignTemplateAbsolutePath(relativePath);
+  try {
+    await access(absPath, fsConstants.R_OK);
+  } catch {
+    throw new Error(ESIGN_TEMPLATE_PDF_MISSING_MESSAGE);
+  }
+  return readFile(absPath);
+}
+
 export function findEsignTemplateFile(
   state: EsignTemplatesJson,
   fileId: string,
@@ -277,7 +316,7 @@ export async function ensureEsignTemplatePdfIncludesQuestionnaire(
   }
 
   const currentState = state ?? (await getDealEsignTemplatesState(dealId));
-  const fileBuffer = await readFile(absPath);
+  const fileBuffer = await readEsignTemplatePdfBuffer(file.relativePath);
   const doc = await PDFDocument.load(fileBuffer, { ignoreEncryption: true });
   const pageCount = doc.getPageCount();
 
@@ -326,7 +365,7 @@ export async function ensureEsignTemplatePdfIncludesW9(
   }
 
   const currentState = state ?? (await getDealEsignTemplatesState(dealId));
-  const fileBuffer = await readFile(absPath);
+  const fileBuffer = await readEsignTemplatePdfBuffer(file.relativePath);
   const merged = await appendW9ToPdfBuffer(fileBuffer);
   if (merged.w9Appended) {
     await writeFile(absPath, merged.buffer);

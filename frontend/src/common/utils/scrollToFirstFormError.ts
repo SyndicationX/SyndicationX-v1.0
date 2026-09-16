@@ -69,6 +69,115 @@ function resolveRoot(container?: ParentNode | null): ParentNode {
   return container ?? document
 }
 
+const MULTI_STEP_FORM_SCROLL_SELECTOR =
+  ".deals_add_deal_asset_form_scroll, .deals_add_inv_modal_scroll, .deal_inv_ic_modal_form_grid"
+
+const APP_MAIN_SCROLL_SELECTOR = ".app_main_section"
+
+function scrollBehavior(): ScrollBehavior {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ? "auto"
+    : "smooth"
+}
+
+function scrollElementToTop(el: HTMLElement, behavior: ScrollBehavior): void {
+  el.scrollTo({ top: 0, behavior })
+}
+
+function isVerticallyScrollable(el: HTMLElement): boolean {
+  const style = window.getComputedStyle(el)
+  const overflowY = style.overflowY
+  if (overflowY !== "auto" && overflowY !== "scroll" && overflowY !== "overlay") {
+    return false
+  }
+  return el.scrollHeight > el.clientHeight + 1
+}
+
+function isInsideModal(el: HTMLElement | null): boolean {
+  return Boolean(el?.closest(".um_modal, [role='dialog']"))
+}
+
+/** Logged-in shell scrolls `.app_main_section`; modals scroll their own body. */
+function scrollPageScrollContainersToTop(
+  containerEl: HTMLElement | null,
+  behavior: ScrollBehavior,
+): void {
+  if (isInsideModal(containerEl)) {
+    const modalRoot =
+      containerEl?.closest<HTMLElement>(".um_modal, [role='dialog']") ?? null
+    const modalScroll =
+      modalRoot?.querySelector<HTMLElement>(MULTI_STEP_FORM_SCROLL_SELECTOR) ??
+      modalRoot?.querySelector<HTMLElement>(".um_modal_body")
+    if (modalScroll) {
+      scrollElementToTop(modalScroll, behavior)
+    }
+    return
+  }
+
+  const appMain = document.querySelector<HTMLElement>(APP_MAIN_SCROLL_SELECTOR)
+  if (appMain) {
+    scrollElementToTop(appMain, behavior)
+    return
+  }
+
+  window.scrollTo({ top: 0, behavior })
+  document.documentElement.scrollTo({ top: 0, behavior })
+}
+
+function scrollInnerFormScrollAreas(
+  scope: ParentNode,
+  behavior: ScrollBehavior,
+): void {
+  if (scope instanceof Document) {
+    scope
+      .querySelectorAll<HTMLElement>(MULTI_STEP_FORM_SCROLL_SELECTOR)
+      .forEach((el) => {
+        if (isVerticallyScrollable(el)) scrollElementToTop(el, behavior)
+      })
+    return
+  }
+
+  const el = scope as ParentNode
+  if (el instanceof HTMLElement && el.matches(MULTI_STEP_FORM_SCROLL_SELECTOR)) {
+    if (isVerticallyScrollable(el)) scrollElementToTop(el, behavior)
+  }
+  el.querySelectorAll<HTMLElement>(MULTI_STEP_FORM_SCROLL_SELECTOR).forEach(
+    (inner) => {
+      if (isVerticallyScrollable(inner)) scrollElementToTop(inner, behavior)
+    },
+  )
+}
+
+/** After advancing a multi-step form, show the top of the page (not mid-form). */
+export function scrollMultiStepFormToTop(
+  options?: ScrollToFirstFormErrorOptions | ParentNode | null,
+): void {
+  const opts: ScrollToFirstFormErrorOptions =
+    options != null &&
+    typeof options === "object" &&
+    ("container" in options || "preferSelector" in options)
+      ? (options as ScrollToFirstFormErrorOptions)
+      : { container: options as ParentNode | null | undefined }
+
+  const containerEl =
+    opts.container instanceof HTMLElement ? opts.container : null
+  const behavior = scrollBehavior()
+
+  scrollPageScrollContainersToTop(containerEl, behavior)
+  scrollInnerFormScrollAreas(containerEl ?? document, behavior)
+}
+
+/** Run after React renders the next step. */
+export function scrollMultiStepFormToTopAfterUpdate(
+  options?: ScrollToFirstFormErrorOptions | ParentNode | null,
+): void {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      scrollMultiStepFormToTop(options)
+    })
+  })
+}
+
 /**
  * Scroll to the first invalid control or field error inside `container`.
  * Returns true when a target was found.

@@ -823,9 +823,42 @@
 }
 
 /* Card radios in settings use shared `.portal_yesno_field_block` rules (portal-radio-groups.css). */
-.cp_settings_root .cp_settings_value_row:has(.card_radio_group) {
+.cp_settings_root .cp_settings_value_row:has(.card_radio_group),
+.cp_settings_root .cp_settings_value_row:has(.portal_yesno_radio_group) {
   align-items: flex-start;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+}
+
+/* Edit mode: stack field + Save/Close on separate rows so actions stay visible. */
+.cp_settings_root
+  .cp_settings_value_row:has(.um_modal_actions.add_contact_modal_actions) {
+  flex-wrap: wrap;
+  gap: 0.75rem 0.85rem;
+}
+
+.cp_settings_root
+  .cp_settings_value_row:has(.um_modal_actions.add_contact_modal_actions)
+  .cp_settings_edit_field_block {
+  flex: 1 1 100%;
+  width: 100%;
+  max-width: 100%;
+}
+
+.cp_settings_root
+  .cp_settings_value_row:has(.um_modal_actions.add_contact_modal_actions)
+  .cp_settings_row_actions {
+  flex: 1 1 100%;
+  margin-left: 0;
+}
+
+.cp_settings_root
+  .cp_settings_value_row:has(.um_modal_actions.add_contact_modal_actions)
+  > .cp_settings_select,
+.cp_settings_root
+  .cp_settings_value_row:has(.um_modal_actions.add_contact_modal_actions)
+  > .cp_distribution_select_root {
+  flex: 1 1 100%;
+  max-width: 100%;
 }
 
 @media (max-width: 520px) {

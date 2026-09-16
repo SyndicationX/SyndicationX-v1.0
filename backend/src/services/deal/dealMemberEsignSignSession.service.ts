@@ -6,14 +6,16 @@ import {
   parseEsignStatusBundle,
   pickPendingEsignSend,
 } from "../../constants/deal-investor-esign-status.js";
+import { portalProfileIdToSignFlowProfileType } from "../../constants/esignProfileTypes.js";
 import { db } from "../../database/db.js";
 import { dealInvestment } from "../../schema/deal.schema/deal-investment.schema.js";
 import { getDealEsignDropboxSignPublicConfig } from "./dealEsignDropboxSign.service.js";
 import {
-  buildSignFlowSignerEmbedUrl,
   createSignFlowEmbedSigningSession,
   evaluateSignFlowRecipientSignAccess,
   getSignFlowDocument,
+  mapSignFlowEmbedSessionError,
+  resolveSignFlowInvestorRecipientId,
 } from "../esign/signflow.service.js";
 import {
   findInvestorEsignTargetForInvestNowCommitment,
@@ -30,6 +32,7 @@ import {
 } from "../esign/dropboxSign.service.js";
 
 import { sendMyInvestNowEsignIfNeeded } from "./dealLpInvestNowMyEsignSend.service.js";
+import { evaluateDealSequentialInvestorSignAccess } from "./dealSequentialEsignWorkflow.service.js";
 
 export type DealMyEsignSignSessionResult =
   | {
@@ -45,7 +48,7 @@ export type DealMyEsignSignSessionResult =
       appBaseUrl?: string | null;
       documentId?: string | null;
     }
-  | { ok: false; code: "not_found" | "not_pending" | "not_configured" | "waiting_for_prior_signer"; message: string; waitingFor?: "sponsor" | "investor" };
+  | { ok: false; code: "not_found" | "not_pending" | "not_configured" | "waiting_for_prior_signer"; message: string; waitingFor?: "sponsor" | "investor" | "prior_investor" };
 
 async function resolveSignatureIdForSend(
   send: { signatureId?: string; signatureRequestId?: string },
@@ -192,6 +195,19 @@ export async function getDealMyEsignSignSession(params: {
 
   const sigId = send.signatureRequestId?.trim() ?? "";
 
+  const sequentialAccess = await evaluateDealSequentialInvestorSignAccess(
+    dealId,
+    target,
+  );
+  if (!sequentialAccess.allowed) {
+    return {
+      ok: false,
+      code: "waiting_for_prior_signer",
+      message: sequentialAccess.message,
+      waitingFor: "prior_investor",
+    };
+  }
+
   if (send.completedAt?.trim()) {
     return {
       ok: true,
@@ -221,45 +237,83 @@ export async function getDealMyEsignSignSession(params: {
       await markDealInvestorEsignViewed(params.dealId, target, sigId);
     }
 
+    let liveDoc;
     try {
-      const liveDoc = await getSignFlowDocument(sigId);
-      const access = evaluateSignFlowRecipientSignAccess(liveDoc, email);
-      if (!access.allowed) {
-        return {
-          ok: false,
-          code: "waiting_for_prior_signer",
-          message: access.message,
-          waitingFor: access.waitingFor,
-        };
-      }
+      liveDoc = await getSignFlowDocument(sigId);
     } catch (err) {
-      console.warn("getSignFlowDocument (sign access gate):", err);
+      console.warn("getSignFlowDocument (sign session):", err);
+      const mapped = mapSignFlowEmbedSessionError(err, signFlowCfg.baseUrl);
+      return {
+        ok: false,
+        code: mapped.code,
+        message: mapped.message,
+        ...(mapped.waitingFor ? { waitingFor: mapped.waitingFor } : {}),
+      };
     }
 
-    let signUrl = buildSignFlowSignerEmbedUrl(sigId);
+    const access = evaluateSignFlowRecipientSignAccess(liveDoc, email);
+    if (!access.allowed) {
+      return {
+        ok: false,
+        code: "waiting_for_prior_signer",
+        message: access.message,
+        waitingFor: access.waitingFor,
+      };
+    }
+
     try {
+      let resolvedCommitmentProfileId = String(params.profileId ?? "").trim();
+      if (
+        !resolvedCommitmentProfileId &&
+        commitmentTarget?.table === "investment"
+      ) {
+        const [invProfile] = await db
+          .select({ profileId: dealInvestment.profileId })
+          .from(dealInvestment)
+          .where(
+            and(
+              eq(dealInvestment.id, commitmentTarget.id),
+              eq(dealInvestment.dealId, dealId),
+            ),
+          )
+          .limit(1);
+        resolvedCommitmentProfileId = String(invProfile?.profileId ?? "").trim();
+      }
+      const investorProfileType = portalProfileIdToSignFlowProfileType(
+        resolvedCommitmentProfileId,
+      );
+      const investorRecipientId = resolveSignFlowInvestorRecipientId(liveDoc);
       const session = await createSignFlowEmbedSigningSession({
         documentId: sigId,
         recipientEmail: email,
+        recipientId: investorRecipientId,
+        ...(investorProfileType
+          ? { profileType: investorProfileType }
+          : {}),
       });
-      signUrl = session.signUrl;
+      return {
+        ok: true,
+        alreadyCompleted: false,
+        provider: "signflow",
+        signUrl: session.signUrl,
+        clientId: null,
+        testMode: signFlowCfg.testMode,
+        configured: signFlowCfg.configured,
+        signatureRequestId: sigId,
+        embedApiKey: signFlowCfg.embedApiKey,
+        appBaseUrl: signFlowCfg.appBaseUrl,
+        documentId: sigId,
+      };
     } catch (err) {
       console.warn("createSignFlowEmbedSigningSession:", err);
+      const mapped = mapSignFlowEmbedSessionError(err, signFlowCfg.baseUrl);
+      return {
+        ok: false,
+        code: mapped.code,
+        message: mapped.message,
+        ...(mapped.waitingFor ? { waitingFor: mapped.waitingFor } : {}),
+      };
     }
-
-    return {
-      ok: true,
-      alreadyCompleted: false,
-      provider: "signflow",
-      signUrl,
-      clientId: null,
-      testMode: signFlowCfg.testMode,
-      configured: signFlowCfg.configured,
-      signatureRequestId: sigId,
-      embedApiKey: signFlowCfg.embedApiKey,
-      appBaseUrl: signFlowCfg.appBaseUrl,
-      documentId: sigId,
-    };
   }
 
   const signatureId = await resolveSignatureIdForSend(send);

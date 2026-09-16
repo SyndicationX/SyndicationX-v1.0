@@ -10,7 +10,8 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getSessionUserEmail } from "@/common/auth/sessionUserEmail";
-import { isPlatformAdmin } from "@/common/auth/roleUtils";
+import { filterDealListRowsVisibleToInvestors } from "@/modules/Investing/utils/investingViewerDealScope";
+import { isPlatformAdmin, isSponsorWorkspaceInvestingViewer } from "@/common/auth/roleUtils";
 import { TabsScrollStrip } from "@/common/components/tabs-scroll-strip/TabsScrollStrip";
 import {
   dealListRowToDealRecord,
@@ -24,10 +25,6 @@ import {
 } from "@/modules/Syndication/Deals/api/dealsApi";
 import { ExportDealsModal } from "@/modules/Syndication/Deals/components/ExportDealsModal";
 import { DEALS_LIST_REFETCH_EVENT } from "@/modules/Syndication/Deals/createDealFormDraftStorage";
-import {
-  effectiveOfferingStatusForAccess,
-  getDealStatusRules,
-} from "@/modules/Syndication/Deals/constants/deal-lifecycle";
 import type { DealListRow } from "@/modules/Syndication/Deals/types/deals.types";
 import {
   SyndicatingDealsSection,
@@ -121,22 +118,19 @@ async function loadDealsByBucket(
   viewerEmailNorm: string,
 ): Promise<InvestingDashboardDealsByBucket> {
   const platformAdminViewer = isPlatformAdmin();
+  const sponsorWorkspaceViewer = isSponsorWorkspaceInvestingViewer();
   let list = await fetchDealsList(
     platformAdminViewer ? undefined : { includeParticipantDeals: true },
   );
-  list = list.filter((row) => {
-    const effective = effectiveOfferingStatusForAccess(
-      row.dealStage,
-      row.offeringStatus,
-    );
-    if (!effective) return false;
-    const rules = getDealStatusRules(effective);
-    return (
-      rules.status !== "closed" &&
-      rules.status !== "past" &&
-      rules.allowDashboardVisibility
-    );
-  });
+  if (!platformAdminViewer && !sponsorWorkspaceViewer) {
+    list = filterDealListRowsVisibleToInvestors(list);
+  }
+  /**
+   * Do not drop closed / managing-asset / past rows here. Those offerings are
+   * hidden as marketplace opportunities, but an LP who already invested must
+   * still reach {@link classifyInvestingDashboardDealBucket} (Active / In progress).
+   * Uninvested closed deals return null from classify and stay off the dashboard.
+   */
   if (list.length === 0) return { ...EMPTY_BY_BUCKET };
 
   const bundles = await Promise.all(
@@ -149,7 +143,7 @@ async function loadDealsByBucket(
     }),
   );
 
-  if (platformAdminViewer) {
+  if (platformAdminViewer || sponsorWorkspaceViewer) {
     const out: InvestingDashboardDealsByBucket = {
       active: [],
       in_progress: [],

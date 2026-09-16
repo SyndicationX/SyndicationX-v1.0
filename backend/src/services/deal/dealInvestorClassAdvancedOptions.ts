@@ -7,6 +7,7 @@ export const INVESTOR_CLASS_SUBSCRIPTION_TYPES = [
   "lp",
   "gp",
   "mezzanine",
+  "preferred_equity",
 ] as const;
 
 export const MEZZANINE_PREFERRED_RETURN_TYPES = [
@@ -158,6 +159,11 @@ export function normalizeInvestorClassAdvancedOptionsJson(params: {
   const maxInvestment = params.maximumInvestment?.trim()
   if (maxInvestment) {
     parsed.maximumInvestment = maxInvestment
+  }
+
+  if (subscriptionType === "preferred_equity") {
+    const out = { ...parsed, investmentType: "preferred_equity" }
+    return { json: JSON.stringify(out) }
   }
 
   if (subscriptionType === "mezzanine") {

@@ -1,6 +1,7 @@
 @import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap");
 @import url("https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&display=swap");
 @import "@/common/theme/portal-theme.css";
+@import "@/common/theme/portal-scrollbars.css";
 @import "@/common/theme/portal-dark-mode.css";
 @import "@/common/styles/portal-tables.css";
 @import "@/common/styles/portal-buttons.css";
@@ -11,24 +12,6 @@ html {
   overflow-x: hidden;
   max-width: 100%;
   scroll-behavior: smooth;
-}
-
-/* Logged-in shell: one scroll container (`.app_main_section`), not the document. */
-html:has(.app_shell) {
-  height: 100%;
-  overflow: hidden;
-}
-
-html:has(.app_shell) body {
-  height: 100%;
-  overflow: hidden;
-}
-
-html:has(.app_shell) #root {
-  height: 100%;
-  min-height: 0;
-  max-height: 100%;
-  overflow: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -48,6 +31,38 @@ body {
   min-height: 100svh;
   min-height: 100dvh;
   overflow-x: clip;
+}
+
+/*
+ * Logged-in shell: lock the document to the viewport.
+ * Only `.app_main_section` (or `.app_main_content`) should scroll — never html/body.
+ * Must come AFTER `#root { min-height: 100dvh }` so shell wins on height.
+ */
+html:has(.app_shell) {
+  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+html:has(.app_shell) body {
+  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+html:has(.app_shell) #root {
+  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Author `display` rules must not resurrect `[hidden]` panels (extra page height). */
+[hidden] {
+  display: none !important;
 }
 
 * {
@@ -132,7 +147,7 @@ button {
     [type="color"]
   ):not(.um_search_input):not(.sponsor_dash_search_input):not(.deals_export_modal_search_input):not(
     .deal_assets_search
-  ),
+  ):not(.deal_inv_comm_recip_search_input),
 .app_shell textarea {
   box-sizing: border-box;
   /* width: 100%; */

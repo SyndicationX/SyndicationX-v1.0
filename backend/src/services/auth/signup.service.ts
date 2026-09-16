@@ -33,6 +33,7 @@ import {
   isCompanyMembershipRole,
   upsertUserCompanyMembership,
 } from "./userCompanyMembership.service.js";
+import { queueGhlSignupSync } from "../ghl/ghlContactSync.service.js";
 
 const BCRYPT_ROUNDS = 10;
 const PASSWORD_MIN = 8;
@@ -491,6 +492,20 @@ export async function registerUser(
       } catch (e) {
         console.error("recordPlatformSelfServeSignupNotification after signup:", e);
       }
+    }
+
+    if (createdUserId) {
+      queueGhlSignupSync({
+        email: emailNorm,
+        firstName,
+        lastName,
+        phone,
+        role: roleForUser,
+        companyName: companyName || null,
+        organizationId: organizationId ?? null,
+        signupKind:
+          roleForUser === INVESTOR && !organizationId ? "investor" : "company",
+      });
     }
 
     const uidForReconcile = pendingId ?? createdUserId;

@@ -10,19 +10,21 @@ import {
 } from "react"
 import { createPortal } from "react-dom"
 import { toast } from "../../../../../common/components/Toast"
+import {
+  displayEmail,
+  isDisplayableEmail,
+} from "../../../../../common/utils/displayEmail"
 import { postDealDocumentSharedNotification } from "../../api/dealsApi"
 import type { DealInvestorClass } from "../../types/deal-investor-class.types"
 import type { DealInvestorRow } from "../../types/deal-investors.types"
 import {
   lpInvestorsAddedBySponsorUserId,
+  lpInvestorsIncludedWhenSharingWithSponsorUser,
+  sponsorUserShareInterceptHoldsAtCoSponsor,
   SPONSOR_USER_INVESTORS_MENU_LABEL,
   type SponsorPickerOption,
 } from "../../utils/offeringPreviewDocumentAudience"
-
-type SharedNotificationRecipient = {
-  to_email: string
-  member_display_name?: string
-}
+import { isUsableInvestorEmail } from "../../utils/dealDetailTabVisibility"
 
 export function toggleIdInList(list: string[], id: string, on: boolean): string[] {
   if (on) return list.includes(id) ? list : [...list, id]
@@ -54,10 +56,18 @@ function formatDocumentSharedWithSummary(args: {
   }
   for (const uid of sponsorUserIds) {
     const o = sponsorUserOptions.find((x) => x.id === uid)
+    const holds = sponsorUserShareInterceptHoldsAtCoSponsor(uid, investors)
+    const included = lpInvestorsIncludedWhenSharingWithSponsorUser(
+      uid,
+      investors,
+    ).length
+    const label = o?.label ?? uid
     bits.push(
-      o
-        ? `${SPONSOR_USER_INVESTORS_MENU_LABEL}: ${o.label}`
-        : `${SPONSOR_USER_INVESTORS_MENU_LABEL}: ${uid}`,
+      holds
+        ? `${SPONSOR_USER_INVESTORS_MENU_LABEL}: ${label} (you only)`
+        : included > 0
+          ? `${SPONSOR_USER_INVESTORS_MENU_LABEL}: ${label} (+ investors)`
+          : `${SPONSOR_USER_INVESTORS_MENU_LABEL}: ${label}`,
     )
   }
   if (allInvestors) bits.push("All Investors")
@@ -65,12 +75,14 @@ function formatDocumentSharedWithSummary(args: {
     for (const id of investorIds) {
       const r = investors.find((x) => x.id === id)
       const email =
-        r?.userEmail && r.userEmail !== "—" ? r.userEmail.trim() : ""
+        r?.userEmail && isUsableInvestorEmail(r.userEmail)
+          ? r.userEmail.trim()
+          : ""
       const name = r?.displayName?.trim() || id
       bits.push(email ? `${name} (${email})` : name)
     }
   }
-  if (bits.length === 0) return "All viewers (default)"
+  if (bits.length === 0) return "Hidden by default"
   const joined = bits.join(", ")
   if (joined.length > 72) return `${bits.length} selected`
   return joined
@@ -89,14 +101,21 @@ function investorRowMatchesDealClass(
   return Boolean(className && rowClass === className)
 }
 
-function resolveSharedWithRecipients(args: {
+type SharedNotifyPerson = {
+  key: string
+  name: string
+  email?: string
+}
+
+function resolveSharedWithPeople(args: {
   allInvestors: boolean
   investorIds: string[]
   sponsorUserIds: string[]
   classIds: string[]
   investors: DealInvestorRow[]
   dealClasses: DealInvestorClass[]
-}): SharedNotificationRecipient[] {
+  sponsorUserOptions: SponsorPickerOption[]
+}): SharedNotifyPerson[] {
   const {
     allInvestors,
     investorIds,
@@ -104,19 +123,33 @@ function resolveSharedWithRecipients(args: {
     classIds,
     investors,
     dealClasses,
+    sponsorUserOptions,
   } = args
-  const byEmail = new Map<string, SharedNotificationRecipient>()
+  const byKey = new Map<string, SharedNotifyPerson>()
+
+  function addPerson(key: string, name: string, emailRaw?: string) {
+    const k = key.trim().toLowerCase()
+    if (!k || byKey.has(k)) return
+    const email = emailRaw?.trim()
+    byKey.set(k, {
+      key: k,
+      name: name.trim() || k,
+      email: email && isUsableInvestorEmail(email) ? email : undefined,
+    })
+  }
 
   function addRow(row: DealInvestorRow) {
-    const email = row.userEmail?.trim()
-    if (!email || email === "—" || !email.includes("@")) return
-    const key = email.toLowerCase()
-    if (byEmail.has(key)) return
-    const name = row.displayName?.trim()
-    byEmail.set(key, {
-      to_email: email,
-      member_display_name: name && name !== "—" ? name : undefined,
-    })
+    const name = row.displayName?.trim() || row.id
+    addPerson(row.id || name, name, row.userEmail)
+    if (row.addedByIsCoSponsorOnDeal === true) {
+      const uid = row.addedByUserId?.trim()
+      const sponsorName = row.addedByDisplayName?.trim() || "Co-sponsor"
+      addPerson(
+        uid ? `sponsor:${uid}` : `sponsor:${sponsorName}`,
+        sponsorName,
+        row.addedByEmail,
+      )
+    }
   }
 
   if (allInvestors) {
@@ -132,13 +165,19 @@ function resolveSharedWithRecipients(args: {
       }
     }
     for (const sponsorUid of sponsorUserIds) {
-      for (const row of lpInvestorsAddedBySponsorUserId(sponsorUid, investors)) {
+      const opt = sponsorUserOptions.find((x) => x.id === sponsorUid)
+      const sponsorLabel = opt?.label?.trim() || sponsorUid
+      addPerson(`sponsor:${sponsorUid}`, sponsorLabel)
+      for (const row of lpInvestorsIncludedWhenSharingWithSponsorUser(
+        sponsorUid,
+        investors,
+      )) {
         addRow(row)
       }
     }
   }
 
-  return [...byEmail.values()]
+  return [...byKey.values()]
 }
 
 export function sharedAudienceSearchBlob(
@@ -205,9 +244,11 @@ export function DocumentSharedWithPicker(args: {
   const menuId = `${idPrefix}-shared-menu`
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const [isOpen, setIsOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [sendBusy, setSendBusy] = useState(false)
+  const [audienceSearch, setAudienceSearch] = useState("")
   const [menuBox, setMenuBox] = useState<{
     top: number
     left: number
@@ -225,23 +266,74 @@ export function DocumentSharedWithPicker(args: {
     sponsorUserOptions,
   })
 
+  const audienceSearchNorm = audienceSearch.trim().toLowerCase()
+
+  function matchesAudienceSearch(...parts: Array<string | null | undefined>) {
+    if (!audienceSearchNorm) return true
+    return parts.some((p) =>
+      String(p ?? "")
+        .toLowerCase()
+        .includes(audienceSearchNorm),
+    )
+  }
+
+  const filteredDealClasses = useMemo(
+    () =>
+      dealClasses.filter(
+        (c) =>
+          c.id.trim() &&
+          matchesAudienceSearch(c.name, c.id),
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- matchesAudienceSearch closes over audienceSearchNorm
+    [dealClasses, audienceSearchNorm],
+  )
+
+  const filteredSponsorOptions = useMemo(
+    () =>
+      sponsorUserOptions.filter((s) =>
+        matchesAudienceSearch(s.label, s.id),
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sponsorUserOptions, audienceSearchNorm],
+  )
+
+  const filteredInvestors = useMemo(
+    () =>
+      investors.filter(
+        (r) =>
+          r.id.trim() &&
+          matchesAudienceSearch(r.displayName, r.userEmail, r.id),
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [investors, audienceSearchNorm],
+  )
+
   const hasAudienceSelection =
     allInvestors ||
     investorIds.length > 0 ||
     classIds.length > 0 ||
     sponsorUserIds.length > 0
 
-  const notifyRecipients = useMemo(
+  const notifyPeople = useMemo(
     () =>
-      resolveSharedWithRecipients({
+      resolveSharedWithPeople({
         allInvestors,
         investorIds,
         sponsorUserIds,
         classIds,
         investors,
         dealClasses,
+        sponsorUserOptions,
       }),
-    [allInvestors, investorIds, sponsorUserIds, classIds, investors, dealClasses],
+    [
+      allInvestors,
+      investorIds,
+      sponsorUserIds,
+      classIds,
+      investors,
+      dealClasses,
+      sponsorUserOptions,
+    ],
   )
 
   const openNotifyConfirm = useCallback(() => {
@@ -252,16 +344,16 @@ export function DocumentSharedWithPicker(args: {
       )
       return
     }
-    if (notifyRecipients.length === 0) {
+    if (notifyPeople.length === 0) {
       toast.error(
-        "No email addresses",
-        "Selected investors do not have a valid email on file.",
+        "No recipients",
+        "Selected investors could not be resolved for this document share.",
       )
       return
     }
     setIsOpen(false)
     setConfirmOpen(true)
-  }, [hasAudienceSelection, notifyRecipients.length])
+  }, [hasAudienceSelection, notifyPeople.length])
 
   const handleConfirmSendNotification = useCallback(() => {
     const idTrim = dealId?.trim() ?? ""
@@ -273,7 +365,12 @@ export function DocumentSharedWithPicker(args: {
       setSendBusy(true)
       try {
         const result = await postDealDocumentSharedNotification(idTrim, {
-          recipients: notifyRecipients,
+          audience: {
+            all_investors: allInvestors,
+            investor_ids: investorIds,
+            sponsor_user_ids: sponsorUserIds,
+            class_ids: classIds,
+          },
           document_names: [docName.trim() || "Document"],
         })
         if (!result.ok) {
@@ -283,7 +380,7 @@ export function DocumentSharedWithPicker(args: {
         if (result.failures.length > 0) {
           toast.success(
             "Email partially sent",
-            `Sent ${result.sent} of ${notifyRecipients.length}. Some addresses failed.`,
+            `Sent ${result.sent} of ${notifyPeople.length}. Some addresses failed.`,
           )
         } else {
           toast.success(
@@ -296,7 +393,15 @@ export function DocumentSharedWithPicker(args: {
         setSendBusy(false)
       }
     })()
-  }, [dealId, docName, notifyRecipients])
+  }, [
+    dealId,
+    docName,
+    allInvestors,
+    investorIds,
+    sponsorUserIds,
+    classIds,
+    notifyPeople.length,
+  ])
 
   const updateMenuBox = useCallback(() => {
     const el = triggerRef.current
@@ -305,9 +410,9 @@ export function DocumentSharedWithPicker(args: {
     const margin = 10
     const vw = window.innerWidth
     const vh = window.innerHeight
-    const minW = Math.min(18 * 16, vw - 2 * margin)
-    const maxW = Math.min(22 * 16, vw - 2 * margin)
-    const width = Math.min(maxW, Math.max(minW, r.width))
+    const minW = Math.min(20 * 16, vw - 2 * margin)
+    const maxW = Math.min(26 * 16, vw - 2 * margin)
+    const width = Math.min(maxW, Math.max(minW, Math.max(r.width, minW)))
     let left = r.left
     if (left + width > vw - margin) left = vw - margin - width
     if (left < margin) left = margin
@@ -315,56 +420,90 @@ export function DocumentSharedWithPicker(args: {
     const gap = 4
     const spaceBelow = vh - r.bottom - margin
     const spaceAbove = r.top - margin
-    const maxPanel = 16 * 16
-    const openDown = spaceBelow >= Math.min(200, spaceAbove)
+    const maxPanel = 20 * 16
+    const openDown = spaceBelow >= Math.min(220, spaceAbove)
 
+    let next: { top: number; left: number; width: number; maxHeight: number }
     if (openDown) {
-      const maxHeight = Math.max(140, Math.min(maxPanel, spaceBelow - gap))
-      setMenuBox({ top: r.bottom + gap, left, width, maxHeight })
-      return
+      const maxHeight = Math.max(180, Math.min(maxPanel, spaceBelow - gap))
+      next = { top: r.bottom + gap, left, width, maxHeight }
+    } else {
+      const maxHeight = Math.max(180, Math.min(maxPanel, spaceAbove - gap))
+      const top = Math.max(margin, r.top - maxHeight - gap)
+      next = { top, left, width, maxHeight }
     }
-    const maxHeight = Math.max(140, Math.min(maxPanel, spaceAbove - gap))
-    const top = Math.max(margin, r.top - maxHeight - gap)
-    setMenuBox({ top, left, width, maxHeight })
+
+    setMenuBox((prev) => {
+      if (
+        prev &&
+        prev.top === next.top &&
+        prev.left === next.left &&
+        prev.width === next.width &&
+        prev.maxHeight === next.maxHeight
+      )
+        return prev
+      return next
+    })
   }, [])
 
   useLayoutEffect(() => {
     if (!isOpen) {
       setMenuBox(null)
+      setAudienceSearch("")
       return
     }
     updateMenuBox()
-    function onScrollOrResize() {
+    function onResize() {
       updateMenuBox()
     }
-    window.addEventListener("resize", onScrollOrResize)
-    document.addEventListener("scroll", onScrollOrResize, true)
+    function onScroll(e: Event) {
+      const t = e.target
+      if (t instanceof Node && menuRef.current?.contains(t)) return
+      updateMenuBox()
+    }
+    window.addEventListener("resize", onResize)
+    document.addEventListener("scroll", onScroll, true)
     return () => {
-      window.removeEventListener("resize", onScrollOrResize)
-      document.removeEventListener("scroll", onScrollOrResize, true)
+      window.removeEventListener("resize", onResize)
+      document.removeEventListener("scroll", onScroll, true)
     }
   }, [isOpen, updateMenuBox])
 
+  useLayoutEffect(() => {
+    if (!isOpen || confirmOpen || !menuBox) return
+    searchInputRef.current?.focus()
+  }, [isOpen, confirmOpen, menuBox])
+
   useEffect(() => {
-    if (!isOpen) return
+    if (!isOpen || confirmOpen) return
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        if (confirmOpen) return
-        setIsOpen(false)
-      }
+      if (e.key === "Escape") setIsOpen(false)
     }
-    function onPointerDown(e: MouseEvent) {
-      const t = e.target as Node
-      if (confirmOpen) return
-      if (triggerRef.current?.contains(t)) return
-      if (menuRef.current?.contains(t)) return
+    function eventPathContainsMenuOrTrigger(e: Event): boolean {
+      const path =
+        typeof e.composedPath === "function" ? e.composedPath() : []
+      for (const node of path) {
+        if (node === triggerRef.current || node === menuRef.current) return true
+      }
+      const t = e.target
+      if (!(t instanceof Node)) return false
+      if (triggerRef.current?.contains(t)) return true
+      if (menuRef.current?.contains(t)) return true
+      return false
+    }
+    function onPointerDown(e: PointerEvent) {
+      if (eventPathContainsMenuOrTrigger(e)) return
       setIsOpen(false)
     }
-    document.addEventListener("keydown", onKeyDown)
-    document.addEventListener("mousedown", onPointerDown)
+    // Defer so the opening click cannot immediately close the menu.
+    const timer = window.setTimeout(() => {
+      document.addEventListener("keydown", onKeyDown)
+      document.addEventListener("pointerdown", onPointerDown, true)
+    }, 0)
     return () => {
+      window.clearTimeout(timer)
       document.removeEventListener("keydown", onKeyDown)
-      document.removeEventListener("mousedown", onPointerDown)
+      document.removeEventListener("pointerdown", onPointerDown, true)
     }
   }, [isOpen, confirmOpen])
 
@@ -381,15 +520,36 @@ export function DocumentSharedWithPicker(args: {
 
   const menuBody = (
     <>
-      <div className="deal_docs_shared_with_menu_section">
-        <p className="deal_docs_shared_with_menu_heading">Deal classes</p>
-        {dealClasses.length === 0 ? (
-          <p className="deal_docs_shared_with_menu_empty">No deal classes yet.</p>
-        ) : (
-          <ul className="deal_docs_shared_with_menu_list">
-            {dealClasses
-              .filter((c) => c.id.trim())
-              .map((c) => {
+      <div className="deal_docs_shared_with_menu_search_wrap">
+        <input
+          ref={searchInputRef}
+          type="search"
+          className="deal_docs_shared_with_menu_search"
+          value={audienceSearch}
+          onChange={(e) => setAudienceSearch(e.target.value)}
+          placeholder="Search classes, sponsors, investors…"
+          aria-label="Search shared with audience"
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        />
+      </div>
+      <div className="deal_docs_shared_with_menu_scroll">
+        <div className="deal_docs_shared_with_menu_section">
+          <p className="deal_docs_shared_with_menu_heading">Deal classes</p>
+          {dealClasses.length === 0 ? (
+            <p className="deal_docs_shared_with_menu_empty">No deal classes yet.</p>
+          ) : filteredDealClasses.length === 0 ? (
+            <p className="deal_docs_shared_with_menu_empty">
+              No classes match your search.
+            </p>
+          ) : (
+            <ul className="deal_docs_shared_with_menu_list">
+              {filteredDealClasses.map((c) => {
                 const cid = c.id.trim()
                 const checked = classIds.includes(cid)
                 const oid = `${idPrefix}-class-${cid}`
@@ -407,90 +567,118 @@ export function DocumentSharedWithPicker(args: {
                   </li>
                 )
               })}
-          </ul>
-        )}
-      </div>
-      <div className="deal_docs_shared_with_menu_section">
-        <p className="deal_docs_shared_with_menu_heading">
-          {SPONSOR_USER_INVESTORS_MENU_LABEL}
-        </p>
-        {/* <p className="deal_docs_shared_with_menu_sub">
-          Choose a sponsor on this deal. Every investor they added can view this
-          file (and receives notification email when you use the mail icon).
-        </p> */}
-        {sponsorUserOptions.length === 0 ? (
-          <p className="deal_docs_shared_with_menu_empty">
-            No sponsor users on this deal yet.
+            </ul>
+          )}
+        </div>
+        <div className="deal_docs_shared_with_menu_section">
+          <p className="deal_docs_shared_with_menu_heading">
+            {SPONSOR_USER_INVESTORS_MENU_LABEL}
           </p>
-        ) : (
-          <ul className="deal_docs_shared_with_menu_list">
-            {sponsorUserOptions.map((s) => {
-              const sid = s.id.trim()
-              const checked = sponsorUserIds.includes(sid)
-              const oid = `${idPrefix}-sponsor-user-${sid}`
-              const lpCount = lpInvestorsAddedBySponsorUserId(sid, investors).length
-              return (
-                <li key={sid}>
-                  <label className="deal_docs_shared_with_menu_row" htmlFor={oid}>
-                    <input
-                      id={oid}
-                      type="checkbox"
-                      checked={checked}
-                      disabled={allInvestors}
-                      onChange={(e) => onSponsorUserChange(sid, e.target.checked)}
-                    />
-                    <span className="deal_docs_shared_with_menu_inv_label">
-                      <span className="deal_docs_shared_with_menu_inv_name">
-                        {s.label}
-                      </span>
-                      {lpCount > 0 ? (
-                        <span className="deal_docs_shared_with_menu_inv_email">
-                          {lpCount} investor{lpCount === 1 ? "" : "s"} on this deal
-                        </span>
-                      ) : null}
-                    </span>
-                  </label>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-      </div>
-      <div className="deal_docs_shared_with_menu_section">
-        <p className="deal_docs_shared_with_menu_heading">Investors</p>
-        <p className="deal_docs_shared_with_menu_sub">
-          Individual LPs on this deal (Investors tab only).
-        </p>
-        <ul className="deal_docs_shared_with_menu_list">
-          <li key={`${idPrefix}-all-investors`}>
-            <label
-              className="deal_docs_shared_with_menu_row"
-              htmlFor={`${idPrefix}-all-investors-cb`}
-            >
-              <input
-                id={`${idPrefix}-all-investors-cb`}
-                type="checkbox"
-                checked={allInvestors}
-                onChange={(e) => onAllInvestorsChange(e.target.checked)}
-              />
-              <span>All Investors</span>
-            </label>
-          </li>
-          {investors.length === 0 ? (
-            <li className="deal_docs_shared_with_menu_empty_li">
-              <p className="deal_docs_shared_with_menu_empty">
-                No investor rows on this deal yet.
-              </p>
-            </li>
+          <p className="deal_docs_shared_with_menu_sub">
+            Co-sponsor investors are included only when that co-sponsor chose No
+            interrupt. Yes interrupt keeps the file with the co-sponsor.
+          </p>
+          {sponsorUserOptions.length === 0 ? (
+            <p className="deal_docs_shared_with_menu_empty">
+              No sponsor users on this deal yet.
+            </p>
+          ) : filteredSponsorOptions.length === 0 ? (
+            <p className="deal_docs_shared_with_menu_empty">
+              No sponsors match your search.
+            </p>
           ) : (
-            investors
-              .filter((r) => r.id.trim())
-              .map((r) => {
+            <ul className="deal_docs_shared_with_menu_list">
+              {filteredSponsorOptions.map((s) => {
+                const sid = s.id.trim()
+                const checked = sponsorUserIds.includes(sid)
+                const oid = `${idPrefix}-sponsor-user-${sid}`
+                const lpCount = lpInvestorsAddedBySponsorUserId(sid, investors)
+                  .length
+                const includedCount =
+                  lpInvestorsIncludedWhenSharingWithSponsorUser(
+                    sid,
+                    investors,
+                  ).length
+                const holds =
+                  sponsorUserShareInterceptHoldsAtCoSponsor(sid, investors)
+                return (
+                  <li key={sid}>
+                    <label className="deal_docs_shared_with_menu_row" htmlFor={oid}>
+                      <input
+                        id={oid}
+                        type="checkbox"
+                        checked={checked}
+                        disabled={allInvestors}
+                        onChange={(e) => onSponsorUserChange(sid, e.target.checked)}
+                      />
+                      <span className="deal_docs_shared_with_menu_inv_label">
+                        <span className="deal_docs_shared_with_menu_inv_name">
+                          {s.label}
+                        </span>
+                        {holds ? (
+                          <span className="deal_docs_shared_with_menu_inv_email">
+                            You only (Yes interrupt) — {lpCount} investor
+                            {lpCount === 1 ? "" : "s"} not included
+                          </span>
+                        ) : includedCount > 0 ? (
+                          <span className="deal_docs_shared_with_menu_inv_email">
+                            You and {includedCount} investor
+                            {includedCount === 1 ? "" : "s"} (No interrupt)
+                          </span>
+                        ) : lpCount > 0 ? (
+                          <span className="deal_docs_shared_with_menu_inv_email">
+                            {lpCount} investor{lpCount === 1 ? "" : "s"} on this deal
+                          </span>
+                        ) : null}
+                      </span>
+                    </label>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+        <div className="deal_docs_shared_with_menu_section">
+          <p className="deal_docs_shared_with_menu_heading">Investors</p>
+          <p className="deal_docs_shared_with_menu_sub">
+            Individual LPs on this deal (Investors tab only).
+          </p>
+          <ul className="deal_docs_shared_with_menu_list">
+            {(!audienceSearchNorm ||
+              matchesAudienceSearch("all investors", "all")) && (
+              <li key={`${idPrefix}-all-investors`}>
+                <label
+                  className="deal_docs_shared_with_menu_row"
+                  htmlFor={`${idPrefix}-all-investors-cb`}
+                >
+                  <input
+                    id={`${idPrefix}-all-investors-cb`}
+                    type="checkbox"
+                    checked={allInvestors}
+                    onChange={(e) => onAllInvestorsChange(e.target.checked)}
+                  />
+                  <span>All Investors</span>
+                </label>
+              </li>
+            )}
+            {investors.length === 0 ? (
+              <li className="deal_docs_shared_with_menu_empty_li">
+                <p className="deal_docs_shared_with_menu_empty">
+                  No investor rows on this deal yet.
+                </p>
+              </li>
+            ) : filteredInvestors.length === 0 ? (
+              <li className="deal_docs_shared_with_menu_empty_li">
+                <p className="deal_docs_shared_with_menu_empty">
+                  No investors match your search.
+                </p>
+              </li>
+            ) : (
+              filteredInvestors.map((r) => {
                 const iid = r.id.trim()
                 const checked = !allInvestors && investorIds.includes(iid)
                 const oid = `${idPrefix}-inv-${iid}`
-                const email =
-                  r.userEmail && r.userEmail !== "—" ? r.userEmail.trim() : ""
+                const emailShown = displayEmail(r.userEmail)
                 const nm = r.displayName.trim() || "—"
                 return (
                   <li key={iid}>
@@ -506,18 +694,23 @@ export function DocumentSharedWithPicker(args: {
                         <span className="deal_docs_shared_with_menu_inv_name">
                           {nm}
                         </span>
-                        {email ? (
-                          <span className="deal_docs_shared_with_menu_inv_email">
-                            {email}
-                          </span>
-                        ) : null}
+                        <span
+                          className={`deal_docs_shared_with_menu_inv_email${
+                            isDisplayableEmail(r.userEmail)
+                              ? ""
+                              : " um_status_muted"
+                          }`}
+                        >
+                          {emailShown}
+                        </span>
                       </span>
                     </label>
                   </li>
                 )
               })
-          )}
-        </ul>
+            )}
+          </ul>
+        </div>
       </div>
     </>
   )
@@ -536,9 +729,13 @@ export function DocumentSharedWithPicker(args: {
         aria-haspopup="dialog"
         aria-controls={menuId}
         aria-label={`Shared with for ${docName}. ${summary}. ${isOpen ? "Close" : "Open"} to change.`}
-        onClick={() => {
+        onClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
           setIsOpen((o) => !o)
         }}
+        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
       >
         <span className="deal_docs_shared_with_summary_text">{summary}</span>
       </button>
@@ -560,6 +757,8 @@ export function DocumentSharedWithPicker(args: {
                 zIndex: 13000,
               }}
               onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
               onKeyDown={(e) => e.stopPropagation()}
             >
               <div className="deal_docs_shared_with_menu_top">
@@ -576,7 +775,10 @@ export function DocumentSharedWithPicker(args: {
                       openNotifyConfirm()
                     }}
                   >
-                    <Mail size={16} strokeWidth={2} aria-hidden />
+                    <Mail size={15} strokeWidth={2} aria-hidden />
+                    <span className="deal_docs_shared_with_mail_btn_label">
+                      Send
+                    </span>
                   </button>
                 ) : null}
               </div>
@@ -619,24 +821,20 @@ export function DocumentSharedWithPicker(args: {
                 </div>
                 <div className="deals_add_inv_modal_scroll">
                   <p className="deal_offering_muted">
-                    The following {notifyRecipients.length === 1 ? "person" : "people"}{" "}
+                    The following {notifyPeople.length === 1 ? "person" : "people"}{" "}
                     will receive an email that{" "}
                     <strong>{docName}</strong> was shared with them on this deal:
                   </p>
                   <ul className="deal_docs_shared_notify_recipient_list">
-                    {notifyRecipients.map((r) => (
-                      <li key={r.to_email}>
-                        {r.member_display_name ? (
-                          <>
-                            <strong>{r.member_display_name}</strong>
-                            <span className="deal_docs_shared_notify_recipient_email">
-                              {" "}
-                              ({r.to_email})
-                            </span>
-                          </>
-                        ) : (
-                          r.to_email
-                        )}
+                    {notifyPeople.map((r) => (
+                      <li key={r.key}>
+                        <strong>{r.name}</strong>
+                        {r.email ? (
+                          <span className="deal_docs_shared_notify_recipient_email">
+                            {" "}
+                            ({r.email})
+                          </span>
+                        ) : null}
                       </li>
                     ))}
                   </ul>

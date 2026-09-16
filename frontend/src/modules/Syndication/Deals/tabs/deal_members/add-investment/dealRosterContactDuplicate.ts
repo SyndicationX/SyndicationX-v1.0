@@ -30,7 +30,10 @@ export function isContactAlreadyOnDealRoster(
   return false
 }
 
-export function alreadyAddedOptionLabel(baseLabel: string): ReactNode {
+export function rosterDropdownOptionSuffixLabel(
+  baseLabel: string,
+  suffix: string,
+): ReactNode {
   return createElement(
     "span",
     { className: "portal_dropdown_select_option_label_row" },
@@ -42,7 +45,76 @@ export function alreadyAddedOptionLabel(baseLabel: string): ReactNode {
     createElement(
       "span",
       { className: "portal_dropdown_select_option_suffix" },
-      "Already added",
+      suffix,
     ),
   )
+}
+
+export function alreadyAddedOptionLabel(baseLabel: string): ReactNode {
+  return rosterDropdownOptionSuffixLabel(baseLabel, "Already added")
+}
+
+export function contactIsArchived(contact: { status?: string }): boolean {
+  const s = String(contact.status ?? "").trim().toLowerCase()
+  return s === "suspended" || s === "archived"
+}
+
+export function directoryMemberIsInactive(row: Record<string, unknown>): boolean {
+  const s = String(row.userStatus ?? row.user_status ?? "")
+    .trim()
+    .toLowerCase()
+  return s === "inactive" || s === "suspended"
+}
+
+export type RosterDropdownOptionMeta = {
+  disabled: boolean
+  labelContent: ReactNode
+}
+
+export function buildContactRosterDropdownOption(
+  baseLabel: string,
+  contact: { status?: string },
+  onDeal: boolean,
+  extraDisabled = false,
+): RosterDropdownOptionMeta {
+  if (onDeal) {
+    return {
+      disabled: true,
+      labelContent: alreadyAddedOptionLabel(baseLabel),
+    }
+  }
+  if (contactIsArchived(contact)) {
+    return {
+      disabled: false,
+      labelContent: rosterDropdownOptionSuffixLabel(baseLabel, "Archived"),
+    }
+  }
+  return {
+    disabled: extraDisabled,
+    labelContent: rosterDropdownOptionSuffixLabel(baseLabel, "Active"),
+  }
+}
+
+export function buildDirectoryMemberRosterDropdownOption(
+  baseLabel: string,
+  userRow: Record<string, unknown>,
+  onDeal: boolean,
+  extraDisabled = false,
+): RosterDropdownOptionMeta {
+  if (onDeal) {
+    return {
+      disabled: true,
+      labelContent: alreadyAddedOptionLabel(baseLabel),
+    }
+  }
+  if (directoryMemberIsInactive(userRow)) {
+    return {
+      disabled: false,
+      labelContent: rosterDropdownOptionSuffixLabel(baseLabel, "Inactive"),
+    }
+  }
+  return {
+    disabled: extraDisabled,
+    labelContent: rosterDropdownOptionSuffixLabel(baseLabel, "Active"),
+  }
 }

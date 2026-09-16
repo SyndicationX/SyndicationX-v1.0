@@ -178,20 +178,50 @@ function minimumInvestmentDisplayFromClasses(
   return formatUsdDashboardAmount(minVal)
 }
 
+function resolveDistributedTotalDisplay(
+  listRow: DealListRow,
+  base: DealRecord,
+  totalDistributed?: number,
+): string {
+  if (totalDistributed != null && Number.isFinite(totalDistributed)) {
+    return totalDistributed === 0
+      ? formatUsdDashboardAmount(0)
+      : formatUsdDashboardAmount(totalDistributed)
+  }
+  const fromList = String(listRow.distributions ?? "").trim()
+  if (fromList && fromList !== "—") {
+    const n = parseMoneyDigits(fromList)
+    if (Number.isFinite(n)) return formatUsdDashboardAmount(n)
+  }
+  const fromBase = String(base.totalDistributions ?? "").trim()
+  if (fromBase && fromBase !== "—") {
+    const n = parseMoneyDigits(fromBase)
+    if (Number.isFinite(n)) return formatUsdDashboardAmount(n)
+  }
+  return formatUsdDashboardAmount(0)
+}
+
 /**
  * Merge investors payload + optional investor classes into a dashboard deal row.
- * Target = sum of class offering sizes, else list raise target. Distributions = accepted sum.
+ * Target = sum of class offering sizes, else list raise target.
+ * Distributions = completed distribution cash (pass `totalDistributed`), not accepted capital.
  */
 export function mergeDealRecordWithInvestorsAndClasses(
   listRow: DealListRow,
   base: DealRecord,
   payload: DealInvestorsPayload | undefined | null,
   classes: DealInvestorClass[] | undefined | null,
+  options?: { totalDistributed?: number },
 ): DealRecord {
   const cls = classes ?? []
   const targetNum = targetAmountNumberForDeal(listRow, cls)
   const targetAmount =
     targetNum === 0 ? "$0" : formatUsdDashboardAmount(targetNum)
+  const totalDistributions = resolveDistributedTotalDisplay(
+    listRow,
+    base,
+    options?.totalDistributed,
+  )
 
   let investmentTypeDisplay = base.investmentTypeDisplay ?? "—"
   let propertyTypeDisplay = base.propertyTypeDisplay ?? "—"
@@ -211,7 +241,7 @@ export function mergeDealRecordWithInvestorsAndClasses(
       targetAmount,
       totalAccepted: formatUsdDashboardAmount(0),
       totalFunded: formatUsdDashboardAmount(0),
-      totalDistributions: formatUsdDashboardAmount(0),
+      totalDistributions,
       investorCount: formatInvestorCountDisplay("0"),
       investmentTypeDisplay,
       propertyTypeDisplay,
@@ -225,13 +255,8 @@ export function mergeDealRecordWithInvestorsAndClasses(
   const remaining = Math.max(0, targetNum - acceptedNum)
   const totalInProgress = remaining === 0 ? "$0" : formatUsdDashboardAmount(remaining)
 
-  const rawInv = String(listRow.investors ?? "").trim()
-  const countFromList =
-    rawInv && rawInv !== "—"
-      ? rawInv.replace(/[^\d]/g, "")
-      : ""
   const investorCountDisplay = formatInvestorCountDisplay(
-    countFromList !== "" ? countFromList : String(payload.investors.length),
+    String(payload.investors.length),
   )
 
   return {
@@ -239,7 +264,7 @@ export function mergeDealRecordWithInvestorsAndClasses(
     targetAmount,
     totalAccepted: formatUsdDashboardAmount(acceptedNum),
     totalFunded: formatUsdDashboardAmount(fundedNum),
-    totalDistributions: formatUsdDashboardAmount(acceptedNum),
+    totalDistributions,
     investorCount: investorCountDisplay,
     totalInProgress,
     investmentTypeDisplay,

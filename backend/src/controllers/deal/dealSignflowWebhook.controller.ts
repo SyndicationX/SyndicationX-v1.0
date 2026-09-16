@@ -1,6 +1,11 @@
 import type { Request, Response } from "express";
 import { getSignFlowConfig } from "../../config/signflow.config.js";
 import { parseSignFlowWebhookBody } from "../../services/esign/signflowWebhookParse.service.js";
+import {
+  isSignFlowWebhookVerificationRequired,
+  verifySignFlowWebhookSignature,
+} from "../../services/esign/signflowWebhookVerify.service.js";
+import type { RawBodyRequest } from "../../middleware/signflowWebhook.middleware.js";
 import { applyInvestmentSignatureWebhookEvent } from "../../services/investment/investmentSignature.service.js";
 import { handleDealInvestorEsignWebhook } from "../../services/deal/dealMemberEsignCompletion.service.js";
 import { findInvestorEsignContextBySignatureRequestId } from "../../services/deal/dealMemberEsignStatus.service.js";
@@ -9,13 +14,26 @@ import { findInvestorEsignContextBySignatureRequestId } from "../../services/dea
  * POST /webhooks/signflow
  * POST /api/webhooks/signflow
  *
- * SignFlow event callback (no JWT). Updates `investment_signatures` and
- * legacy `esign_status_json` rows when documents are viewed or completed.
+ * SignFlow event callback (no JWT). Verifies HMAC signature when required.
  */
 export async function postSignFlowWebhook(
   req: Request,
   res: Response,
 ): Promise<void> {
+  const rawReq = req as RawBodyRequest;
+  if (isSignFlowWebhookVerificationRequired()) {
+    const rawBody = rawReq.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
+    const valid = verifySignFlowWebhookSignature({
+      headers: req.headers as Record<string, unknown>,
+      rawBody,
+    });
+    if (!valid) {
+      console.error("[signflow webhook] signature verification failed");
+      res.sendStatus(401);
+      return;
+    }
+  }
+
   const parsed = parseSignFlowWebhookBody(req.body);
   if (!parsed) {
     console.warn("[signflow webhook] unparseable payload");

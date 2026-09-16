@@ -183,7 +183,29 @@ export function InvestmentEsignSignModal({
             ) : null}
 
             {error && phase === "error" ? (
-              waitingFor ? (
+              waitingFor === "prior_investor" ? (
+                <div
+                  className="deal_esign_sign_gate_notice"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="deal_esign_sign_gate_icon" aria-hidden>
+                    <Clock3 size={18} strokeWidth={2} />
+                  </span>
+                  <div className="deal_esign_sign_gate_copy">
+                    <p className="deal_esign_sign_gate_title">
+                      Not ready to sign yet
+                    </p>
+                    <p className="deal_esign_sign_gate_message">
+                      Your documents are not ready for signature yet.
+                    </p>
+                    <p className="deal_esign_sign_gate_hint">
+                      You can close this window. We will email you and show an
+                      alert here when your documents are ready to sign.
+                    </p>
+                  </div>
+                </div>
+              ) : waitingFor ? (
                 <div
                   className="deal_esign_sign_gate_notice"
                   role="status"

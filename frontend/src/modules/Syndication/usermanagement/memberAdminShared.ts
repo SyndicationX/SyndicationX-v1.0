@@ -186,6 +186,19 @@ export const COMPANY_EDIT_ROLE_OPTIONS: { value: string; label: string }[] = [
  * Human-readable role name for the members table, modals, export, and search.
  * Aligns with invite/edit options and the Role Definitions panel.
  */
+/** Company Members / Org Members: staff + platform roles only (not investor / deal participant). */
+const ORG_STAFF_PORTAL_ROLES = new Set([
+  "company_admin",
+  "company_user",
+  "platform_admin",
+  "platform_user",
+  "user",
+]);
+
+export function isOrgStaffPortalRole(role: unknown): boolean {
+  return ORG_STAFF_PORTAL_ROLES.has(String(role ?? "").trim().toLowerCase());
+}
+
 export function memberRoleDisplayName(role: unknown): string {
   const r = String(role ?? "").trim().toLowerCase();
   if (!r) return "—";
@@ -479,6 +492,9 @@ export function memberRowIsInactive(row: Record<string, unknown>): boolean {
   const s = String(row.userStatus ?? "").trim().toLowerCase();
   return s === "suspended" || s === "inactive";
 }
+
+export const INACTIVE_MEMBER_CANNOT_ADD_TO_DEAL_MESSAGE =
+  "Inactive company users cannot be added to general partners or investors.";
 
 export function memberInvitePending(row: Record<string, unknown>): boolean {
   const v = String(

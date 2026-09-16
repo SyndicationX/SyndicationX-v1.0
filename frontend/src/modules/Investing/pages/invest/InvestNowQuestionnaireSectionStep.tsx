@@ -1,4 +1,5 @@
 import {
+  isInvestorQuestionnaireQuestionVisible,
   questionsForSection,
   resolveQuestionForDisplay,
   type InvestorQuestionnaireConfig,
@@ -31,9 +32,9 @@ export function InvestNowQuestionnaireSectionStep({
   onAnswersChange,
 }: InvestNowQuestionnaireSectionStepProps) {
   const titleId = `invest-now-q-${step.sectionId}`
-  const questions = questionsForSection(config.questions, step.sectionId).map(
-    resolveQuestionForDisplay,
-  )
+  const questions = questionsForSection(config.questions, step.sectionId)
+    .map(resolveQuestionForDisplay)
+    .filter((question) => isInvestorQuestionnaireQuestionVisible(question, answers))
 
   return (
     <InvestNowStepLayout

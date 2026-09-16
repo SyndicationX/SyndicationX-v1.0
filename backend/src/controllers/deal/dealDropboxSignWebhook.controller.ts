@@ -26,27 +26,39 @@ export async function postDropboxSignWebhook(
   }
 
   const cfg = getDropboxSignConfig();
-  if (cfg && parsed.eventHash) {
-    const valid = verifyDropboxSignEventHash({
-      apiKey: cfg.apiKey,
-      eventTime: parsed.eventTime,
-      eventType: parsed.eventType,
-      eventHash: parsed.eventHash,
-    });
-    if (!valid) {
-      console.error(
-        "[dropbox-sign webhook] event_hash verification failed",
+  const production = process.env.NODE_ENV === "production";
+
+  if (cfg) {
+    if (!parsed.eventHash) {
+      if (production) {
+        console.error(
+          "[dropbox-sign webhook] missing event_hash — rejected in production",
+          parsed.eventType,
+        );
+        res.status(200).send(DROPBOX_WEBHOOK_ACK);
+        return;
+      }
+      console.warn(
+        "[dropbox-sign webhook] missing event_hash — allowed in non-production only",
         parsed.eventType,
-        parsed.signatureRequestId,
       );
-      res.status(200).send(DROPBOX_WEBHOOK_ACK);
-      return;
+    } else {
+      const valid = verifyDropboxSignEventHash({
+        apiKey: cfg.apiKey,
+        eventTime: parsed.eventTime,
+        eventType: parsed.eventType,
+        eventHash: parsed.eventHash,
+      });
+      if (!valid) {
+        console.error(
+          "[dropbox-sign webhook] event_hash verification failed",
+          parsed.eventType,
+          parsed.signatureRequestId,
+        );
+        res.status(200).send(DROPBOX_WEBHOOK_ACK);
+        return;
+      }
     }
-  } else if (cfg && !parsed.eventHash) {
-    console.warn(
-      "[dropbox-sign webhook] missing event_hash — processing anyway (configure test events with hash)",
-      parsed.eventType,
-    );
   }
 
   try {

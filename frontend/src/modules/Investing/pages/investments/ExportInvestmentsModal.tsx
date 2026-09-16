@@ -5,6 +5,7 @@ import { toast } from "@/common/components/Toast"
 import { buildTableExportFilename, downloadTableExportCsv } from "@/common/utils/tableExportFilename"
 import { dealStageLabel } from "@/modules/Syndication/dealsDashboardUtils"
 import type { InvestmentListRow } from "./investments.types"
+import { formatAmountNumberExport } from "@/modules/Syndication/Deals/utils/offeringMoneyFormat"
 import "@/modules/Syndication/Deals/components/export-deals-modal.css"
 
 function buildInvestmentsExportCsv(rows: InvestmentListRow[]): string {
@@ -44,8 +45,8 @@ function buildInvestmentsExportCsv(rows: InvestmentListRow[]): string {
         esc(r.startDateDisplay ?? ""),
         esc(r.dealCloseDate),
         esc(r.investmentProfile),
-        esc(String(r.investedAmount)),
-        esc(String(r.distributedAmount)),
+        esc(formatAmountNumberExport(r.investedAmount)),
+        esc(formatAmountNumberExport(r.distributedAmount)),
         esc(r.currentValuation),
         esc(r.actionRequired),
       ].join(","),
@@ -267,7 +268,7 @@ export function ExportInvestmentsModal({
         <ExportModalFooter onClose={onClose}>
           <button
             type="button"
-            className="deals_export_modal_btn_secondary"
+            className="um_btn_secondary"
             onClick={handleExportSelected}
             disabled={selectedIds.size === 0}
           >
@@ -275,7 +276,7 @@ export function ExportInvestmentsModal({
           </button>
           <button
             type="button"
-            className="deals_export_modal_btn_primary"
+            className="um_btn_primary"
             onClick={handleExportAll}
             disabled={investments.length === 0}
           >

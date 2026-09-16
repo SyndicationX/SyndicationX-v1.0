@@ -11,6 +11,7 @@ function IdleSessionGuard() {
 }
 
 function AuthBootstrap() {
+  const location = useLocation();
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -22,7 +23,7 @@ function AuthBootstrap() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [location.key]);
   return null;
 }
 

@@ -1,5 +1,3 @@
-import { access, readFile } from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
 import { getDropboxSignConfig } from "../../config/dropboxSign.config.js";
 import {
   createEmbeddedTemplateDraft,
@@ -13,6 +11,7 @@ import {
   findEsignTemplateFile,
   getDealEsignTemplatesState,
   isPdfEsignFile,
+  readEsignTemplatePdfBuffer,
   type EsignTemplateFileRecord,
   type EsignTemplatesJson,
 } from "./dealEsignTemplates.service.js";
@@ -130,19 +129,12 @@ export async function startDealEsignEmbeddedTemplateDraft(params: {
     );
   }
 
-  const { absolutePath: absPath } = await ensureEsignTemplatePdfPrepared(
+  await ensureEsignTemplatePdfPrepared(
     params.dealId,
     file,
     state,
   );
-  try {
-    await access(absPath, fsConstants.R_OK);
-  } catch {
-    throw new Error(
-      "Template PDF was not found on the server. Remove this template and upload it again.",
-    );
-  }
-  const fileBuffer = await readFile(absPath);
+  const fileBuffer = await readEsignTemplatePdfBuffer(file.relativePath);
 
   const title =
     params.title?.trim() ||

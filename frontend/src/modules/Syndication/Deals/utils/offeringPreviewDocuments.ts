@@ -8,8 +8,11 @@ import {
   setRuntimeOfferingPreviewFlatDocuments,
 } from "./offeringPreviewRuntimeStore"
 
-/** Mirrors section “Shared with”; drives who sees the doc on Preview offering + shared link. */
-export type OfferingPreviewDocSharedWithScope = "lp_investor" | "offering_page"
+/** Mirrors document Visibility; drives who sees the doc on Preview offering + shared link. */
+export type OfferingPreviewDocSharedWithScope =
+  | "lp_investor"
+  | "offering_page"
+  | "not_visible"
 
 export type OfferingPreviewDocument = {
   id: string
@@ -18,8 +21,9 @@ export type OfferingPreviewDocument = {
   /** Optional; shown in sponsor workspace table */
   dateAdded?: string
   /**
-   * `offering_page` (default): Preview offering, shared offering link, and portal LPs.
+   * `offering_page`: Preview offering, shared offering link, and portal LPs.
    * `lp_investor`: LP portal only — omitted from Preview offering and the offering link.
+   * `not_visible`: hidden from offering link, preview, and LP portal (sponsor workspace only).
    */
   sharedWithScope?: OfferingPreviewDocSharedWithScope
 }
@@ -55,7 +59,9 @@ function normalizeDoc(raw: unknown): OfferingPreviewDocument | null {
       ? "lp_investor"
       : sw === "offering_page"
         ? "offering_page"
-        : undefined
+        : sw === "not_visible"
+          ? "not_visible"
+          : undefined
   return {
     id,
     name,

@@ -254,37 +254,59 @@ export function DropdownSelect({
     const vh = window.innerHeight
     const gap = 4
     const pad = 8
-    let width = Math.min(r.width, vw - pad * 2)
+    const panel = panelRef.current
+    const measuredW = panel?.offsetWidth ?? 0
+    const width = Math.min(Math.max(r.width, measuredW), vw - pad * 2)
     let left = r.left
     if (left + width > vw - pad) left = vw - pad - width
     if (left < pad) left = pad
 
-    const belowTop = r.bottom + gap
-    const spaceBelow = vh - belowTop - pad
-    let top = belowTop
-    let maxHeight = Math.min(280, Math.max(80, spaceBelow))
-
-    if (spaceBelow < 100 && r.top > gap + pad + 80) {
-      const spaceAbove = r.top - gap - pad
-      maxHeight = Math.min(280, Math.max(80, spaceAbove))
-      top = Math.max(pad, r.top - gap - maxHeight)
+    const spaceBelow = vh - r.bottom - gap - pad
+    const spaceAbove = r.top - gap - pad
+    const openBelow = spaceBelow >= 96 || spaceBelow >= spaceAbove
+    const available = openBelow ? spaceBelow : spaceAbove
+    const maxHeight = Math.min(280, Math.max(48, available))
+    let top = openBelow ? r.bottom + gap : r.top - gap - maxHeight
+    if (panel) {
+      const ph = Math.min(panel.offsetHeight, maxHeight)
+      if (top + ph > vh - pad) top = Math.max(pad, vh - pad - ph)
     }
+    top = Math.max(pad, Math.min(top, vh - pad - maxHeight))
 
-    setFixedPanelStyle({
-      position: "fixed",
+    const next = {
+      position: "fixed" as const,
       top,
       left,
       width,
+      minWidth: 0,
       maxWidth: `calc(100vw - ${pad * 2}px)`,
       maxHeight,
-      boxSizing: "border-box",
+      boxSizing: "border-box" as const,
       zIndex: 13000,
+      overflowX: "hidden" as const,
+      overflowY: "auto" as const,
+    }
+    setFixedPanelStyle((prev) => {
+      if (
+        prev.top === next.top &&
+        prev.left === next.left &&
+        prev.width === next.width &&
+        prev.maxHeight === next.maxHeight
+      )
+        return prev
+      return next
     })
   }, [useFixedPanel, open])
 
   useLayoutEffect(() => {
     syncFixedPanelPosition()
-  }, [syncFixedPanelPosition, open, value, flatOptions.length, searchQuery])
+    if (!open || !useFixedPanel) return
+    const panel = panelRef.current
+    if (!panel || typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(() => syncFixedPanelPosition())
+    ro.observe(panel)
+    return () => ro.disconnect()
+  }, [syncFixedPanelPosition, open, value, flatOptions.length, searchQuery, useFixedPanel])
 
   useEffect(() => {
     if (!open || !useFixedPanel) return

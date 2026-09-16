@@ -5,6 +5,7 @@ import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
 } from "react"
 import { createPortal } from "react-dom"
@@ -26,13 +27,18 @@ import {
   MapPin,
   Phone,
   Search,
-  Plus,
   UserPlus,
   UserRound,
   X,
   Save,
 } from "lucide-react"
 import { FormHeadingWithInfo } from "@/common/components/form-heading/FormHeadingWithInfo"
+import { scrollMultiStepFormToTopAfterUpdate } from "@/common/utils/scrollToFirstFormError"
+import { getApiV1Base } from "@/common/utils/apiBaseUrl"
+import {
+  abaRoutingNumberFieldError,
+  digitsFromAbaRoutingInput,
+} from "@/common/bank/usAbaRoutingNumber"
 import { UsPhoneInput } from "@/common/components/UsPhoneInput"
 import { toast } from "@/common/components/Toast"
 import {
@@ -46,8 +52,20 @@ import { AddBeneficiaryModal } from "./AddBeneficiaryModal"
 import {
   type ProfileBookSnapshot,
   postBeneficiary,
+  postInvestorProfile,
   postSavedAddress,
+  putInvestorProfile,
 } from "./investingProfileBookApi"
+import {
+  ADD_PROFILE_WIZARD_STEP_KEY,
+  addProfileDraftHasContent,
+  AUTOSAVE_DEFAULT_PROFILE_NAME,
+  clearAddProfileDraft,
+  loadAddProfileDraft,
+  notifyProfileBookRefetch,
+  readWizardStepFromSavedForm,
+  saveAddProfileDraft,
+} from "./addProfileFormDraftStorage"
 import type { AddressFormDraft } from "./address.types"
 import {
   getEmailFieldError,
@@ -55,12 +73,15 @@ import {
 } from "./profileContactValidation"
 import { BENEFICIARY_LEGAL_DISCLAIMER } from "./beneficiary-legal"
 import { formatSsnItinInput, ssnItinFieldError } from "@/common/tax/usSsnItin"
+import { SsnItinMaskedInput } from "@/common/components/SsnItinMaskedInput"
+import { ssnFromAnyInvestorProfile } from "@/modules/Investing/pages/invest/investNowW9FormUtils"
 import { InvestingFormField } from "./InvestingFormField"
 import { SavedAddressSelect } from "./SavedAddressSelect"
 import { YesNoCardRadioGroup } from "@/common/components/YesNoCardRadioGroup/YesNoCardRadioGroup"
 import { DealsCreateDropdownSelect } from "@/modules/Syndication/Deals/components/DealsCreateDropdownSelect"
 import type { SavedAddress } from "./address.types"
 import type {
+  InvestorProfileDistributionBank,
   InvestorProfileListRow,
   NewInvestorProfilePayload,
   UpdateInvestorProfilePayload,
@@ -76,7 +97,8 @@ import "@/modules/Syndication/contacts/contacts.css"
 import "@/modules/Syndication/usermanagement/user_management.css"
 import "./add-investor-profile-modal.css"
 import "./investing-profiles-form-modals.css"
-import "./investing-profiles-form-modals.css"
+
+/* @refresh reset */
 
 const PROFILE_TYPE_INDIVIDUAL = "Individual"
 const PROFILE_TYPE_JOINT_TENANCY = "Joint tenancy"
@@ -195,10 +217,36 @@ const initialState = {
 
 type FormState = typeof initialState
 
+function mergeKnownSsnIntoForm(
+  form: FormState,
+  existingProfiles: InvestorProfileListRow[],
+): FormState {
+  if (form.ssn.trim()) return form
+  const knownSsn = ssnFromAnyInvestorProfile(existingProfiles)
+  if (!knownSsn) return form
+  return { ...form, ssn: knownSsn }
+}
+
+function addProfileFormWithKnownSsn(
+  existingProfiles: InvestorProfileListRow[],
+): FormState {
+  return mergeKnownSsnIntoForm(initialState, existingProfiles)
+}
+
 const FORM_STATE_KEYS = Object.keys(initialState) as (keyof FormState)[]
 
 function formToJsonSnapshot(f: FormState): Record<string, unknown> {
   return JSON.parse(JSON.stringify(f)) as Record<string, unknown>
+}
+
+function profileWizardStateForPersist(
+  f: FormState,
+  wizardStep: number,
+): Record<string, unknown> {
+  return {
+    ...formToJsonSnapshot(normalizeFormPhonesForPersist(f)),
+    [ADD_PROFILE_WIZARD_STEP_KEY]: wizardStep,
+  }
 }
 
 /** Persist U.S. phones as E.164 in wizard JSON (`phone2`, `beneficiary.phone`). */
@@ -221,32 +269,293 @@ function profileTypeSelectValue(f: FormState): string {
   return PROFILE_TYPE_ENTITY_LLC_CORP_TRUST
 }
 
+function parseSavedWizardObject(raw: unknown): Record<string, unknown> | null {
+  let v: unknown = raw
+  if (typeof v === "string") {
+    const t = v.trim()
+    if (!t) return null
+    try {
+      v = JSON.parse(t) as unknown
+    } catch {
+      return null
+    }
+  }
+  if (v == null || typeof v !== "object" || Array.isArray(v)) return null
+  const rec = v as Record<string, unknown>
+  const inner = rec.form
+  if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+    const formRec = inner as Record<string, unknown>
+    if (
+      "firstName" in formRec ||
+      "first_name" in formRec ||
+      "profileType" in formRec ||
+      "profile_type" in formRec ||
+      "entityLegalName" in formRec ||
+      "legalIraName" in formRec
+    ) {
+      if (
+        ADD_PROFILE_WIZARD_STEP_KEY in rec &&
+        !(ADD_PROFILE_WIZARD_STEP_KEY in formRec)
+      ) {
+        return {
+          ...formRec,
+          [ADD_PROFILE_WIZARD_STEP_KEY]: rec[ADD_PROFILE_WIZARD_STEP_KEY],
+        }
+      }
+      return formRec
+    }
+  }
+  return rec
+}
+
+function wizardFieldValue(
+  src: Record<string, unknown>,
+  camelKey: string,
+): unknown {
+  if (Object.prototype.hasOwnProperty.call(src, camelKey)) return src[camelKey]
+  const snake = camelKey.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
+  if (snake !== camelKey && Object.prototype.hasOwnProperty.call(src, snake)) {
+    return src[snake]
+  }
+  return undefined
+}
+
+function coerceFormString(v: unknown): string {
+  if (v == null) return ""
+  if (typeof v === "string") return v
+  if (typeof v === "number" && Number.isFinite(v)) return String(v)
+  if (typeof v === "boolean") return v ? "yes" : "no"
+  return ""
+}
+
+function isPresentFormValue(v: unknown): boolean {
+  if (v == null) return false
+  if (typeof v === "string") return v.trim().length > 0
+  if (typeof v === "boolean" || typeof v === "number") return true
+  if (Array.isArray(v)) return v.length > 0
+  if (typeof v === "object") return true
+  return false
+}
+
+function normalizeDistributionMethodValue(v: unknown): DistributionMethod | "" {
+  const t = coerceFormString(v).trim().toLowerCase()
+  if (t === "ach" || t === "check" || t === "other") return t
+  return ""
+}
+
+function normalizeMailingAddressModeValue(
+  v: unknown,
+): FormState["mailingAddressMode"] | "" {
+  const t = coerceFormString(v).trim()
+  if (t === "add_new" || t === "same_as_tax") return t
+  return ""
+}
+
+function normalizeYesNoValue(v: unknown): "" | "yes" | "no" {
+  const t = coerceFormString(v).trim().toLowerCase()
+  if (t === "yes" || t === "true" || t === "1") return "yes"
+  if (t === "no" || t === "false" || t === "0") return "no"
+  return ""
+}
+
+function normalizeDateInputValue(v: unknown): string {
+  const t = coerceFormString(v).trim()
+  if (!t) return ""
+  const isoDay = t.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (isoDay) return isoDay[1]!
+  const ms = Date.parse(t)
+  if (Number.isNaN(ms)) return t
+  const d = new Date(ms)
+  const y = d.getUTCFullYear()
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0")
+  const day = String(d.getUTCDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+function restoreBeneficiaryDraft(raw: unknown): BeneficiaryDraft | null {
+  if (raw == null) return null
+  if (typeof raw !== "object" || Array.isArray(raw)) return null
+  const b = raw as Record<string, unknown>
+  const phoneRaw = coerceFormString(b.phone ?? b.phone_number)
+  return {
+    fullName: coerceFormString(b.fullName ?? b.full_name),
+    relationship: coerceFormString(b.relationship),
+    taxId: formatSsnItinInput(coerceFormString(b.taxId ?? b.tax_id)),
+    phone: nationalDigitsFromStoredPhone(phoneRaw),
+    email: coerceFormString(b.email),
+    addressQuery: coerceFormString(b.addressQuery ?? b.address_query),
+  }
+}
+
 /**
- * Merge saved `profile_wizard_state` (same shape as `FormState`) into a partial; unknown keys are ignored.
+ * Merge saved `profile_wizard_state` (same shape as `FormState`) into a partial.
+ * Parses JSON strings, nested `{ form }` wrappers, and snake_case keys. Empty
+ * strings are omitted so list-row seed / defaults can fill gaps.
  */
 function partialFormFromSavedWizard(raw: unknown): Partial<FormState> {
-  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
-    return {}
-  }
-  const src = raw as Record<string, unknown>
+  const src = parseSavedWizardObject(raw)
+  if (!src) return {}
   const out: Partial<FormState> = {}
   for (const k of FORM_STATE_KEYS) {
-    if (!(k in src)) continue
-    const v = src[k as string]
+    const v = wizardFieldValue(src, k as string)
+    if (v === undefined) continue
     if (k === "beneficiary") {
-      if (v == null) out.beneficiary = null
-      else if (typeof v === "object" && !Array.isArray(v)) {
-        out.beneficiary = v as BeneficiaryDraft
-      }
+      if (v == null) continue
+      const restored = restoreBeneficiaryDraft(v)
+      if (restored) out.beneficiary = restored
       continue
     }
-    if (k === "phone2" && typeof v === "string") {
-      out.phone2 = nationalDigitsFromStoredPhone(v)
+    if (k === "phone2") {
+      const digits = nationalDigitsFromStoredPhone(coerceFormString(v))
+      if (digits) out.phone2 = digits
       continue
     }
-    (out as Record<string, unknown>)[k] = v
+    if (k === "distributionMethod") {
+      const method = normalizeDistributionMethodValue(v)
+      if (method) out.distributionMethod = method
+      continue
+    }
+    if (k === "mailingAddressMode") {
+      const mode = normalizeMailingAddressModeValue(v)
+      if (mode) out.mailingAddressMode = mode
+      continue
+    }
+    if (
+      k === "entityOwnedByIra401k" ||
+      k === "entityDisregarded" ||
+      k === "custodianIra"
+    ) {
+      const yn = normalizeYesNoValue(v)
+      if (yn) (out as Record<string, unknown>)[k] = yn
+      continue
+    }
+    if (k === "entityDateFormed") {
+      const day = normalizeDateInputValue(v)
+      if (day) out.entityDateFormed = day
+      continue
+    }
+    if (k === "ssn" || k === "spouseSsn") {
+      const formatted = formatSsnItinInput(coerceFormString(v))
+      if (formatted) (out as Record<string, unknown>)[k] = formatted
+      continue
+    }
+    if (k === "entityEinVisible" || k === "iraPartnerEinVisible" || k === "iraCustodianEinVisible") {
+      if (typeof v === "boolean") (out as Record<string, unknown>)[k] = v
+      continue
+    }
+    if (!isPresentFormValue(v)) continue
+    if (typeof v === "string" || typeof v === "number") {
+      (out as Record<string, unknown>)[k] = coerceFormString(v)
+    } else {
+      (out as Record<string, unknown>)[k] = v
+    }
   }
   return out
+}
+
+function normalizeProfileTypeFromListRow(raw: string): Partial<FormState> {
+  const t = raw.trim()
+  if (!t) return {}
+  if (t === PROFILE_TYPE_INDIVIDUAL) {
+    return { profileType: PROFILE_TYPE_INDIVIDUAL }
+  }
+  if (t === PROFILE_TYPE_JOINT_TENANCY) {
+    return { profileType: PROFILE_TYPE_JOINT_TENANCY }
+  }
+  if (t === PROFILE_TYPE_ENTITY) {
+    return { profileType: PROFILE_TYPE_ENTITY }
+  }
+  const lower = t.toLowerCase()
+  if (lower.includes("custodian")) {
+    return { profileType: PROFILE_TYPE_ENTITY, custodianIra: "yes" }
+  }
+  if (lower.includes("joint")) {
+    return { profileType: PROFILE_TYPE_JOINT_TENANCY }
+  }
+  if (
+    lower.includes("llc") ||
+    lower.includes("corp") ||
+    lower.includes("partnership") ||
+    lower.includes("trust") ||
+    lower.includes("checkbook")
+  ) {
+    return { profileType: PROFILE_TYPE_ENTITY, custodianIra: "no" }
+  }
+  return { profileType: t }
+}
+
+function mergeDistributionBankIntoForm(
+  form: FormState,
+  bank: InvestorProfileDistributionBank | undefined,
+): FormState {
+  if (!bank) return form
+  const method =
+    normalizeDistributionMethodValue(form.distributionMethod) ||
+    normalizeDistributionMethodValue(bank.distributionMethod)
+  return {
+    ...form,
+    distributionMethod: method || form.distributionMethod,
+    achRoutingNumber:
+      form.achRoutingNumber.trim() || bank.achRoutingNumber || form.achRoutingNumber,
+    achAccountNumber:
+      form.achAccountNumber.trim() || bank.achAccountNumber || form.achAccountNumber,
+    achBankAddress:
+      form.achBankAddress.trim() || bank.achBankAddress || form.achBankAddress,
+    achBankName: form.achBankName.trim() || bank.achBankName || form.achBankName,
+    achBankAccountType:
+      form.achBankAccountType.trim() ||
+      bank.achBankAccountType ||
+      form.achBankAccountType,
+    bankAccountQuery:
+      form.bankAccountQuery.trim() || bank.bankAccountQuery || form.bankAccountQuery,
+    checkPayeeName:
+      form.checkPayeeName.trim() || bank.checkPayeeName || form.checkPayeeName,
+    checkMailingAddressId:
+      form.checkMailingAddressId.trim() ||
+      bank.checkMailingAddressId ||
+      form.checkMailingAddressId,
+  }
+}
+
+function formStateFromProfileRow(row: InvestorProfileListRow): FormState {
+  const fromWizard = partialFormFromSavedWizard(row.profileWizardState ?? null)
+  const typePatch = normalizeProfileTypeFromListRow(row.profileType)
+  const seeded = seedFormFromListRow(row)
+  let next: FormState = {
+    ...initialState,
+    ...seeded,
+    ...typePatch,
+    ...fromWizard,
+  }
+  next = mergeDistributionBankIntoForm(next, row.distributionBank)
+  const profileType =
+    (next.profileType || typePatch.profileType || row.profileType || "").trim()
+  next = { ...next, profileType }
+
+  if (next.profileType === PROFILE_TYPE_ENTITY && !next.custodianIra) {
+    if (next.legalIraName.trim() || next.iraCompany.trim()) {
+      next = { ...next, custodianIra: "yes" }
+    } else if (next.entityLegalName.trim() || next.entitySubType.trim()) {
+      next = { ...next, custodianIra: "no" }
+    }
+  }
+
+  if (
+    next.mailingAddressMode !== "same_as_tax" &&
+    next.taxAddressId.trim() &&
+    next.mailingAddressId.trim() &&
+    next.taxAddressId === next.mailingAddressId
+  ) {
+    next = { ...next, mailingAddressMode: "same_as_tax" }
+  }
+
+  if (
+    next.profileType === PROFILE_TYPE_JOINT_TENANCY ||
+    next.profileType === PROFILE_TYPE_ENTITY
+  ) {
+    next = { ...next, beneficiary: null, beneficiaryPickId: "" }
+  }
+  return next
 }
 
 const REQUIRED_MSG = "This field is required."
@@ -292,10 +601,7 @@ function invClass(base: string, hasError: boolean) {
 }
 
 function achRoutingNumberError(raw: string): string | undefined {
-  const digits = raw.replace(/\D/g, "")
-  if (!digits) return REQUIRED_MSG
-  if (digits.length !== 9) return "Enter a valid 9-digit routing number."
-  return undefined
+  return abaRoutingNumberFieldError(raw, { required: true }) ?? undefined
 }
 
 function achAccountNumberError(raw: string): string | undefined {
@@ -482,91 +788,87 @@ function AchDistributionBankFields({
         }
         Icon={CircleDollarSign}
         error={fieldError.achBankAccountType}
+        tight
       >
-        <select
+        <DealsCreateDropdownSelect
           id="ap-ach-type"
-          className={invClass(
-            "um_field_select deals_add_inv_field_control",
-            Boolean(fieldError.achBankAccountType),
-          )}
+          options={ACH_BANK_ACCOUNT_TYPE_OPTIONS}
           value={form.achBankAccountType}
-          onChange={(e) =>
-            patch({ achBankAccountType: e.target.value }, "achBankAccountType")
-          }
-          aria-invalid={Boolean(fieldError.achBankAccountType)}
-          aria-describedby={
+          onChange={(v) => patch({ achBankAccountType: v }, "achBankAccountType")}
+          placeholder="Select account type"
+          invalid={Boolean(fieldError.achBankAccountType)}
+          ariaLabel="Type of bank account"
+          ariaDescribedBy={
             fieldError.achBankAccountType ? "ap-ach-type-err" : undefined
           }
-        >
-          <option value="">Select account type</option>
-          {ACH_BANK_ACCOUNT_TYPE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+          triggerClassName="deals_add_inv_field_control"
+        />
       </InvestingFormField>
-      <InvestingFormField
-        id="ap-ach-routing"
-        label={
-          <>
-            Routing number <span className="contacts_required" aria-hidden>*</span>
-          </>
-        }
-        Icon={Fingerprint}
-        error={fieldError.achRoutingNumber}
-      >
-        <input
+      <div className="add_contact_name_grid">
+        <InvestingFormField
           id="ap-ach-routing"
-          className={invClass(
-            "deals_add_inv_input deals_add_inv_field_control",
-            Boolean(fieldError.achRoutingNumber),
-          )}
-          value={form.achRoutingNumber}
-          onChange={(e) =>
-            patch(
-              {
-                achRoutingNumber: e.target.value.replace(/\D/g, "").slice(0, 9),
-              },
-              "achRoutingNumber",
-            )
+          label={
+            <>
+              Routing number <span className="contacts_required" aria-hidden>*</span>
+            </>
           }
-          inputMode="numeric"
-          autoComplete="off"
-          placeholder="9-digit routing number"
-          aria-invalid={Boolean(fieldError.achRoutingNumber)}
-          aria-describedby={
-            fieldError.achRoutingNumber ? "ap-ach-routing-err" : undefined
-          }
-        />
-      </InvestingFormField>
-      <InvestingFormField
-        id="ap-ach-account"
-        label={
-          <>
-            Account number <span className="contacts_required" aria-hidden>*</span>
-          </>
-        }
-        Icon={IdCard}
-        error={fieldError.achAccountNumber}
-      >
-        <input
+          Icon={Fingerprint}
+          error={fieldError.achRoutingNumber}
+          tight
+        >
+          <input
+            id="ap-ach-routing"
+            className={invClass(
+              "deals_add_inv_input deals_add_inv_field_control",
+              Boolean(fieldError.achRoutingNumber),
+            )}
+            value={form.achRoutingNumber}
+            onChange={(e) =>
+              patch(
+                {
+                  achRoutingNumber: digitsFromAbaRoutingInput(e.target.value),
+                },
+                "achRoutingNumber",
+              )
+            }
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="9-digit routing number"
+            aria-invalid={Boolean(fieldError.achRoutingNumber)}
+            aria-describedby={
+              fieldError.achRoutingNumber ? "ap-ach-routing-err" : undefined
+            }
+          />
+        </InvestingFormField>
+        <InvestingFormField
           id="ap-ach-account"
-          className={invClass(
-            "deals_add_inv_input deals_add_inv_field_control",
-            Boolean(fieldError.achAccountNumber),
-          )}
-          value={form.achAccountNumber}
-          onChange={(e) => patch({ achAccountNumber: e.target.value }, "achAccountNumber")}
-          inputMode="numeric"
-          autoComplete="off"
-          placeholder="Account number"
-          aria-invalid={Boolean(fieldError.achAccountNumber)}
-          aria-describedby={
-            fieldError.achAccountNumber ? "ap-ach-account-err" : undefined
+          label={
+            <>
+              Account number <span className="contacts_required" aria-hidden>*</span>
+            </>
           }
-        />
-      </InvestingFormField>
+          Icon={IdCard}
+          error={fieldError.achAccountNumber}
+          tight
+        >
+          <input
+            id="ap-ach-account"
+            className={invClass(
+              "deals_add_inv_input deals_add_inv_field_control add_profile_account_number",
+              Boolean(fieldError.achAccountNumber),
+            )}
+            value={form.achAccountNumber}
+            onChange={(e) => patch({ achAccountNumber: e.target.value }, "achAccountNumber")}
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="Account number"
+            aria-invalid={Boolean(fieldError.achAccountNumber)}
+            aria-describedby={
+              fieldError.achAccountNumber ? "ap-ach-account-err" : undefined
+            }
+          />
+        </InvestingFormField>
+      </div>
       <InvestingFormField
         id="ap-ach-address"
         label={
@@ -617,12 +919,21 @@ interface AddInvestorProfileModalProps {
   mode?: "add" | "edit"
   /**
    * When `mode=edit`, the profile list row (includes `profileWizardState` when saved) and `id` for the PUT.
-   * Legacy rows without `profileWizardState` are seeded from `profileName` / `profileType` only.
+   * Wizard JSON is merged with list fields and distribution-bank columns so prior values prefill the form.
    */
   editTarget?: InvestorProfileListRow | null
   /** Fired with display fields after validation; parent may persist the profile. May return a Promise. */
-  onProfileCreated?: (p: NewInvestorProfilePayload) => void | Promise<void>
+  onProfileCreated?: (
+    p: NewInvestorProfilePayload,
+    opts?: { existingId?: string },
+  ) => void | Promise<void>
   onProfileUpdated?: (id: string, p: UpdateInvestorProfilePayload) => void | Promise<void>
+  /**
+   * Fresh `/investing/profiles/add` without `resume=1`: empty form; session draft stays for the list row.
+   * With `resume=1`, restore session (or `resumeFromProfile` when the API row exists but session was cleared).
+   */
+  resumeDraft?: boolean
+  resumeFromProfile?: InvestorProfileListRow | null
   /**
    * `inline`: in-tab panel. `page`: full-page like Create deal (parent supplies shell).
    * @default "modal"
@@ -845,13 +1156,19 @@ function buildDisplayProfileName(f: FormState): string {
     .join(" ")
 }
 
+function buildProfileNameForPersist(f: FormState): string {
+  const name = buildDisplayProfileName(f)
+  return name === "—" ? AUTOSAVE_DEFAULT_PROFILE_NAME : name
+}
+
 /**
- * Best-effort seed of wizard fields from API list row (only `profileName` and `profileType` are stored).
- * Keeps the same UI as "Add profile" while filling in obvious splits of the display name.
+ * Best-effort seed of wizard fields from API list row when wizard JSON is missing
+ * or incomplete. Fills name splits and normalizes stored profile-type labels.
  */
 function seedFormFromListRow(row: { profileName: string; profileType: string }): Partial<FormState> {
-  const t = (row.profileType || "").trim()
-  const out: Partial<FormState> = { profileType: t }
+  const typePatch = normalizeProfileTypeFromListRow(row.profileType)
+  const t = (typePatch.profileType || row.profileType || "").trim()
+  const out: Partial<FormState> = { ...typePatch, profileType: t }
   const name = (row.profileName || "").trim()
   if (!name || name === "—") return out
   if (t === PROFILE_TYPE_ENTITY) {
@@ -915,16 +1232,38 @@ export function AddInvestorProfileModal({
   onProfileCreated,
   onProfileUpdated,
   variant = "modal",
+  resumeDraft = false,
+  resumeFromProfile = null,
 }: AddInvestorProfileModalProps) {
   const isListInline = variant === "inline"
   const isPage = variant === "page"
   const isNonModalLayout = isListInline || isPage
   const isEdit = mode === "edit"
-  const [form, setForm] = useState<FormState>(initialState)
+  const enableAddDraftAutosave = isPage && !isEdit
+  const [form, setForm] = useState<FormState>(() =>
+    mode === "edit" && editTarget
+      ? formStateFromProfileRow(editTarget)
+      : initialState,
+  )
   const [fieldError, setFieldError] = useState<AddProfileFieldErrors>({})
   const [step, setStep] = useState(1)
+  const profileFormRef = useRef<HTMLFormElement>(null)
+  const stepScrollBootRef = useRef(true)
   const [lastEditReason, setLastEditReason] = useState("")
   const [lastEditReasonError, setLastEditReasonError] = useState<string | null>(null)
+  const [backendProfileId, setBackendProfileId] = useState<string | null>(null)
+  const backendProfileIdRef = useRef<string | null>(null)
+  const createPostInFlightRef = useRef(false)
+  const backendAutosaveInFlightRef = useRef(false)
+  const addProfileDraftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const backendAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const latestAddProfileDraftRef = useRef({
+    form: initialState,
+    step: 1,
+    backendProfileId: null as string | null,
+  })
+  const skipOverwriteEmptySessionDraftRef = useRef(false)
+  const lastEditPrefillIdRef = useRef<string | null>(null)
 
   const activeSavedBeneficiaries = useMemo(
     () => savedBeneficiaries.filter((b) => !b.archived),
@@ -1014,42 +1353,289 @@ export function AddInvestorProfileModal({
   }, [step, isEdit, isJointTenancy, isEntity, isIndividual, totalSteps])
 
   useEffect(() => {
-    if (!open) return
+    latestAddProfileDraftRef.current = { form, step, backendProfileId }
+  }, [form, step, backendProfileId])
+
+  const persistAddProfileDraftNow = useCallback(() => {
+    if (!enableAddDraftAutosave) return
+    const { form: f, step: st, backendProfileId: bid } =
+      latestAddProfileDraftRef.current
+    const payload = {
+      form: profileWizardStateForPersist(f, st),
+      step: st,
+      ...(bid ? { backendProfileId: bid } : {}),
+    }
+    if (
+      skipOverwriteEmptySessionDraftRef.current &&
+      !addProfileDraftHasContent(payload)
+    ) {
+      return
+    }
+    skipOverwriteEmptySessionDraftRef.current = false
+    saveAddProfileDraft(payload)
+  }, [enableAddDraftAutosave])
+
+  const handleClose = useCallback(() => {
+    persistAddProfileDraftNow()
+    onClose()
+  }, [persistAddProfileDraftNow, onClose])
+
+  useEffect(() => {
+    if (!open) {
+      lastEditPrefillIdRef.current = null
+      return
+    }
+    if (isEdit && editTarget) {
+      if (lastEditPrefillIdRef.current === editTarget.id) return
+      lastEditPrefillIdRef.current = editTarget.id
+      setFieldError({})
+      setSsnVisible(false)
+      setSpouseSsnVisible(false)
+      setLastEditReason("")
+      setLastEditReasonError(null)
+      stepScrollBootRef.current = true
+      setStep(1)
+      setForm(formStateFromProfileRow(editTarget))
+      setBackendProfileId(null)
+      backendProfileIdRef.current = null
+      skipOverwriteEmptySessionDraftRef.current = false
+      return
+    }
+    lastEditPrefillIdRef.current = null
     setFieldError({})
     setSsnVisible(false)
     setSpouseSsnVisible(false)
     setLastEditReason("")
     setLastEditReasonError(null)
-    setStep(1)
-    if (isEdit && editTarget) {
-      const t = (editTarget.profileType || "").trim()
-      const isJoint = t === PROFILE_TYPE_JOINT_TENANCY
-      const isEnt = t === PROFILE_TYPE_ENTITY
-      const fromWizard = partialFormFromSavedWizard(
-        editTarget.profileWizardState ?? null,
-      )
-      const clearBen = isJoint || isEnt
-      if (Object.keys(fromWizard).length > 0) {
-        setForm({
-          ...initialState,
-          ...fromWizard,
-          ...(clearBen ? { beneficiary: null, beneficiaryPickId: "" } : {}),
+    stepScrollBootRef.current = true
+    if (!isEdit && enableAddDraftAutosave && resumeDraft) {
+      skipOverwriteEmptySessionDraftRef.current = false
+      const restored = loadAddProfileDraft()
+      const apiProfileId = resumeFromProfile?.id?.trim() ?? ""
+
+      if (apiProfileId && resumeFromProfile) {
+        if (
+          restored &&
+          addProfileDraftHasContent(restored) &&
+          restored.backendProfileId?.trim() === apiProfileId
+        ) {
+          const fromWizard = partialFormFromSavedWizard(restored.form)
+          const restoredStep =
+            restored.step >= 1
+              ? restored.step
+              : readWizardStepFromSavedForm(restored.form) ?? 1
+          setForm(mergeKnownSsnIntoForm({ ...initialState, ...fromWizard }, existingProfiles))
+          setStep(restoredStep)
+          setBackendProfileId(apiProfileId)
+          backendProfileIdRef.current = apiProfileId
+          return
+        }
+        const nextForm = formStateFromProfileRow(resumeFromProfile)
+        const sessionForApi = loadAddProfileDraft()
+        const stepFromSession =
+          sessionForApi?.backendProfileId?.trim() === resumeFromProfile.id &&
+          sessionForApi.step >= 1
+            ? sessionForApi.step
+            : null
+        const stepFromWizard =
+          readWizardStepFromSavedForm(
+            parseSavedWizardObject(resumeFromProfile.profileWizardState) ?? undefined,
+          )
+        const nextStep = stepFromSession ?? stepFromWizard ?? 1
+        setForm(mergeKnownSsnIntoForm(nextForm, existingProfiles))
+        setStep(nextStep)
+        setBackendProfileId(resumeFromProfile.id)
+        backendProfileIdRef.current = resumeFromProfile.id
+        saveAddProfileDraft({
+          form: profileWizardStateForPersist(nextForm, nextStep),
+          step: nextStep,
+          backendProfileId: resumeFromProfile.id,
         })
-      } else {
-        setForm({
-          ...initialState,
-          ...seedFormFromListRow(editTarget),
-          ...(clearBen ? { beneficiary: null, beneficiaryPickId: "" } : {}),
-        })
+        return
       }
-    } else {
-      setForm(initialState)
+
+      if (restored && addProfileDraftHasContent(restored)) {
+        const fromWizard = partialFormFromSavedWizard(restored.form)
+        const restoredStep =
+          restored.step >= 1
+            ? restored.step
+            : readWizardStepFromSavedForm(restored.form) ?? 1
+        setForm(mergeKnownSsnIntoForm({ ...initialState, ...fromWizard }, existingProfiles))
+        setStep(restoredStep)
+        const bid = restored.backendProfileId?.trim()
+        if (bid) {
+          setBackendProfileId(bid)
+          backendProfileIdRef.current = bid
+        } else {
+          setBackendProfileId(null)
+          backendProfileIdRef.current = null
+        }
+        return
+      }
+      setForm(addProfileFormWithKnownSsn(existingProfiles))
+      setStep(1)
+      setBackendProfileId(null)
+      backendProfileIdRef.current = null
+      return
     }
-  }, [open, isEdit, editTarget])
+    if (!isEdit && enableAddDraftAutosave) {
+      skipOverwriteEmptySessionDraftRef.current = true
+    }
+    setStep(1)
+    setForm(addProfileFormWithKnownSsn(existingProfiles))
+    setBackendProfileId(null)
+    backendProfileIdRef.current = null
+  }, [open, isEdit, editTarget, enableAddDraftAutosave, resumeDraft, resumeFromProfile, existingProfiles])
+
+  /** Autosave add-profile wizard draft in sessionStorage (page add flow only). */
+  useEffect(() => {
+    if (!open || !enableAddDraftAutosave) {
+      if (addProfileDraftTimerRef.current) {
+        clearTimeout(addProfileDraftTimerRef.current)
+        addProfileDraftTimerRef.current = null
+      }
+      return
+    }
+    if (addProfileDraftTimerRef.current) clearTimeout(addProfileDraftTimerRef.current)
+    addProfileDraftTimerRef.current = setTimeout(() => {
+      addProfileDraftTimerRef.current = null
+      const { form: f, step: st, backendProfileId: bid } =
+        latestAddProfileDraftRef.current
+      const payload = {
+        form: profileWizardStateForPersist(f, st),
+        step: st,
+        ...(bid ? { backendProfileId: bid } : {}),
+      }
+      if (
+        skipOverwriteEmptySessionDraftRef.current &&
+        !addProfileDraftHasContent(payload)
+      ) {
+        return
+      }
+      skipOverwriteEmptySessionDraftRef.current = false
+      saveAddProfileDraft(payload)
+    }, 500)
+    return () => {
+      if (addProfileDraftTimerRef.current) {
+        clearTimeout(addProfileDraftTimerRef.current)
+        addProfileDraftTimerRef.current = null
+      }
+      const { form: f, step: st, backendProfileId: bid } =
+        latestAddProfileDraftRef.current
+      const payload = {
+        form: profileWizardStateForPersist(f, st),
+        step: st,
+        ...(bid ? { backendProfileId: bid } : {}),
+      }
+      if (
+        skipOverwriteEmptySessionDraftRef.current &&
+        !addProfileDraftHasContent(payload)
+      ) {
+        return
+      }
+      skipOverwriteEmptySessionDraftRef.current = false
+      saveAddProfileDraft(payload)
+    }
+  }, [open, enableAddDraftAutosave, form, step, backendProfileId])
+
+  /** Debounced POST (first save) or PUT — persists wizard progress for the profiles table. */
+  useEffect(() => {
+    if (!getApiV1Base() || !open || !enableAddDraftAutosave) {
+      if (backendAutosaveTimerRef.current) {
+        clearTimeout(backendAutosaveTimerRef.current)
+        backendAutosaveTimerRef.current = null
+      }
+      return
+    }
+    if (backendAutosaveTimerRef.current) clearTimeout(backendAutosaveTimerRef.current)
+    backendAutosaveTimerRef.current = setTimeout(() => {
+      backendAutosaveTimerRef.current = null
+      void (async () => {
+        const { form: f, step: st } = latestAddProfileDraftRef.current
+        const draftCheck = {
+          form: profileWizardStateForPersist(f, st),
+          step: st,
+        }
+        if (!addProfileDraftHasContent(draftCheck)) return
+
+        const profileName = buildProfileNameForPersist(f)
+        const profileType = f.profileType.trim() || "—"
+        const profileWizardState = profileWizardStateForPersist(f, st)
+        const persistedId = backendProfileIdRef.current
+
+        if (persistedId) {
+          if (backendAutosaveInFlightRef.current) return
+          backendAutosaveInFlightRef.current = true
+          try {
+            await putInvestorProfile(persistedId, {
+              profileName,
+              profileType,
+              profileWizardState,
+              autosave: true,
+            })
+          } catch (e) {
+            if (import.meta.env.DEV) {
+              console.warn(
+                "[Add profile] Autosave failed:",
+                e instanceof Error ? e.message : e,
+              )
+            }
+          } finally {
+            backendAutosaveInFlightRef.current = false
+          }
+          return
+        }
+
+        if (createPostInFlightRef.current) return
+        createPostInFlightRef.current = true
+        backendAutosaveInFlightRef.current = true
+        try {
+          const row = await postInvestorProfile({
+            profileName,
+            profileType,
+            profileWizardState,
+            autosave: true,
+          })
+          backendProfileIdRef.current = row.id
+          setBackendProfileId(row.id)
+          saveAddProfileDraft({
+            form: profileWizardState,
+            step: st,
+            backendProfileId: row.id,
+          })
+          notifyProfileBookRefetch()
+        } catch (e) {
+          if (import.meta.env.DEV) {
+            console.warn(
+              "[Add profile] Autosave failed:",
+              e instanceof Error ? e.message : e,
+            )
+          }
+        } finally {
+          createPostInFlightRef.current = false
+          backendAutosaveInFlightRef.current = false
+        }
+      })()
+    }, 1200)
+    return () => {
+      if (backendAutosaveTimerRef.current) {
+        clearTimeout(backendAutosaveTimerRef.current)
+        backendAutosaveTimerRef.current = null
+      }
+    }
+  }, [open, enableAddDraftAutosave, form, step, backendProfileId])
 
   useEffect(() => {
     if (!isIndividual && !isJointTenancy && !isEntity && step > 1) setStep(1)
   }, [isIndividual, isJointTenancy, isEntity, step])
+
+  useEffect(() => {
+    if (stepScrollBootRef.current) {
+      stepScrollBootRef.current = false
+      return
+    }
+    scrollMultiStepFormToTopAfterUpdate({ container: profileFormRef.current })
+  }, [step])
 
   /** Keep mailing id aligned when “same as tax” (incl. profiles saved before id was mirrored). */
   useEffect(() => {
@@ -1070,11 +1656,11 @@ export function AddInvestorProfileModal({
   useEffect(() => {
     if (!open) return
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose()
+      if (e.key === "Escape") handleClose()
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [open, onClose])
+  }, [open, handleClose])
 
   useEffect(() => {
     if (!open || isNonModalLayout) return
@@ -1316,8 +1902,24 @@ export function AddInvestorProfileModal({
 
   const goNext = useCallback(() => {
     if (!validateStep()) return
-    setStep((s) => Math.min(effectiveMaxStep, s + 1))
-  }, [validateStep, effectiveMaxStep])
+    const nextStep = Math.min(effectiveMaxStep, step + 1)
+    latestAddProfileDraftRef.current = {
+      ...latestAddProfileDraftRef.current,
+      form,
+      step: nextStep,
+    }
+    setStep(nextStep)
+    if (enableAddDraftAutosave) {
+      persistAddProfileDraftNow()
+    }
+  }, [
+    validateStep,
+    effectiveMaxStep,
+    step,
+    form,
+    enableAddDraftAutosave,
+    persistAddProfileDraftNow,
+  ])
 
   const goBack = useCallback(() => {
     setFieldError({})
@@ -1496,12 +2098,16 @@ export function AddInvestorProfileModal({
   }
 
   function rejectDuplicateProfile(profileName: string, profileType: string): boolean {
+    const excludeId =
+      isEdit && editTarget
+        ? editTarget.id
+        : backendProfileIdRef.current?.trim() || undefined
     if (
       hasActiveProfileDuplicate(
         existingProfiles,
         profileName,
         profileType,
-        isEdit && editTarget ? editTarget.id : undefined,
+        excludeId,
       )
     ) {
       toast.error("Duplicate profile", PROFILE_DUPLICATE_MESSAGE)
@@ -1521,12 +2127,14 @@ export function AddInvestorProfileModal({
     const payload: NewInvestorProfilePayload = {
       profileName,
       profileType,
-      profileWizardState: formToJsonSnapshot(normalizeFormPhonesForPersist(form)),
+      profileWizardState: profileWizardStateForPersist(form, step),
     }
+    const existingId = backendProfileIdRef.current?.trim() || undefined
     if (onProfileCreated) {
       void (async () => {
         try {
-          await onProfileCreated(payload)
+          await onProfileCreated(payload, existingId ? { existingId } : undefined)
+          if (enableAddDraftAutosave) clearAddProfileDraft()
           onClose()
         } catch (e) {
           toast.error(
@@ -1540,6 +2148,7 @@ export function AddInvestorProfileModal({
         "Profile added",
         "Your new profile was saved. (No handler — data not persisted.)",
       )
+      if (enableAddDraftAutosave) clearAddProfileDraft()
       onClose()
     }
   }
@@ -1563,7 +2172,7 @@ export function AddInvestorProfileModal({
       profileName,
       profileType,
       lastEditReason: lastEditReason.trim(),
-      profileWizardState: formToJsonSnapshot(normalizeFormPhonesForPersist(form)),
+      profileWizardState: profileWizardStateForPersist(form, step),
     }
     if (onProfileUpdated) {
       void (async () => {
@@ -1644,6 +2253,7 @@ export function AddInvestorProfileModal({
   function renderFormPanel() {
     const formNode = (
         <form
+          ref={profileFormRef}
           className={
             isPage ? "deals_add_deal_asset_form" : "deals_add_inv_modal_form"
           }
@@ -1675,29 +2285,34 @@ export function AddInvestorProfileModal({
                 }
                 error={fieldError.profileType}
               >
-                <select
+                <DealsCreateDropdownSelect
                   id="ap-profile-type"
-                  className={invClass(
-                    "um_field_select deals_add_inv_field_control",
-                    Boolean(fieldError.profileType),
-                  )}
+                  options={[
+                    { value: PROFILE_TYPE_INDIVIDUAL, label: "Individual" },
+                    {
+                      value: PROFILE_TYPE_ENTITY_CUSTODIAN,
+                      label: "Custodian IRA or custodian based 401(k)",
+                    },
+                    {
+                      value: PROFILE_TYPE_JOINT_TENANCY,
+                      label: "Joint tenancy",
+                    },
+                    {
+                      value: PROFILE_TYPE_ENTITY_LLC_CORP_TRUST,
+                      label:
+                        "LLC, corp, partnership, trust, solo 401(k), or checkbook IRA",
+                    },
+                  ]}
                   value={profileTypeSelectValue(form)}
-                  onChange={(e) => handleProfileTypeChange(e.target.value)}
-                  aria-invalid={Boolean(fieldError.profileType)}
-                  aria-describedby={
+                  onChange={handleProfileTypeChange}
+                  placeholder="Select profile type"
+                  invalid={Boolean(fieldError.profileType)}
+                  ariaLabel="Profile type"
+                  ariaDescribedBy={
                     fieldError.profileType ? "ap-profile-type-err" : undefined
                   }
-                >
-                  <option value="">Select profile type</option>
-                  <option value={PROFILE_TYPE_INDIVIDUAL}>Individual</option>
-                  <option value={PROFILE_TYPE_ENTITY_CUSTODIAN}>
-                    Custodian IRA or custodian based 401(k)
-                  </option>
-                  <option value={PROFILE_TYPE_JOINT_TENANCY}>Joint tenancy</option>
-                  <option value={PROFILE_TYPE_ENTITY_LLC_CORP_TRUST}>
-                    LLC, corp, partnership, trust, solo 401(k), or checkbook IRA
-                  </option>
-                </select>
+                  triggerClassName="deals_add_inv_field_control"
+                />
               </InvestingFormField>
             </div>
           )}
@@ -1832,22 +2447,15 @@ export function AddInvestorProfileModal({
                     label="Federal tax classification"
                     Icon={FileText}
                   >
-                    <select
+                    <DealsCreateDropdownSelect
                       id="ap-ent-federal-tax"
-                      className="um_field_select deals_add_inv_field_control"
+                      options={FEDERAL_TAX_CLASSIFICATION_OPTIONS}
                       value={form.federalTaxClassification}
-                      onChange={(e) =>
-                        patch({ federalTaxClassification: e.target.value })
-                      }
-                      aria-label="Federal tax classification"
-                    >
-                      <option value="">Select</option>
-                      {FEDERAL_TAX_CLASSIFICATION_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(v) => patch({ federalTaxClassification: v })}
+                      placeholder="Select"
+                      ariaLabel="Federal tax classification"
+                      triggerClassName="deals_add_inv_field_control"
+                    />
                   </InvestingFormField>
                   <InvestingFormField
                     id="ap-ent-ira-partner-ein"
@@ -2078,29 +2686,19 @@ export function AddInvestorProfileModal({
                     }
                     error={fieldError.entitySubType}
                   >
-                    <select
+                    <DealsCreateDropdownSelect
                       id="ap-entity-type"
-                      className={invClass(
-                        "um_field_select deals_add_inv_field_control",
-                        Boolean(fieldError.entitySubType),
-                      )}
+                      options={ENTITY_SUBTYPE_OPTIONS}
                       value={form.entitySubType}
-                      onChange={(e) =>
-                        patch({ entitySubType: e.target.value }, "entitySubType")
-                      }
-                      aria-label="Entity, trust, or plan type"
-                      aria-invalid={Boolean(fieldError.entitySubType)}
-                      aria-describedby={
+                      onChange={(v) => patch({ entitySubType: v }, "entitySubType")}
+                      placeholder="Select"
+                      invalid={Boolean(fieldError.entitySubType)}
+                      ariaLabel="Entity, trust, or plan type"
+                      ariaDescribedBy={
                         fieldError.entitySubType ? "ap-entity-type-err" : undefined
                       }
-                    >
-                      <option value="">Select</option>
-                      {ENTITY_SUBTYPE_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
+                      triggerClassName="deals_add_inv_field_control"
+                    />
                   </InvestingFormField>
                   <InvestingFormField
                     id="ap-ent-federal-no"
@@ -2112,29 +2710,21 @@ export function AddInvestorProfileModal({
                     Icon={FileText}
                     error={fieldError.federalTaxClassification}
                   >
-                    <select
+                    <DealsCreateDropdownSelect
                       id="ap-ent-federal-no"
-                      className={invClass(
-                        "um_field_select deals_add_inv_field_control",
-                        Boolean(fieldError.federalTaxClassification),
-                      )}
+                      options={FEDERAL_TAX_CLASSIFICATION_OPTIONS}
                       value={form.federalTaxClassification}
-                      onChange={(e) =>
+                      onChange={(v) =>
                         patch(
-                          { federalTaxClassification: e.target.value },
+                          { federalTaxClassification: v },
                           "federalTaxClassification",
                         )
                       }
-                      aria-label="Federal tax classification"
-                      aria-invalid={Boolean(fieldError.federalTaxClassification)}
-                    >
-                      <option value="">Select</option>
-                      {FEDERAL_TAX_CLASSIFICATION_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
+                      placeholder="Select"
+                      invalid={Boolean(fieldError.federalTaxClassification)}
+                      ariaLabel="Federal tax classification"
+                      triggerClassName="deals_add_inv_field_control"
+                    />
                   </InvestingFormField>
                   <InvestingFormField
                     id="ap-entity-disregarded"
@@ -2450,36 +3040,25 @@ export function AddInvestorProfileModal({
                 Icon={Fingerprint}
                 error={fieldError.ssn}
               >
-                <div className="add_profile_input_wrap">
-                  <input
-                    id="ap-jt-ssn"
-                    className={invClass(
-                      "deals_add_inv_input deals_add_inv_field_control",
-                      Boolean(fieldError.ssn),
-                    )}
-                    type={ssnVisible ? "text" : "password"}
-                    inputMode="numeric"
-                    autoComplete="off"
-                    maxLength={11}
-                    value={form.ssn}
-                    onChange={(e) =>
-                      patch({ ssn: formatSsnItinInput(e.target.value) }, "ssn")
-                    }
-                    placeholder="___-__-____"
-                    aria-invalid={Boolean(fieldError.ssn)}
-                    aria-describedby={
-                      fieldError.ssn ? "ap-jt-ssn-err" : undefined
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="add_profile_ssn_toggle"
-                    onClick={() => setSsnVisible((v) => !v)}
-                    aria-label={ssnVisible ? "Hide SSN" : "Show SSN"}
-                  >
-                    {ssnVisible ? <Eye size={16} /> : <EyeOff size={16} />}
-                  </button>
-                </div>
+                <SsnItinMaskedInput
+                  id="ap-jt-ssn"
+                  className={invClass(
+                    "deals_add_inv_input deals_add_inv_field_control",
+                    Boolean(fieldError.ssn),
+                  )}
+                  value={form.ssn}
+                  onValueChange={(ssn) => patch({ ssn }, "ssn")}
+                  revealed={ssnVisible}
+                  onRevealedChange={setSsnVisible}
+                  showToggle
+                  revealLabel="Show SSN"
+                  hideLabel="Hide SSN"
+                  placeholder="___-__-____"
+                  aria-invalid={Boolean(fieldError.ssn)}
+                  aria-describedby={
+                    fieldError.ssn ? "ap-jt-ssn-err" : undefined
+                  }
+                />
               </InvestingFormField>
               <InvestingFormField
                 id="ap-jt-spouse-ssn"
@@ -2487,41 +3066,27 @@ export function AddInvestorProfileModal({
                 Icon={Fingerprint}
                 error={fieldError.spouseSsn}
               >
-                <div className="add_profile_input_wrap">
-                  <input
-                    id="ap-jt-spouse-ssn"
-                    className={invClass(
-                      "deals_add_inv_input deals_add_inv_field_control",
-                      Boolean(fieldError.spouseSsn),
-                    )}
-                    type={spouseSsnVisible ? "text" : "password"}
-                    inputMode="numeric"
-                    autoComplete="off"
-                    maxLength={11}
-                    value={form.spouseSsn}
-                    onChange={(e) =>
-                      patch(
-                        { spouseSsn: formatSsnItinInput(e.target.value) },
-                        "spouseSsn",
-                      )
-                    }
-                    placeholder="___-__-____"
-                    aria-invalid={Boolean(fieldError.spouseSsn)}
-                    aria-describedby={
-                      fieldError.spouseSsn ? "ap-jt-spouse-ssn-err" : undefined
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="add_profile_ssn_toggle"
-                    onClick={() => setSpouseSsnVisible((v) => !v)}
-                    aria-label={
-                      spouseSsnVisible ? "Hide spouse SSN" : "Show spouse SSN"
-                    }
-                  >
-                    {spouseSsnVisible ? <Eye size={16} /> : <EyeOff size={16} />}
-                  </button>
-                </div>
+                <SsnItinMaskedInput
+                  id="ap-jt-spouse-ssn"
+                  className={invClass(
+                    "deals_add_inv_input deals_add_inv_field_control",
+                    Boolean(fieldError.spouseSsn),
+                  )}
+                  value={form.spouseSsn}
+                  onValueChange={(spouseSsn) =>
+                    patch({ spouseSsn }, "spouseSsn")
+                  }
+                  revealed={spouseSsnVisible}
+                  onRevealedChange={setSpouseSsnVisible}
+                  showToggle
+                  revealLabel="Show spouse SSN"
+                  hideLabel="Hide spouse SSN"
+                  placeholder="___-__-____"
+                  aria-invalid={Boolean(fieldError.spouseSsn)}
+                  aria-describedby={
+                    fieldError.spouseSsn ? "ap-jt-spouse-ssn-err" : undefined
+                  }
+                />
               </InvestingFormField>
             </div>
           )}
@@ -2634,36 +3199,25 @@ export function AddInvestorProfileModal({
                 Icon={Fingerprint}
                 error={fieldError.ssn}
               >
-                <div className="add_profile_input_wrap">
-                  <input
-                    id="ap-ssn"
-                    className={invClass(
-                      "deals_add_inv_input deals_add_inv_field_control",
-                      Boolean(fieldError.ssn),
-                    )}
-                    type={ssnVisible ? "text" : "password"}
-                    inputMode="numeric"
-                    autoComplete="off"
-                    maxLength={11}
-                    value={form.ssn}
-                    onChange={(e) =>
-                      patch({ ssn: formatSsnItinInput(e.target.value) }, "ssn")
-                    }
-                    placeholder="___-__-____"
-                    aria-invalid={Boolean(fieldError.ssn)}
-                    aria-describedby={
-                      fieldError.ssn ? "ap-ssn-err" : undefined
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="add_profile_ssn_toggle"
-                    onClick={() => setSsnVisible((v) => !v)}
-                    aria-label={ssnVisible ? "Hide SSN or ITIN" : "Show SSN or ITIN"}
-                  >
-                    {ssnVisible ? <Eye size={16} /> : <EyeOff size={16} />}
-                  </button>
-                </div>
+                <SsnItinMaskedInput
+                  id="ap-ssn"
+                  className={invClass(
+                    "deals_add_inv_input deals_add_inv_field_control",
+                    Boolean(fieldError.ssn),
+                  )}
+                  value={form.ssn}
+                  onValueChange={(ssn) => patch({ ssn }, "ssn")}
+                  revealed={ssnVisible}
+                  onRevealedChange={setSsnVisible}
+                  showToggle
+                  revealLabel="Show SSN or ITIN"
+                  hideLabel="Hide SSN or ITIN"
+                  placeholder="___-__-____"
+                  aria-invalid={Boolean(fieldError.ssn)}
+                  aria-describedby={
+                    fieldError.ssn ? "ap-ssn-err" : undefined
+                  }
+                />
               </InvestingFormField>
             </div>
           )}
@@ -2688,12 +3242,16 @@ export function AddInvestorProfileModal({
                   />
                 }
               >
-                <select
+                <DealsCreateDropdownSelect
                   id="ap-dm"
-                  className="um_field_select deals_add_inv_field_control"
+                  options={[
+                    { value: "ach", label: "ACH (recommended)" },
+                    { value: "check", label: "Check" },
+                    { value: "other", label: "Other" },
+                  ]}
                   value={form.distributionMethod}
-                  onChange={(e) => {
-                    const v = e.target.value as DistributionMethod
+                  onChange={(next) => {
+                    const v = next as DistributionMethod
                     const clearedAch = {
                       achRoutingNumber: "",
                       achAccountNumber: "",
@@ -2740,11 +3298,9 @@ export function AddInvestorProfileModal({
                             ] as const),
                     )
                   }}
-                >
-                  <option value="ach">ACH (recommended)</option>
-                  <option value="check">Check</option>
-                  <option value="other">Other</option>
-                </select>
+                  ariaLabel="Distribution method"
+                  triggerClassName="deals_add_inv_field_control"
+                />
               </InvestingFormField>
               {form.distributionMethod === "check" ? (
                 <>
@@ -2998,8 +3554,8 @@ export function AddInvestorProfileModal({
         >
           <button
             type="button"
-            className="um_btn_secondary"
-            onClick={onClose}
+            className="um_btn_secondary add_contact_modal_actions_leading"
+            onClick={handleClose}
             aria-label="Close"
           >
             <X size={16} strokeWidth={2} aria-hidden />
@@ -3041,14 +3597,14 @@ export function AddInvestorProfileModal({
                 className="um_btn_primary"
                 onClick={() => void handleSubmit()}
               >
-                <Plus size={18} strokeWidth={2} aria-hidden />
-                Add profile
+                <Save size={16} strokeWidth={2} aria-hidden />
+                Save
               </button>
             )}
             {isEdit && step === totalSteps && (isIndividual || isJointTenancy || isEntity) && (
               <button type="button" className="um_btn_primary" onClick={() => void handleEditSave()}>
-                <Save size={18} strokeWidth={2} aria-hidden />
-                Save changes
+                <Save size={16} strokeWidth={2} aria-hidden />
+                Save
               </button>
             )}
           </div>
@@ -3088,7 +3644,7 @@ export function AddInvestorProfileModal({
           <button
             type="button"
             className="um_modal_close"
-            onClick={onClose}
+            onClick={handleClose}
             aria-label="Close"
           >
             <X size={20} strokeWidth={2} aria-hidden />
@@ -3109,7 +3665,7 @@ export function AddInvestorProfileModal({
                 <button
                   type="button"
                   className="deals_list_back_circle"
-                  onClick={onClose}
+                  onClick={handleClose}
                   aria-label="Back to profiles"
                 >
                   <ArrowLeft size={20} strokeWidth={2} aria-hidden />
@@ -3160,7 +3716,7 @@ export function AddInvestorProfileModal({
       className="um_modal_overlay deals_add_inv_modal_overlay portal_modal_z_boost"
       role="presentation"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (e.target === e.currentTarget) handleClose()
       }}
     >
       {renderFormPanel()}
@@ -3171,3 +3727,5 @@ export function AddInvestorProfileModal({
   </>
   )
 }
+
+export default AddInvestorProfileModal

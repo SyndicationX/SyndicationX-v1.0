@@ -27,7 +27,7 @@ function normalizePath(path: string): string {
 const PAGE_TITLES: Record<string, string> = {
   "/": "Dashboard",
   "/dashboard": "Dashboard",
-  "/metrics": "Metrics",
+  "/metrics": "Platform Metrics",
 
   "/settings": "Settings",
   "/company": "Settings",
@@ -37,6 +37,15 @@ const PAGE_TITLES: Record<string, string> = {
   "/members": "Members",
 
   "/contacts": "All contacts",
+  "/contacts/overview": "Overview",
+  "/contacts/crm": "CRM",
+  "/contacts/pipeline": "Pipeline",
+  "/contacts/inbox": "Inbox",
+  "/contacts/campaigns": "Campaigns",
+  "/contacts/meetings": "Meetings",
+  "/contacts/pages": "Pages & Branding",
+  "/contacts/import": "Import",
+  "/contacts/investor-view": "Investor view",
   "/contacts/email-templates": "Email Templates",
   "/contacts/email-templates/new": "New email template",
 
@@ -63,6 +72,8 @@ const PAGE_TITLES: Record<string, string> = {
   "/refer-a-friend": "Refer a friend",
   "/support": "Support",
   "/notifications": "Notifications",
+  "/feedback": "Feedback",
+  "/investing/feedback": "Feedback",
 };
 
 export function pageTitleForAppPathname(

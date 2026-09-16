@@ -29,10 +29,11 @@ import {
   resolveActiveOrganizationIdForUser,
   userHasAccessToOrganization,
 } from "../services/org/orgResolution.service.js";
-import emailConfig, {
-  getEmailBccFromEnv,
-  smtpEnvelopeForSendMail,
-} from "../functions/emailconfig.js";
+import { getEmailBccFromEnv } from "../functions/emailconfig.js";
+import {
+  sendHtmlMailPerRecipient,
+  type MailAttachment,
+} from "../services/mail/sendHtmlMailPerRecipient.service.js";
 
 function bodyString(v: unknown): string {
   return typeof v === "string" ? v : v != null ? String(v) : "";
@@ -44,6 +45,39 @@ function normalizeAddressList(v: string | string[] | undefined): string[] {
     return [...new Set(v.map((x) => String(x).trim()).filter((x) => x.includes("@")))];
   }
   return [...new Set(String(v).split(",").map((x) => x.trim()).filter((x) => x.includes("@")))];
+}
+
+/** Base64 of a 30 MB file is ~40 MB (4/3). */
+const SEND_MAIL_ATTACHMENT_BASE64_MAX = 42_000_000;
+
+type ParsedMailAttachments =
+  | { ok: true; attachments: MailAttachment[] }
+  | { ok: false; message: string };
+
+/** Accepts the stored email-template attachment shape (single object or list). */
+function parseMailAttachments(v: unknown): ParsedMailAttachments {
+  const list = Array.isArray(v) ? v : v != null ? [v] : [];
+  const attachments: MailAttachment[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const filename = bodyString(o.fileName).trim();
+    const dataBase64 = bodyString(o.dataBase64).trim();
+    if (!filename || !dataBase64) continue;
+    if (dataBase64.length > SEND_MAIL_ATTACHMENT_BASE64_MAX) {
+      return { ok: false, message: `Attachment "${filename}" is too large to send` };
+    }
+    const content = Buffer.from(dataBase64, "base64");
+    if (content.length === 0) {
+      return { ok: false, message: `Attachment "${filename}" could not be read` };
+    }
+    attachments.push({
+      filename,
+      content,
+      contentType: bodyString(o.mimeType).trim() || "application/octet-stream",
+    });
+  }
+  return { ok: true, attachments };
 }
 
 function normalizeAddressListUnknown(v: unknown): string[] {
@@ -262,6 +296,11 @@ export async function postSendMail(req: Request, res: Response): Promise<void> {
   const bodyText = decodeHtmlEntities(bodyString(b.bodyText))
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+  const parsedAttachments = parseMailAttachments(b.attachment ?? b.attachments);
+  if (!parsedAttachments.ok) {
+    res.status(400).json({ message: parsedAttachments.message });
+    return;
+  }
   const [actor] = await db
     .select({ email: users.email })
     .from(users)
@@ -302,25 +341,19 @@ export async function postSendMail(req: Request, res: Response): Promise<void> {
     ),
   ];
   const fromAddress = senderEmail;
-  console.log("fromAddress",fromAddress)
 
   try {
-    const transporter = emailConfig();
-    await transporter.sendMail({
+    await sendHtmlMailPerRecipient({
       from: fromAddress,
       to,
-      ...(cc.length > 0 ? { cc } : {}),
-      ...(bcc.length > 0 ? { bcc } : {}),
-      ...(senderEmail ? { replyTo: senderEmail } : {}),
+      cc,
+      bcc,
+      replyTo: senderEmail,
       subject,
       html: bodyHtml || "<p></p>",
       text: bodyText || "",
-      envelope: smtpEnvelopeForSendMail({
-        fromAddress: configuredSenderAddress,
-        to,
-        ...(cc.length > 0 ? { cc } : {}),
-        ...(bcc.length > 0 ? { bcc } : {}),
-      }),
+      envelopeFrom: configuredSenderAddress,
+      attachments: parsedAttachments.attachments,
     });
     res.status(200).json({ sent: true });
   } catch (err) {

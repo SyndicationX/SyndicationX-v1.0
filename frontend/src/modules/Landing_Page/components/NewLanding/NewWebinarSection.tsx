@@ -25,7 +25,7 @@ export function Files2WebinarSection() {
               </span>
               <span className="btn-fill" />
             </a>
-            <a href="mailto:sales@syndicationx.com" className="btn-ghost magnetic">
+            <a href="mailto:support@syndicationx.com" className="btn-ghost magnetic">
               <Mail size={18} strokeWidth={2} aria-hidden />
               <span>Talk to sales</span>
             </a>

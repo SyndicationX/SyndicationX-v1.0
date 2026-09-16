@@ -5,12 +5,25 @@ export {
   type UserAuthTokenInsert,
 } from "./auth.schema/userAuthTokens.schema.js";
 export { companies, type CompanyRow } from "./company.schema/company.js";
+export {
+  companyBillingInvoices,
+  companyBillingEvents,
+  companyBillingPaymentMethods,
+  type CompanyBillingInvoiceRow,
+  type CompanyBillingEventRow,
+  type CompanyBillingPaymentMethodRow,
+} from "./company.schema/companyBilling.schema.js";
 export { deals, type DealRow } from "../schema/deal.schema/deal.schema.js";
 export {
   addDealForm,
   type AddDealFormInsert,
   type AddDealFormRow,
 } from "./deal.schema/add-deal-form.schema.js";
+export {
+  dealAsset,
+  type DealAssetInsert,
+  type DealAssetRow,
+} from "./deal.schema/deal-asset.schema.js";
 export {
   memberAdminAuditLogs,
   type MemberAdminAuditLogRow,
@@ -48,6 +61,11 @@ export {
   type DealLpInvestorInsert,
   type DealLpInvestorRow,
 } from "./deal.schema/deal-lp-investor.schema.js";
+export {
+  distributionLogs,
+  type DistributionLogInsert,
+  type DistributionLogRow,
+} from "./deal.schema/distribution-logs.schema.js";
 export {
   assigningDealUser,
   type AssigningDealUserInsert,
@@ -91,6 +109,12 @@ export {
   type UserSavedAddressRow,
 } from "./investing.schema/userProfileBook.schema.js";
 export {
+  investorCheckoutPayments,
+  investorDistributionPayouts,
+  type InvestorCheckoutPaymentRow,
+  type InvestorDistributionPayoutRow,
+} from "./stripeInvestorPayments.schema.js";
+export {
   socAuthAuditLogs,
   type SocAuthAuditLogInsert,
   type SocAuthAuditLogRow,
@@ -113,3 +137,18 @@ export {
   type PlatformSignupNotificationInsert,
   type PlatformSignupNotificationRow,
 } from "./platformSignupNotification.schema.js";
+export {
+  userFeedback,
+  feedbackPageCatalog,
+  FEEDBACK_STATUS_PENDING,
+  FEEDBACK_STATUS_REVIEWED,
+  FEEDBACK_STATUS_RESOLVED,
+  FEEDBACK_SUB_PAGE_OTHER_KEY,
+  FEEDBACK_SUB_PAGE_OTHER_LABEL,
+  type FeedbackStatus,
+  type FeedbackReviewAction,
+  type FeedbackSubPageOption,
+  type UserFeedbackRow,
+  type UserFeedbackInsert,
+  type FeedbackPageCatalogRow,
+} from "./feedback.schema.js";

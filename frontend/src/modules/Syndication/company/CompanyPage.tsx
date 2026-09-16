@@ -46,6 +46,7 @@ import {
 } from "../../../common/auth/sessionKeys";
 import { getSessionOrganizationCompanyId, getActiveWorkspaceCompanyName } from "../../../common/auth/sessionOrganization";
 import {
+  canAccessCompanyPage,
   canAccessMembersPage,
   canEditCompanyWorkspace,
   isPlatformAdmin,
@@ -56,7 +57,7 @@ import { CompanyOfferingsPageTab } from "./CompanyOfferingsPageTab";
 import { CompanyBillingTab } from "./CompanyBillingTab";
 import { CompanySettingsTabPanel } from "./CompanySettingsTabPanel";
 import { ExportCompaniesModal } from "./ExportCompaniesModal";
-import UserManagementPage from "../usermanagement/UserManagementPage";
+import { UserManagementPage } from "../usermanagement/UserManagementPage";
 import {
   buildCompaniesCsv,
   downloadCompaniesCsv,
@@ -475,6 +476,9 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
   }, [workspaceCompanyId, companies, sessionCompanyName]);
 
   const companyPageTabDefs = useMemo(() => {
+    if (!canAccessCompanyPage()) {
+      return [{ id: "billing" as const, label: "Billing", icon: CreditCard }];
+    }
     const mainTabs: { id: CompanyPageTab; label: string; icon: LucideIcon }[] = [
       { id: "settings", label: "Settings", icon: Settings },
       { id: "email", label: "Email settings", icon: Mail },
@@ -509,6 +513,16 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
   /** Open Members first when visiting Settings or Company (sidebar), not the Settings sub-tab. */
   useEffect(() => {
     if (customersStandalone) return;
+    const billing = new URLSearchParams(location.search).get("billing");
+    if (
+      billing === "success" ||
+      billing === "cancel" ||
+      billing === "portal_return" ||
+      billing === "pay"
+    ) {
+      setCompanyPageTab("billing");
+      return;
+    }
     if (!canAccessMembersPage()) return;
     const p = location.pathname.replace(/\/$/, "") || "/";
     const segs = p.split("/").filter(Boolean);
@@ -516,7 +530,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
     if (last === "settings" || last === "company") {
       setCompanyPageTab("members");
     }
-  }, [location.pathname, customersStandalone]);
+  }, [location.pathname, location.search, customersStandalone]);
 
   const customersArchivedCount = useMemo(
     () => companies.filter((c) => companyRowIsArchived(c)).length,
@@ -852,6 +866,12 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
       });
       const data = (await res.json().catch(() => ({}))) as {
         message?: string;
+        ghlProvisioning?: {
+          enabled?: boolean;
+          ok?: boolean;
+          message?: string;
+          locationId?: string;
+        };
       };
       if (!res.ok) {
         const msg = data.message || "Could not create company";
@@ -862,6 +882,16 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
       const okMsg = data.message || "Company created";
       setAddOk(okMsg);
       toast.success("Company created", okMsg);
+      const ghl = data.ghlProvisioning;
+      if (ghl?.enabled && ghl.ok === false) {
+        toast.error(
+          "CRM sub-account not created",
+          ghl.message ??
+            "Check GHL_PER_ORG_LOCATIONS, GHL_COMPANY_ID, and agency API key in backend/.env.local.",
+        );
+      } else if (ghl?.enabled && ghl.ok === true) {
+        toast.success("CRM sub-account created", ghl.locationId ?? "GoHighLevel location ready");
+      }
       setAddName("");
       void loadCompanies();
       setTimeout(() => closeAddModal(), 800);
@@ -1186,7 +1216,17 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
               aria-labelledby="cp-page-tab-billing"
               hidden={activeCompanyPageTab !== "billing"}
             >
-              <CompanyBillingTab />
+              <CompanyBillingTab
+                workspaceCompanyId={workspaceCompanyId || undefined}
+                focusDealId={
+                  new URLSearchParams(location.search).get("dealId")?.trim() ||
+                  undefined
+                }
+                focusDealName={
+                  new URLSearchParams(location.search).get("dealName")?.trim() ||
+                  undefined
+                }
+              />
             </div>
 
             {canAccessMembersPage() ? (

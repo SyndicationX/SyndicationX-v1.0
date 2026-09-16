@@ -5,6 +5,7 @@ import {
   isInvestorEsignWorkspaceDocument,
   offeringPreviewDocumentExcludedFromInvestorOffering,
   readOfferingPreviewSections,
+  resolveFlatDocumentSharedWithScope,
   sectionDisplayLabel,
   sectionSharedWithDisplay,
   sectionVisibleOnOfferingPreview,
@@ -52,16 +53,14 @@ export function listDocumentsForLpDealPage(dealId: string): LpDealDocumentRow[] 
   if (out.length > 0) return out
   for (const d of readOfferingPreviewDocuments(id)) {
     if (offeringPreviewDocumentExcludedFromInvestorOffering(d, sections)) continue
-    const scope =
-      d.sharedWithScope === "lp_investor" ? "lp_investor" : "offering_page"
+    const scope = resolveFlatDocumentSharedWithScope(d.sharedWithScope)
     if (!sectionVisibleOnOfferingPreview(scope, lpPortalCtx)) continue
     out.push({
       id: d.id,
       name: d.name,
       url: d.url,
       sectionLabel: "Documents",
-      sharedWithLabel:
-        d.sharedWithScope === "lp_investor" ? "LP portal only" : "Offering link",
+      sharedWithLabel: sectionSharedWithDisplay(scope),
     })
   }
   return out

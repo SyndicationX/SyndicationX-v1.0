@@ -13,7 +13,10 @@ function messageLooksUnreachable(message: string): boolean {
     m.includes("econnrefused") ||
     m.includes("not reachable") ||
     m.includes("signflow is not configured") ||
-    m.includes("network error")
+    m.includes("network error") ||
+    m.includes("429") ||
+    m.includes("too many requests") ||
+    m.includes("rate limit")
   );
 }
 

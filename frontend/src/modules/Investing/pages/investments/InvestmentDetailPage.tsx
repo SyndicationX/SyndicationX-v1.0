@@ -9,6 +9,7 @@ import {
   Percent,
   Search,
   IdCard,
+  Banknote,
   type LucideIcon,
 } from "lucide-react"
 import { useCallback, useEffect, useId, useMemo, useState } from "react"
@@ -40,6 +41,11 @@ import "@/modules/Syndication/usermanagement/user_management.css"
 import "@/modules/Syndication/Deals/deals-list.css"
 import "@/modules/Syndication/contacts/contacts.css"
 import "@/modules/Investing/pages/profiles/investing-profiles.css"
+import { DealSaasPaywallModal } from "@/modules/Syndication/Deals/components/DealSaasPaywallModal"
+import {
+  isDealSaasPaymentRequiredError,
+  type DealSaasPaywallDeal,
+} from "@/modules/Syndication/Deals/utils/dealSaasAccess"
 import { loadInvestmentDetailFromDeal } from "./investmentsListFromDeals"
 import {
   getInvestmentDetail,
@@ -54,8 +60,11 @@ import type {
   InvestmentDetailRecord,
 } from "./investments.types"
 import { InvestmentDetailDocumentsTab } from "./InvestmentDetailDocumentsTab"
+import { InvestmentDetailDistributionsTab } from "./InvestmentDetailDistributionsTab"
 import { InvestmentProfileBreakdownRowActions } from "./InvestmentProfileBreakdownRowActions"
 import { resolveInvestmentDealId } from "./utils/resolveInvestmentDealId"
+import { countVisibleDocumentsForInvestmentDetail } from "./utils/countInvestmentDetailDocuments"
+import { bindInvestmentOfferingDocumentsAutoRefresh } from "./utils/bindInvestmentOfferingDocumentsAutoRefresh"
 import "./investment-detail.css"
 
 function formatInvDetailUsd(n: number): string {
@@ -591,13 +600,17 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
 
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get("tab")
-  const activeTab: "details" | "profile" | "documents" =
+  const activeTab: "details" | "profile" | "documents" | "distributions" =
     tabParam === "profile"
       ? "profile"
       : tabParam === "documents"
         ? "documents"
-        : "details"
-  const setActiveTab = (tab: "details" | "profile" | "documents") => {
+        : tabParam === "distributions"
+          ? "distributions"
+          : "details"
+  const setActiveTab = (
+    tab: "details" | "profile" | "documents" | "distributions",
+  ) => {
     setSearchParams(
       (prev) => {
         const p = new URLSearchParams(prev)
@@ -610,6 +623,7 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
   }
   const profileLineCount = d.investedAsBreakdown?.length ?? 0
   const dealId = resolveInvestmentDealId(d)
+  const [documentsCount, setDocumentsCount] = useState(0)
   const [dealInvestorRows, setDealInvestorRows] = useState<
     import("@/modules/Syndication/Deals/types/deal-investors.types").DealInvestorRow[]
   >([])
@@ -626,6 +640,26 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
       })
     return () => {
       cancelled = true
+    }
+  }, [dealId])
+
+  useEffect(() => {
+    const id = dealId?.trim() ?? ""
+    if (!id) {
+      setDocumentsCount(0)
+      return
+    }
+    let cancelled = false
+    const loadCount = () => {
+      void countVisibleDocumentsForInvestmentDetail(id).then((n) => {
+        if (!cancelled) setDocumentsCount(n)
+      })
+    }
+    loadCount()
+    const unbind = bindInvestmentOfferingDocumentsAutoRefresh(id, loadCount)
+    return () => {
+      cancelled = true
+      unbind()
     }
   }, [dealId])
 
@@ -768,6 +802,30 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
               />
               <span className="deals_tabs_label um_segmented_tab_label">
                 Documents
+              </span>
+              {documentsCount > 0 ? (
+                <span className="deals_tabs_count">({documentsCount})</span>
+              ) : null}
+            </button>
+            <button
+              type="button"
+              id="inv-detail-tab-distributions"
+              role="tab"
+              aria-selected={activeTab === "distributions"}
+              aria-controls="inv-detail-panel-distributions"
+              className={`um_members_tab deals_tabs_tab um_segmented_tab${
+                activeTab === "distributions" ? " um_members_tab_active" : ""
+              }`}
+              onClick={() => setActiveTab("distributions")}
+            >
+              <Banknote
+                className="deals_tabs_icon um_segmented_tab_icon"
+                size={16}
+                strokeWidth={2}
+                aria-hidden
+              />
+              <span className="deals_tabs_label um_segmented_tab_label">
+                Distributions
               </span>
             </button>
           </div>
@@ -1027,12 +1085,33 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
             </div>
           )
         ) : null}
+
+        {activeTab === "distributions" ? (
+          dealId ? (
+            <InvestmentDetailDistributionsTab
+              dealId={dealId}
+              investmentId={d.id}
+            />
+          ) : (
+            <div
+              id="inv-detail-panel-distributions"
+              role="tabpanel"
+              aria-labelledby="inv-detail-tab-distributions"
+              className="investment_detail_tab_panel"
+            >
+              <p className="investment_detail_lead">
+                Distributions are not available for this investment record.
+              </p>
+            </div>
+          )
+        ) : null}
       </div>
     </>
   )
 }
 
 export default function InvestmentDetailPage() {
+  const navigate = useNavigate()
   const { investmentId = "" } = useParams<{ investmentId: string }>()
   const decodedId = useMemo(
     () => decodeURIComponent(investmentId.trim()),
@@ -1046,10 +1125,13 @@ export default function InvestmentDetailPage() {
     undefined,
   )
   const [loadPending, setLoadPending] = useState(false)
+  const [saasPaywallDeal, setSaasPaywallDeal] =
+    useState<DealSaasPaywallDeal | null>(null)
 
   useEffect(() => {
     if (!decodedId) {
       setFromApi(null)
+      setSaasPaywallDeal(null)
       return
     }
     // Always load server deal + investors for this investment so the Profile and investment
@@ -1057,12 +1139,21 @@ export default function InvestmentDetailPage() {
     // from local/runtime storage when both exist).
     let cancelled = false
     setLoadPending(true)
+    setSaasPaywallDeal(null)
     void (async () => {
       try {
         const d = await loadInvestmentDetailFromDeal(decodedId)
         if (!cancelled) setFromApi(d ?? null)
-      } catch {
-        if (!cancelled) setFromApi(null)
+      } catch (err) {
+        if (!cancelled) {
+          if (isDealSaasPaymentRequiredError(err)) {
+            setSaasPaywallDeal({
+              ...err.payload,
+              id: err.payload.id || decodedId,
+            })
+          }
+          setFromApi(null)
+        }
       } finally {
         if (!cancelled) setLoadPending(false)
       }
@@ -1073,13 +1164,14 @@ export default function InvestmentDetailPage() {
   }, [decodedId])
 
   const detail = useMemo((): InvestmentDetailRecord | null => {
+    if (saasPaywallDeal) return null
     if (fromApi) {
       return fromLocal
         ? mergeServerInvestmentDetailWithLocal(fromApi, fromLocal)
         : fromApi
     }
     return fromLocal ?? null
-  }, [fromApi, fromLocal])
+  }, [fromApi, fromLocal, saasPaywallDeal])
 
   useEffect(() => {
     if (loadPending && !fromLocal) {
@@ -1113,6 +1205,27 @@ export default function InvestmentDetailPage() {
         <p className="deals_list_not_found" role="status">
           Loading investment…
         </p>
+      </div>
+    )
+  }
+
+  if (saasPaywallDeal) {
+    return (
+      <div className="um_page deals_list_page deals_detail_page investment_detail_page">
+        <p className="deals_list_not_found">
+          {saasPaywallDeal.dealName.trim()
+            ? `Contact your sponsor for access to “${saasPaywallDeal.dealName.trim()}”.`
+            : "Contact your sponsor for access to this deal."}{" "}
+          <Link to="/investing/investments" className="deals_list_inline_back">
+            <ArrowLeft size={18} strokeWidth={2} aria-hidden />
+            Back to investments
+          </Link>
+        </p>
+        <DealSaasPaywallModal
+          deal={saasPaywallDeal}
+          investorFacing
+          onClose={() => navigate("/investing/investments")}
+        />
       </div>
     )
   }

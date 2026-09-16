@@ -3,19 +3,29 @@ import {
   BarChart3,
   Briefcase,
   Building2,
+  Calendar,
   ChevronDown,
+  Columns3,
   ContactRound,
+  Eye,
   Files,
+  Inbox,
   LayoutDashboard,
+  Layers,
+  List,
+  // LayoutGrid,
   Mails,
+  Megaphone,
+  MessageSquareText,
   Settings,
-  Star,
   IdCard,
   TrendingUp,
-  Users,
+  Upload,
+  // Users,
 } from "lucide-react"
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom"
 import {
+  canAccessFeedback,
   getStoredUserRole,
   isLpInvestorSessionUser,
   isPlatformAdmin,
@@ -32,26 +42,35 @@ import {
   isLpDealOfferingPortfolioPath,
 } from "@/modules/Investing/shell/LpInvestorShellGuard"
 import { PortalSwitchLoader } from "@/modules/Investing/components/portal-switch-loader/PortalSwitchLoader"
-import { NotificationsProvider } from "@/modules/notifications"
+import { NotificationsProvider } from "@/modules/notifications/context/NotificationsProvider"
 import {
   pageTitleForAppPathname,
   setAppDocumentTitle,
 } from "../utils/appDocumentTitle"
 import { useAppShellBranding } from "../hooks/useAppShellBranding"
 import { useUserActivityTracking } from "../hooks/useUserActivityTracking"
+import {
+  FEEDBACK_PENDING_CHANGED_EVENT,
+  fetchPendingFeedbackCount,
+} from "@/modules/feedback/api/feedbackApi"
 // import { SX_LOGO_SRC } from "@/assets/branding"
 import { SX_SIDENAV_LOGO } from "@/assets/branding"
 import "./page_layout.css"
 
 type SidebarIcon = ComponentType<{ size?: number; className?: string }>
 
-type NavSubItem = { label: string; to: string; icon?: SidebarIcon }
+type NavSubItem = {
+  label: string
+  to: string
+  icon?: SidebarIcon
+  badge?: string
+}
 
 type NavItemLink = { label: string; to: string; icon: SidebarIcon }
 
 type NavItemGroup = { label: string; icon: SidebarIcon; submenu: NavSubItem[] }
 
-/** Top-level link, or a collapsible group (e.g. Contacts → All contacts, Email Templates). */
+/** Top-level link, or a collapsible group (e.g. Contacts → Overview, All Contacts, Pipeline…). */
 type NavItem = NavItemLink | NavItemGroup
 
 /** Deals list, create, or deal detail — not investor-emails / reporting (their own nav items). */
@@ -75,6 +94,11 @@ function isAccountPath(pathname: string): boolean {
   )
 }
 
+function isFeedbackPath(pathname: string): boolean {
+  const p = pathname.replace(/\/$/, "") || "/"
+  return p === "/feedback" || p.startsWith("/feedback/") || p === "/investing/feedback"
+}
+
 function isInvestingPath(pathname: string): boolean {
   return pathname.startsWith("/investing")
 }
@@ -90,30 +114,48 @@ function isInvestingInvestmentsNavActive(pathname: string): boolean {
 }
 
 /** Shared markup so Investing vs Syndicating sidebars keep icon/label alignment identical. */
+function formatPendingBadge(count: number): string | undefined {
+  if (count <= 0) return undefined
+  if (count > 99) return "99+"
+  return String(count)
+}
+
 function SidebarNavItem({
   to,
   label,
   icon: Icon,
   isActive,
   end,
+  badge,
 }: {
   to: string
   label: string
   icon: SidebarIcon
   isActive?: boolean
   end?: boolean
+  badge?: string
 }) {
+  const badgeText = badge?.trim()
+  const badgeClass = badgeText ? " app_sidebar_link_with_badge" : ""
+  const badgeEl = badgeText ? (
+    <span className="app_sidebar_count_badge" aria-hidden>
+      {badgeText}
+    </span>
+  ) : null
+  const badgeAria = badgeText ? `${label}, ${badgeText} pending` : undefined
   if (end !== undefined) {
     return (
       <NavLink
         to={to}
         end={end}
+        aria-label={badgeAria}
         className={({ isActive: navActive }) =>
-          `app_sidebar_link${navActive ? " app_sidebar_link_active" : ""}`
+          `app_sidebar_link${badgeClass}${navActive ? " app_sidebar_link_active" : ""}`
         }
       >
         <Icon size={18} />
         <span>{label}</span>
+        {badgeEl}
       </NavLink>
     )
   }
@@ -121,17 +163,19 @@ function SidebarNavItem({
   return (
     <Link
       to={to}
-      className={`app_sidebar_link${active ? " app_sidebar_link_active" : ""}`}
+      className={`app_sidebar_link${badgeClass}${active ? " app_sidebar_link_active" : ""}`}
       aria-current={active ? "page" : undefined}
+      aria-label={badgeAria}
     >
       <Icon size={18} />
       <span>{label}</span>
+      {badgeEl}
     </Link>
   )
 }
 
 /**
- * Collapsible sidebar group (e.g. Contacts: All contacts + Email Templates).
+ * Collapsible sidebar group (Contacts: Overview, All Contacts, Pipeline, Inbox…).
  */
 function SidebarNavGroup({
   label,
@@ -185,6 +229,7 @@ function SidebarNavGroup({
         >
           {items.map((s) => {
             const SubIcon = s.icon
+            const badge = s.badge?.trim()
             return (
               <NavLink
                 key={s.to}
@@ -192,6 +237,8 @@ function SidebarNavGroup({
                 end
                 className={({ isActive }) =>
                   `app_sidebar_link app_sidebar_sublink${
+                    badge ? " app_sidebar_sublink_with_badge" : ""
+                  }${
                     isActive
                       ? " app_sidebar_link_active app_sidebar_sublink_active"
                       : ""
@@ -206,6 +253,9 @@ function SidebarNavGroup({
                   />
                 ) : null}
                 <span>{s.label}</span>
+                {badge ? (
+                  <span className="app_sidebar_sublink_badge">{badge}</span>
+                ) : null}
               </NavLink>
             )
           })}
@@ -216,21 +266,39 @@ function SidebarNavGroup({
 }
 
 const platformAdminNavItems: NavItemLink[] = [
-  { label: "Metrics", to: "/metrics", icon: BarChart3 },
+  { label: "Platform Metrics", to: "/metrics", icon: BarChart3 },
+]
+
+/** Contacts dropdown — SX-Contacts-UI.html CRM subnav. */
+const contactsNavSubmenu: NavSubItem[] = [
+  // Previous options:
+  // { label: "CRM", to: "/contacts/crm", icon: LayoutGrid },
+  // { label: "All contacts", to: "/contacts", icon: Users },
+
+  // From SX-Contacts-UI.html:
+  { label: "Overview", to: "/contacts/overview", icon: LayoutDashboard },
+  { label: "All Contacts", to: "/contacts", icon: List },
+  { label: "Pipeline", to: "/contacts/pipeline", icon: Columns3 },
+  { label: "Inbox", to: "/contacts/inbox", icon: Inbox },
+  { label: "Campaigns", to: "/contacts/campaigns", icon: Megaphone },
+  { label: "Email Templates", to: "/contacts/email-templates", icon: Mails },
+  { label: "Meetings", to: "/contacts/meetings", icon: Calendar },
+  { label: "Pages & Branding", to: "/contacts/pages", icon: Layers },
+  { label: "Import", to: "/contacts/import", icon: Upload },
+  { label: "Investor view", to: "/contacts/investor-view", icon: Eye },
 ]
 
 const sharedSidebarItems: NavItem[] = [
   { label: "Dashboard", to: "/dashboard", icon: LayoutDashboard },
   // { label: "Leads", to: "/leads", icon: UserPlus },
+  // Previous parent label: "Contacts"
   {
-    label: "Contacts",
+    label: "CRM",
     icon: ContactRound,
-    submenu: [
-      { label: "All contacts", to: "/contacts", icon: Users },
-      { label: "Email Templates", to: "/contacts/email-templates", icon: Mails },
-    ],
+    submenu: contactsNavSubmenu,
   },
   { label: "Settings", to: "/settings", icon: Settings },
+  { label: "Feedback", to: "/feedback", icon: MessageSquareText },
   { label: "Customers", to: "/customers", icon: Building2 },
   // { label: "Billing", to: "/billing", icon: CreditCard },
   // { label: "Members", to: "/members", icon: Users },
@@ -253,8 +321,7 @@ const investingNavItems: NavItemLink[] = [
   // { label: "Documents", to: "/investing/documents", icon: FileText },
   { label: "Profiles", to: "/investing/profiles", icon: IdCard },
   { label: "Settings", to: "/account", icon: Settings },
-  // { label: "Leave a review", to: "/investing/review", icon: Star },
-  { label: "FeedBack", to: "/investing/feedback", icon: Star },
+  { label: "Feedback", to: "/feedback", icon: MessageSquareText },
 ]
 
 /** LP Investor deal participants — investing shell only; no company admin / syndication items */
@@ -270,6 +337,8 @@ function PageLayoutInner() {
   const location = useLocation()
   useUserActivityTracking()
   const { mode, setMode, portalSwitchOverlay } = usePortalMode()
+  const platformAdmin = isPlatformAdmin()
+  const [pendingFeedbackCount, setPendingFeedbackCount] = useState(0)
   const lpInvestor = isLpInvestorSessionUser()
   const { sidebarLogoSrc: workspaceSidebarLogoSrc } = useAppShellBranding()
   const hasTenantSidebarLogo = Boolean(workspaceSidebarLogoSrc)
@@ -296,10 +365,36 @@ function PageLayoutInner() {
     .filter((item) => {
       const path = "to" in item && item.to ? item.to : null
       if (!path) return true
+      if (path === "/feedback") return canAccessFeedback()
       return canAccessSyndicationSidebarPath(path, getStoredUserRole())
     })
 
-  const platformMetricsNav = isPlatformAdmin()
+  useEffect(() => {
+    if (!canAccessFeedback()) {
+      setPendingFeedbackCount(0)
+      return
+    }
+    let cancelled = false
+    async function loadPending() {
+      const n = await fetchPendingFeedbackCount()
+      if (!cancelled) setPendingFeedbackCount(n)
+    }
+    void loadPending()
+    function onRefresh() {
+      void loadPending()
+    }
+    window.addEventListener("focus", onRefresh)
+    window.addEventListener(FEEDBACK_PENDING_CHANGED_EVENT, onRefresh)
+    return () => {
+      cancelled = true
+      window.removeEventListener("focus", onRefresh)
+      window.removeEventListener(FEEDBACK_PENDING_CHANGED_EVENT, onRefresh)
+    }
+  }, [platformAdmin, location.pathname])
+
+  const feedbackPendingBadge = formatPendingBadge(pendingFeedbackCount)
+
+  const platformMetricsNav = platformAdmin
     ? platformAdminNavItems.filter((item) =>
         canAccessSyndicationSidebarPath(item.to, getStoredUserRole()),
       )
@@ -308,7 +403,7 @@ function PageLayoutInner() {
   const sidebarItems: NavItem[] = [
     ...platformMetricsNav,
     sharedSidebarItems[0],
-    // [1] is Contacts group (sub: All contacts, Email Templates)
+    // [1] is CRM group (Overview, All Contacts, Pipeline, Inbox… — SX-Contacts-UI)
     sharedSidebarItems[1],
     ...syndicationPortalNavItems,
     ...sharedSidebarTail,
@@ -316,8 +411,8 @@ function PageLayoutInner() {
 
   /**
    * Sidebar nav set:
-   * - Investing: Dashboard, Investments, Profiles, Settings, FeedBack
-   * - Syndicating: Dashboard, Contacts, Deals, Reporting, Settings, …
+   * - Investing: Dashboard, Investments, Profiles, Settings, Feedback
+   * - Syndicating: Dashboard, Contacts, Deals, Reporting, Settings, Feedback, …
    *
    * `/account` must not flip to Investing nav (Lead / Admin / Co-sponsor My account in Syndicating).
    * `/investing/*` aligns portal mode so the footer label matches the nav (avoids misaligned UX).
@@ -332,9 +427,9 @@ function PageLayoutInner() {
   const showInvestingSidebar =
     lpInvestor || mode === "investing" || isInvestingPath(location.pathname)
   const modeLabel = showInvestingSidebar ? "Investing" : "Syndicating"
-  const investingSidebarItems = lpInvestor
-    ? investingNavItems
-    : investingNavItems
+  const investingSidebarItems = investingNavItems.filter(
+    (item) => item.label !== "Feedback" || canAccessFeedback(),
+  )
 
   return (
     <div className="app_shell">
@@ -410,6 +505,18 @@ function PageLayoutInner() {
                       />
                     )
                   }
+                  if (item.label === "Feedback") {
+                    return (
+                      <SidebarNavItem
+                        key={item.label}
+                        to={item.to}
+                        label={item.label}
+                        icon={Icon}
+                        isActive={isFeedbackPath(location.pathname)}
+                        badge={feedbackPendingBadge}
+                      />
+                    )
+                  }
                   return (
                     <SidebarNavItem
                       key={item.label}
@@ -467,6 +574,19 @@ function PageLayoutInner() {
                     )
                   }
 
+                  if (label === "Feedback") {
+                    return (
+                      <SidebarNavItem
+                        key={label}
+                        to={to}
+                        label={label}
+                        icon={Icon}
+                        isActive={isFeedbackPath(location.pathname)}
+                        badge={feedbackPendingBadge}
+                      />
+                    )
+                  }
+
                   const linkEnd = to === "/dashboard" || to === "/metrics"
                   return (
                     <SidebarNavItem
@@ -519,7 +639,7 @@ function PageLayoutInner() {
   )
 }
 
-function PageLayout() {
+export function PageLayout() {
   return (
     <PortalModeProvider>
       <NotificationsProvider>
@@ -528,5 +648,3 @@ function PageLayout() {
     </PortalModeProvider>
   )
 }
-
-export default PageLayout

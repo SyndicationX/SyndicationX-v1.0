@@ -13,9 +13,11 @@ import {
   startDealEsignEmbeddedTemplateDraft,
 } from "../../services/deal/dealEsignDropboxSign.service.js";
 import {
+  addDealEsignSignflowInvestorDataField,
   completeDealEsignSignflowTemplate,
   startDealEsignSignflowTemplateDraft,
 } from "../../services/deal/dealEsignSignflow.service.js";
+import { ESIGN_INVESTOR_DATA_FIELDS } from "../../services/deal/esignInvestorDataFieldCatalog.js";
 import { getSignFlowPublicConfig } from "../../config/signflow.config.js";
 import {
   formatEsignProviderUnreachableMessage,
@@ -247,6 +249,106 @@ export async function postDealEsignCompleteEmbeddedTemplate(
     const message =
       err instanceof Error ? err.message : "Could not save embedded template";
     console.error("postDealEsignCompleteEmbeddedTemplate:", err);
+    res.status(400).json({ message });
+  }
+}
+
+/**
+ * GET /deals/:dealId/esign-templates/investor-data-fields
+ * Catalog of investor profile fields sponsors can place for auto-prefill.
+ */
+export async function getDealEsignInvestorDataFields(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  res.status(200).json({ fields: ESIGN_INVESTOR_DATA_FIELDS });
+}
+
+/**
+ * POST /deals/:dealId/esign-templates/:fileId/add-investor-data-field
+ * Adds a labeled investor data field onto the open SignFlow draft.
+ */
+export async function postDealEsignAddInvestorDataField(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+
+  const dealId =
+    typeof req.params.dealId === "string"
+      ? req.params.dealId
+      : req.params.dealId?.[0];
+  const fileId =
+    typeof req.params.fileId === "string"
+      ? req.params.fileId
+      : req.params.fileId?.[0];
+
+  if (!dealId || !fileId) {
+    res.status(400).json({ message: "Missing deal id or file id" });
+    return;
+  }
+
+  const body = (req.body as Record<string, unknown> | undefined) ?? {};
+  const fieldKey = bodyString(body.fieldKey).trim();
+  if (!fieldKey) {
+    res.status(400).json({ message: "fieldKey is required" });
+    return;
+  }
+
+  const rawProfileIds = body.profileIds ?? body.profile_ids;
+  const profileIds = Array.isArray(rawProfileIds)
+    ? rawProfileIds
+        .map((id) => bodyString(id).trim())
+        .filter(Boolean)
+    : [];
+
+  try {
+    const scope = await resolveDealViewerScope(
+      user.id,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    if (!(await assertDealIdInViewerScope(dealId, scope))) {
+      res.status(404).json({ message: "Deal not found" });
+      return;
+    }
+    if (!(await isPortalUserLeadOrAdminSponsorOnDeal(dealId, user.id))) {
+      res.status(403).json({
+        message:
+          "Only the lead or admin sponsor can configure eSign template fields",
+      });
+      return;
+    }
+
+    if (getActiveEsignProvider() !== "signflow") {
+      res.status(400).json({
+        message: "Investor data field placement is available for SignFlow only",
+      });
+      return;
+    }
+
+    const result = await addDealEsignSignflowInvestorDataField({
+      dealId,
+      fileId,
+      fieldKey,
+      profileIds,
+    });
+    res.status(200).json(result);
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : "Could not add investor data field to the template";
+    console.error("postDealEsignAddInvestorDataField:", err);
     res.status(400).json({ message });
   }
 }

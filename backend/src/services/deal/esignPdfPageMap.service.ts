@@ -99,17 +99,24 @@ export async function remapSignFlowFieldsToSigningPdf(
     referenceHashes,
     signingHashes,
   );
+  const signingPageCount = Math.max(1, signingHashes.length);
 
   return fields.map((field) => {
     const templatePage = Math.max(
       1,
       Math.floor(field.templatePage ?? field.page),
     );
-    const page = resolveSigningPageForField(
-      field,
-      pageMap,
-      signingHashes,
-      referenceHashes,
+    const page = Math.min(
+      signingPageCount,
+      Math.max(
+        1,
+        resolveSigningPageForField(
+          field,
+          pageMap,
+          signingHashes,
+          referenceHashes,
+        ),
+      ),
     );
     return {
       ...field,
@@ -130,10 +137,13 @@ function signFlowFieldDedupeRank(field: SignFlowField): number {
   const type = String(field.type ?? "")
     .trim()
     .toLowerCase();
-  if (type === "signature") return 0;
-  if (type === "text") return 1;
-  if (type === "date_signed") return 4;
-  return 2;
+  // Prefer catalog/sponsor-added and required fields when resolving true duplicates.
+  const catalogBonus = String(field.dataKey ?? "").trim() ? -1 : 0;
+  const requiredBonus = field.required === false ? 1 : 0;
+  if (type === "signature") return 0 + catalogBonus + requiredBonus;
+  if (type === "text") return 1 + catalogBonus + requiredBonus;
+  if (type === "date_signed" || type === "date") return 4 + catalogBonus + requiredBonus;
+  return 2 + catalogBonus + requiredBonus;
 }
 
 function signFlowFieldCenter(field: SignFlowField): { x: number; y: number } {
@@ -147,6 +157,26 @@ function signFlowFieldCenter(field: SignFlowField): { x: number; y: number } {
   };
 }
 
+function isSigningStyleFieldType(type: string): boolean {
+  const t = type.trim().toLowerCase();
+  return (
+    t === "signature" ||
+    t === "initials" ||
+    t === "initial" ||
+    t === "date_signed" ||
+    t === "date" ||
+    t.includes("sign") ||
+    t.includes("initial")
+  );
+}
+
+function signFlowFieldLabelKey(field: SignFlowField): string {
+  return String(field.label ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
 function signFlowFieldsSamePlacement(a: SignFlowField, b: SignFlowField): boolean {
   const pageA = Math.max(1, Math.floor(a.page));
   const pageB = Math.max(1, Math.floor(b.page));
@@ -157,14 +187,26 @@ function signFlowFieldsSamePlacement(a: SignFlowField, b: SignFlowField): boolea
     return false;
   }
 
+  const labelA = signFlowFieldLabelKey(a);
+  const labelB = signFlowFieldLabelKey(b);
+  const dataKeyA = String(a.dataKey ?? "").trim();
+  const dataKeyB = String(b.dataKey ?? "").trim();
+  const sameCatalogOrLabel =
+    (Boolean(dataKeyA) && dataKeyA === dataKeyB) ||
+    (Boolean(labelA) && labelA === labelB);
+
+  const typeA = String(a.type ?? "")
+    .trim()
+    .toLowerCase();
+  const typeB = String(b.type ?? "")
+    .trim()
+    .toLowerCase();
+
   const centerA = signFlowFieldCenter(a);
   const centerB = signFlowFieldCenter(b);
-  if (
+  const centersClose =
     Math.abs(centerA.x - centerB.x) <= 2 &&
-    Math.abs(centerA.y - centerB.y) <= 2
-  ) {
-    return true;
-  }
+    Math.abs(centerA.y - centerB.y) <= 2;
 
   const ax = signFlowFieldCoordPercent(a.x, 0);
   const ay = signFlowFieldCoordPercent(a.y, 0);
@@ -177,32 +219,26 @@ function signFlowFieldsSamePlacement(a: SignFlowField, b: SignFlowField): boolea
 
   const overlapX = ax < bx + bw && ax + aw > bx;
   const overlapY = ay < by + bh && ay + ah > by;
-  if (!overlapX || !overlapY) return false;
+  const boxesOverlap = overlapX && overlapY;
 
-  const labelA = String(a.label ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
-  const labelB = String(b.label ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
-  if (labelA && labelA === labelB) return true;
+  if (!centersClose && !boxesOverlap) return false;
 
-  const typeA = String(a.type ?? "")
-    .trim()
-    .toLowerCase();
-  const typeB = String(b.type ?? "")
-    .trim()
-    .toLowerCase();
-  if (typeA === typeB) return true;
-
-  const types = new Set([typeA, typeB]);
-  if (types.has("signature") && (types.has("date_signed") || types.has("date"))) {
-    return true;
+  // Text/date data fields with different labels are distinct — never collapse
+  // sponsor-added Choose-field entries into nearby auto-placed fields.
+  if (!isSigningStyleFieldType(typeA) || !isSigningStyleFieldType(typeB)) {
+    return sameCatalogOrLabel;
   }
 
-  return false;
+  // Signature/date row: same label, or same signing type stacked on itself.
+  if (sameCatalogOrLabel) return true;
+
+  const types = new Set([typeA, typeB]);
+  // Signature + date sit on the same row — never treat as duplicate placements.
+  if (types.has("signature") && (types.has("date_signed") || types.has("date"))) {
+    return false;
+  }
+
+  return typeA === typeB;
 }
 
 function signFlowFieldsOverlap(a: SignFlowField, b: SignFlowField): boolean {

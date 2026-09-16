@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import "./App.css";
 import "./common/theme/portal-tabs.css";
 import { ThemeProvider } from "./common/theme/ThemeProvider";
@@ -7,6 +7,8 @@ import { LpInvestorShellGuard } from "@/modules/Investing";
 import { RequireAuth } from "./common/auth/RequireAuth";
 import {
   canAccessCompanyPage,
+  canAccessFeedback,
+  isDealSponsorSessionUser,
   isLpInvestorSessionUser,
   isPlatformAdmin,
 } from "./common/auth/roleUtils";
@@ -19,19 +21,27 @@ import ResetPasswordPage from "./modules/auth/pages/ResetPasswordPage";
 import PrivacyPolicy from "./modules/auth/components/PrivacyPolicy";
 import TermsService from "./modules/auth/components/TermsService";
 import PageNotFound from "./common/PageNotFound";
-import PageLayout from "./common/layout/PageLayout";
+import { PageLayout } from "./common/layout/PageLayout";
 import SponsorDashboardPage from "./modules/Syndication/Dashboard/SponsorDashboardPage";
 import DealsLayout from "./modules/Syndication/Deals/DealsLayout";
 import { CreateDealPage } from "./modules/Syndication/Deals/deal_create/CreateDealPage";
 import { AddDealAssetPage } from "./modules/Syndication/Deals/AddDealAssetPage";
-import { AddDealInvestorClassPage } from "./modules/Syndication/Deals/AddDealInvestorClassPage";
-import { EditDealInvestorClassPage } from "./modules/Syndication/Deals/EditDealInvestorClassPage";
+import { ClassSetupPage } from "./modules/Syndication/Deals/class-setup";
+import { DistributionSetupPage } from "./modules/Syndication/Deals/distribution-setup";
+import { DistributionDetailsPage } from "./modules/Syndication/Deals/tabs/distributions/DistributionDetailsPage";
+// import { DealInvestorDistributionsPage } from "./modules/Syndication/Deals/tabs/investors/DealInvestorDistributionsPage";
+import {
+  RedirectLegacyAddInvestorClass,
+  RedirectLegacyEditInvestorClass,
+} from "./modules/Syndication/Deals/class-setup/RedirectLegacyInvestorClassRoutes";
 import { DealDetailPage } from "./modules/Syndication/Deals/DealDetailPage";
 import { DealOfferingPortfolioPage } from "./modules/Syndication/Deals/DealOfferingPortfolioPage";
 import { DealsListPage } from "./modules/Syndication/Deals/DealsListPage";
 import Opportunities from "@/modules/Investing/pages/opportunities/Opportunities";
 import InvestmentsPage from "@/modules/Investing/pages/investments/InvestmentsPage";
 import InvestmentDetailPage from "@/modules/Investing/pages/investments/InvestmentDetailPage";
+import InvestorCashflowsPage from "@/modules/Investing/pages/InvestorCashflowsPage";
+import InvestorDistributionDetailsPage from "@/modules/Investing/pages/investments/InvestorDistributionDetailsPage";
 import InvestmentEsignSignGate from "@/modules/Investing/pages/investments/InvestmentEsignSignGate";
 import DealInvestNowPage from "@/modules/Investing/pages/invest/DealInvestNowPage";
 import InvestingProfilesPage from "@/modules/Investing/pages/profiles/InvestingProfilesPage";
@@ -45,10 +55,14 @@ import CompanyMembersPage from "./modules/Syndication/company/CompanyMembersPage
 import CompanyDealsPage from "./modules/Syndication/company/CompanyDealsPage";
 import CustomerCompanyLayout from "./modules/Syndication/company/CustomerCompanyLayout";
 import MembersLayout from "./modules/Syndication/usermanagement/MembersLayout";
-import UserManagementPage from "./modules/Syndication/usermanagement/UserManagementPage";
+import { UserManagementPage } from "./modules/Syndication/usermanagement/UserManagementPage";
 import ContactsPage from "./modules/Syndication/contacts/ContactsPage";
+import ContactDetailPage from "./modules/Syndication/contacts/ContactDetailPage";
 import EmailTemplatesPage from "./modules/Syndication/contacts/EmailTemplatesPage";
 import EmailTemplateNewPage from "./modules/Syndication/contacts/EmailTemplateNewPage";
+import CrmPage from "./modules/Syndication/contacts/CrmPage";
+import CrmOverviewPage from "./modules/Syndication/contacts/CrmOverviewPage";
+import CrmSectionPlaceholderPage from "./modules/Syndication/contacts/CrmSectionPlaceholderPage";
 import CreateReusableTemplatePage from "./modules/Syndication/Templates/CreateReusableTemplatePage";
 import { usePortalMode } from "./modules/Investing/context/PortalModeContext";
 import { MyAccountLayout } from "./modules/myaccount/MyAccountLayout";
@@ -59,6 +73,7 @@ import { CompanyOverview } from "./modules/Investing/pages/company_overview/Comp
 import Landing_Page from "./modules/Landing_Page/Landing_Page";
 import ClassicLandingPage from "./modules/Landing_Page/pages/ClassicLandingPage";
 import { NotificationsPage } from "@/modules/notifications";
+import { FeedbackPage } from "@/modules/feedback";
 
 type PlaceholderPageProps = {
   title: string;
@@ -82,12 +97,18 @@ function CompanyRoute() {
 /** Syndication workspace settings; investing portal opens My account instead. */
 function SettingsRoute() {
   const { mode } = usePortalMode();
+  const location = useLocation();
   const token = sessionStorage.getItem(SESSION_BEARER_KEY);
   if (!token) return <Navigate to="/signin" replace />;
   if (mode === "investing" || isLpInvestorSessionUser()) {
     return <Navigate to="/account" replace />;
   }
-  if (!canAccessCompanyPage()) return <Navigate to="/account" replace />;
+  const billing = new URLSearchParams(location.search).get("billing");
+  const leadSponsorPaying =
+    billing === "pay" && isDealSponsorSessionUser();
+  if (!canAccessCompanyPage() && !leadSponsorPaying) {
+    return <Navigate to="/account" replace />;
+  }
   return <CompanyPage />;
 }
 
@@ -108,6 +129,13 @@ function CustomersRoute() {
     return <Navigate to="/settings" replace />;
   }
   return <CompanyPage variant="customers" />;
+}
+
+function FeedbackRoute() {
+  const token = sessionStorage.getItem(SESSION_BEARER_KEY);
+  if (!token) return <Navigate to="/signin" replace />;
+  if (!canAccessFeedback()) return <Navigate to="/dashboard" replace />;
+  return <FeedbackPage />;
 }
 
 function MetricsRoute() {
@@ -154,12 +182,30 @@ function App() {
                 element={<DealOfferingPortfolioPage />}
               />
               <Route
+                path=":dealId/class-setup"
+                element={<ClassSetupPage />}
+              />
+              <Route
+                path=":dealId/distribution-setup"
+                element={<DistributionSetupPage />}
+              />
+              <Route
+                path=":dealId/distributions/:distributionId"
+                element={<DistributionDetailsPage />}
+              />
+              {/* Separate investor distributions page — commented; investor click uses popup for now.
+              <Route
+                path=":dealId/investors/:investorId/distributions"
+                element={<DealInvestorDistributionsPage />}
+              />
+              */}
+              <Route
                 path=":dealId/investor-classes/new"
-                element={<AddDealInvestorClassPage />}
+                element={<RedirectLegacyAddInvestorClass />}
               />
               <Route
                 path=":dealId/investor-classes/:classId/edit"
-                element={<EditDealInvestorClassPage />}
+                element={<RedirectLegacyEditInvestorClass />}
               />
               <Route
                 path=":dealId/assets/:assetId/edit"
@@ -183,6 +229,10 @@ function App() {
               }
             />
             <Route path="investing/opportunities" element={<Opportunities />} />
+            <Route
+              path="investing/investments/:investmentId/distributions/:distributionId"
+              element={<InvestorDistributionDetailsPage />}
+            />
             <Route
               path="investing/investments/:investmentId"
               element={<InvestmentDetailPage />}
@@ -226,23 +276,12 @@ function App() {
             />
             <Route
               path="investing/feedback"
-              element={
-                <WorkInProgressPage
-                  title="Feedback"
-                  backTo="/dashboard"
-                  backLabel="Dashboard"
-                />
-              }
+              element={<Navigate to="/feedback" replace />}
             />
+            <Route path="feedback" element={<FeedbackRoute />} />
             <Route
               path="investing/cashflows"
-              element={
-                <WorkInProgressPage
-                  title="Cashflows"
-                  backTo="/investing/investments"
-                  backLabel="Investments"
-                />
-              }
+              element={<InvestorCashflowsPage />}
             />
             <Route path="account" element={<MyAccountLayout />}>
               <Route index element={<Navigate to="/account/company" replace />} />
@@ -282,6 +321,72 @@ function App() {
               element={<EmailTemplateNewPage />}
             />
             <Route path="contacts/email-templates" element={<EmailTemplatesPage />} />
+            <Route path="contacts/overview" element={<CrmOverviewPage />} />
+            <Route path="contacts/crm" element={<CrmPage />} />
+            <Route
+              path="contacts/pipeline"
+              element={
+                <CrmSectionPlaceholderPage
+                  title="Pipeline"
+                  description="Track soft commits and move prospects through your capital raise stages."
+                />
+              }
+            />
+            <Route
+              path="contacts/inbox"
+              element={
+                <CrmSectionPlaceholderPage
+                  title="Inbox"
+                  description="Emails and texts from campaigns land here — replies stay in one thread."
+                />
+              }
+            />
+            <Route
+              path="contacts/campaigns"
+              element={
+                <CrmSectionPlaceholderPage
+                  title="Campaigns"
+                  description="Nurture drips and outbound campaigns for leads, prospects, and investors."
+                />
+              }
+            />
+            <Route
+              path="contacts/meetings"
+              element={
+                <CrmSectionPlaceholderPage
+                  title="Meetings"
+                  description="Schedule and track investor calls without leaving the portal."
+                />
+              }
+            />
+            <Route
+              path="contacts/pages"
+              element={
+                <CrmSectionPlaceholderPage
+                  title="Pages & Branding"
+                  description="Landing pages and brand settings that feed contacts into your CRM."
+                />
+              }
+            />
+            <Route
+              path="contacts/import"
+              element={
+                <CrmSectionPlaceholderPage
+                  title="Import"
+                  description="Bring contacts from spreadsheets, forms, or connected CRMs."
+                />
+              }
+            />
+            <Route
+              path="contacts/investor-view"
+              element={
+                <CrmSectionPlaceholderPage
+                  title="Investor view"
+                  description="Preview how investors experience your outreach and portal messaging."
+                />
+              }
+            />
+            <Route path="contacts/:contactId" element={<ContactDetailPage />} />
             <Route path="contacts" element={<ContactsPage />} />
             <Route path="templates/new" element={<CreateReusableTemplatePage />} />
             {/* <Route path="templates" element={<ReusableTemplatesPage />} /> */}

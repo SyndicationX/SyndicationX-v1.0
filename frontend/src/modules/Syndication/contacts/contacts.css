@@ -4,6 +4,120 @@
   min-width: 0;
 }
 
+.contacts_page .um_spin {
+  animation: contacts_um_spin 0.75s linear infinite;
+}
+
+@keyframes contacts_um_spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/*
+ * Fill the main content viewport so the table body scrolls inside the panel
+ * (sticky header). Keep main content scrollable as a fallback when chrome is tall
+ * or page size is large (e.g. 100).
+ */
+.app_main_content:has(> .contacts_page),
+.app_main_content:has(.contacts_page) {
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-bottom: 0.5rem;
+}
+
+.contacts_page.um_page {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: 0.65rem;
+  margin-bottom: 0;
+}
+
+.contacts_page > .um_members_header_block,
+.contacts_page > .contacts_main_tabs_outer,
+.contacts_page > .contacts_status_tabs_outer,
+.contacts_page > .usage_filter_tabs_outer {
+  flex: 0 0 auto;
+}
+
+.contacts_page > .contacts_main_tab_panel_wrap,
+.contacts_page > .contacts_main_tab_content_flush,
+.contacts_page > .um_members_tab_content.contacts_main_tab_content_flush {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Fragment wrappers: status tabs + panel sit as siblings under contacts_page */
+.contacts_page > .contacts_status_tabs_outer + .contacts_main_tab_panel_wrap,
+.contacts_page
+  > .usage_filter_tabs_outer
+  + .um_members_tab_content.contacts_main_tab_content_flush {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.contacts_main_tab_panel_wrap,
+.contacts_main_tab_content_flush.um_members_tab_content {
+  min-width: 0;
+  min-height: 0;
+}
+
+.contacts_main_tab_panel_wrap > .um_members_tab_content,
+.contacts_page .um_members_tab_content.contacts_main_tab_content_flush {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.contacts_page .contacts_table_panel.um_panel,
+.contacts_page .deal_inv_table_panel.contacts_table_panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0.75rem 0.9rem 0.65rem;
+}
+
+.contacts_page .contacts_table_panel > .um_toolbar,
+.contacts_page .contacts_table_panel > .contacts_directory_toolbar,
+.contacts_page .contacts_table_panel > .um_toolbar_notice,
+.contacts_page .contacts_table_panel > .contacts_active_tag_filter,
+.contacts_page .contacts_table_panel > .contacts_toolbar_trailing,
+.contacts_page .contacts_table_panel > .contacts_table_loading_state,
+.contacts_page .contacts_table_panel > .contacts_table_empty_hint {
+  flex: 0 0 auto;
+}
+
+.contacts_page .contacts_table_panel .um_table_wrap.data_table_shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.contacts_page .contacts_table_panel .um_table_wrap.data_table_shell .um_table_pagination {
+  flex: 0 0 auto;
+}
+
+.contacts_page.um_page .um_members_header_block .um_header_row {
+  margin-bottom: 0.4em;
+}
+
+.contacts_page.um_page .um_members_header_block .um_title {
+  font-size: 1.2rem;
+}
+
 .email_templates_page .email_templates_tab_panel {
   margin-top: 0.35rem;
   max-width: 40em;
@@ -21,7 +135,11 @@
   color: var(--portal-text-muted);
 }
 
+/* Scroll region between the pinned modal head and footer. */
 .email_templates_view_modal_body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   padding: 0 1.25rem 1rem;
   box-sizing: border-box;
 }
@@ -187,8 +305,6 @@
   color: var(--portal-text, #0f172a);
   overflow-wrap: anywhere;
   word-break: break-word;
-  max-height: min(52vh, 26rem);
-  overflow: auto;
 }
 
 .email_preview_message_body :first-child {
@@ -395,6 +511,48 @@
   min-width: 0;
 }
 
+/* Fill the main pane: keep the title/back row fixed, scroll the form. */
+.app_main_content:has(.email_template_new_page) {
+  overflow: hidden;
+}
+
+.email_template_new_page.contacts_page.um_page {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.email_template_new_page.deals_add_deal_asset_page {
+  min-height: 0;
+}
+
+.email_template_new_page > header.deals_list_head,
+.email_template_new_page .deals_add_deal_asset_head_main {
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--portal-page-bg);
+}
+
+.email_template_new_page > header.deals_list_head {
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.65rem;
+}
+
+.email_template_new_page
+  .deal_inv_table_panel.contacts_table_panel.email_template_new_form {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  display: block;
+}
+
 .email_template_new_title.deals_list_title {
   display: flex;
   align-items: center;
@@ -403,12 +561,38 @@
 
 .email_template_new_title_icon {
   flex-shrink: 0;
-  color: var(--portal-primary, #2563eb);
+  color: var(--portal-gold-accent, #d4af37);
 }
 
 .email_template_new_form {
   padding: 1.25rem 1.25rem 1.5rem;
   box-sizing: border-box;
+}
+
+.email_template_new_form .um_field .um_field_label_row,
+.email_template_new_form .um_field > span.um_field_label_row {
+  color: var(--portal-form-label-color, var(--portal-text-muted));
+}
+
+.email_template_new_form .um_input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.55em 1em;
+  border: 1px solid var(--portal-border, #e2e8f0);
+  border-radius: var(--portal-pill-radius, var(--ui-button-border-radius, 4px));
+  font-family: inherit;
+  font-size: 1em;
+  color: var(--portal-text, #0f172a);
+  background: var(--portal-surface, #fff);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.email_template_new_form .um_input:focus-visible {
+  outline: none;
+  border-color: var(--portal-text-muted);
+  box-shadow: var(--portal-field-focus-shadow, 0 0 0 2px rgba(212, 175, 55, 0.25));
 }
 
 .email_template_new_form .um_field {
@@ -482,6 +666,15 @@
     border-color 0.15s ease,
     background 0.15s ease,
     box-shadow 0.15s ease;
+}
+
+.email_template_attachment_dropzone--busy,
+.email_template_attachment_dropzone--busy:hover,
+.email_template_attachment_dropzone--busy.email_template_attachment_dropzone--focus {
+  cursor: wait;
+  pointer-events: none;
+  opacity: 0.85;
+  box-shadow: none;
 }
 
 .email_template_attachment_dropzone:hover,
@@ -663,6 +856,106 @@
   animation: email_template_new_btn_spin 0.85s linear infinite;
 }
 
+:root[data-theme="dark"] .email_template_new_title.deals_list_title {
+  color: var(--font-color-title, var(--portal-text));
+}
+
+:root[data-theme="dark"] .email_template_new_form .um_field .um_field_label_row,
+:root[data-theme="dark"] .email_template_new_form .um_field > span.um_field_label_row {
+  color: var(--portal-form-label-color, var(--portal-text-muted));
+}
+
+:root[data-theme="dark"] .email_template_new_form .um_input {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--portal-border);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .email_template_new_form .um_input::placeholder {
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .email_template_new_form .um_input:focus-visible {
+  box-shadow: var(
+    --portal-field-focus-shadow-dark,
+    0 0 0 2px rgba(212, 175, 55, 0.2)
+  );
+}
+
+:root[data-theme="dark"] .email_template_attachment_dropzone {
+  border-color: var(--portal-border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"] .email_template_attachment_dropzone:hover,
+:root[data-theme="dark"] .email_template_attachment_dropzone--focus {
+  border-color: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 55%,
+    var(--portal-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 10%,
+    rgba(255, 255, 255, 0.04)
+  );
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--portal-gold-accent, #d4af37) 14%, transparent);
+}
+
+:root[data-theme="dark"] .email_template_attachment_dropzone_title {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .email_template_attachment_file_row {
+  border-color: var(--portal-border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"] .email_template_attachment_file_name {
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .email_template_attachment_file_btn {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--portal-border);
+  color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .email_template_attachment_file_btn:hover:not(:disabled) {
+  border-color: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 40%,
+    var(--portal-border)
+  );
+  color: var(--portal-gold-accent, #d4af37);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+:root[data-theme="dark"] .email_template_attachment_file_btn--danger:hover:not(:disabled) {
+  border-color: color-mix(
+    in srgb,
+    var(--portal-danger, #ffb4ab) 45%,
+    var(--portal-border)
+  );
+  color: var(--portal-danger, #ffb4ab);
+  background: color-mix(
+    in srgb,
+    var(--portal-danger, #ffb4ab) 12%,
+    transparent
+  );
+}
+
+:root[data-theme="dark"] .email_templates_body_html {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--portal-border);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .email_templates_edit_meta strong {
+  color: var(--portal-text);
+}
+
 /* Tags / Lists / Contacts tables — action cells are icon-only buttons */
 .contacts_row_icon_actions {
   display: inline-flex;
@@ -703,7 +996,171 @@
 }
 
 .contacts_main_tabs_outer {
-  margin-bottom: 0.35em;
+  margin-bottom: 0.25em;
+}
+
+/* Secondary filter strip (usage on Tags/Lists) — keep compact */
+.contacts_status_tabs_outer.um_members_tabs_outer {
+  margin-top: 0.1rem;
+  margin-bottom: 0.45em;
+}
+
+/* Directory toolbar: status + actions | filters + search — one dense strip */
+.contacts_directory_toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem 0.85rem;
+  width: 100%;
+  margin: 0 0 0.65rem;
+  min-width: 0;
+}
+
+.contacts_directory_toolbar_start,
+.contacts_directory_toolbar_end {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.65rem;
+  min-width: 0;
+}
+
+.contacts_directory_toolbar_end {
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+.contacts_status_pills {
+  display: inline-flex;
+  align-items: stretch;
+  padding: 0.15rem;
+  border: 1px solid var(--portal-border, #e2e8f0);
+  border-radius: var(--portal-pill-radius, 4px);
+  background: color-mix(in srgb, var(--portal-surface, #fff) 88%, var(--portal-text) 4%);
+  flex-shrink: 0;
+}
+
+.contacts_status_pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0.3rem 0.55rem;
+  border: none;
+  border-radius: calc(var(--portal-pill-radius, 4px) - 1px);
+  background: transparent;
+  color: var(--portal-text-muted, #64748b);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.contacts_status_pill svg {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.contacts_status_pill_count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--portal-text) 8%, transparent);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.contacts_status_pill:hover {
+  color: var(--portal-text, #0f172a);
+  background: color-mix(in srgb, var(--portal-text) 5%, transparent);
+}
+
+.contacts_status_pill_active {
+  color: var(--portal-text, #0f172a);
+  background: var(--portal-surface, #fff);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 8%);
+}
+
+.contacts_status_pill_active .contacts_status_pill_count {
+  background: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 22%,
+    transparent
+  );
+}
+
+.contacts_directory_actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.contacts_directory_toolbar .um_btn_toolbar,
+.contacts_directory_toolbar .um_toolbar_export_btn {
+  min-height: 2rem;
+  padding: 0 0.65rem;
+  font-size: 0.8125rem;
+  gap: 0.35rem;
+}
+
+.contacts_directory_toolbar .um_btn_toolbar svg,
+.contacts_directory_toolbar .um_toolbar_export_btn svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.contacts_directory_search.um_search_wrap {
+  flex: 0 1 14rem;
+  min-width: min(11rem, 100%);
+  max-width: 16rem;
+}
+
+.contacts_directory_toolbar .contacts_directory_search .um_search_input {
+  height: 2rem;
+  min-height: 2rem;
+  font-size: 0.8125rem;
+}
+
+.contacts_directory_toolbar .contacts_toolbar_filter_dropdown {
+  width: 8.75rem;
+  max-width: 10rem;
+}
+
+.contacts_directory_toolbar .contacts_accreditation_filter_select {
+  width: 9.25rem;
+  max-width: 10.5rem;
+}
+
+.contacts_directory_toolbar
+  .contacts_toolbar_filter_dropdown_trigger.portal_dropdown_select_trigger,
+.contacts_directory_toolbar
+  .contacts_toolbar_filter_dropdown
+  .portal_dropdown_select_trigger {
+  min-height: 2rem;
+  padding: 0.28rem 0.45rem;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 1100px) {
+  .contacts_directory_toolbar_end {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+
+  .contacts_directory_search.um_search_wrap {
+    flex: 1 1 12rem;
+    max-width: none;
+  }
 }
 
 .contacts_inner_header.um_members_header_block {
@@ -716,7 +1173,6 @@
   width: 100%;
 }
 
-/* Contact / Tags / Lists: filter pills + Add CTA on one row */
 .contacts_toolbar_filters_row {
   display: flex;
   flex-wrap: wrap;
@@ -747,11 +1203,14 @@
 .contacts_label_modal.um_modal {
   max-width: min(26rem, 100%);
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .contacts_label_modal_head.um_modal_head {
   align-items: flex-start;
   gap: 0.5rem;
+  margin-bottom: 1em;
 }
 
 .contacts_label_modal_title.um_modal_title {
@@ -762,12 +1221,19 @@
 }
 
 .contacts_label_modal_title_icon.um_title_icon {
-  flex-shrink: 0;
-  color: var(--portal-primary, #2563eb);
+  color: var(--portal-gold-accent, #d4af37);
 }
 
 .contacts_label_modal_field .um_field_label_row {
   align-items: center;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--portal-form-label-color, var(--portal-text-muted));
+  margin-bottom: 0.35em;
+}
+
+.contacts_label_modal_field .um_field_label_icon {
+  color: var(--portal-text-muted);
 }
 
 .contacts_label_modal_textarea.um_field_textarea {
@@ -780,6 +1246,7 @@
 .contacts_label_modal_actions.um_modal_actions {
   flex-wrap: wrap;
   gap: 0.5rem;
+  margin-top: 0.25em;
 }
 
 .contacts_label_modal_actions .um_btn_primary,
@@ -790,29 +1257,43 @@
 }
 
 .contacts_label_modal_form {
-  padding: 0 1.25rem 1.25rem;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0;
 }
 
-/* Tag / list flows — override global `.um_field` pill inputs (user_management.css) */
-.contacts_label_modal .contacts_label_modal_field.um_field label {
-  display: flex;
-  align-items: center;
-  gap: 0.45em;
+.contacts_label_modal .contacts_label_modal_field.um_field {
+  margin-bottom: 1em;
 }
 
-.contacts_label_modal .contacts_label_modal_field.um_field input {
-  width: unset !important;
-  max-width: 100%;
-  min-width: 0;
-  padding: 0 !important;
-  border-radius: 0 !important;
+.contacts_label_modal .contacts_label_modal_field.um_field:last-of-type {
+  margin-bottom: 0;
+}
+
+.contacts_label_modal .contacts_label_modal_field.um_field input:not([type="checkbox"]) {
+  width: 100%;
   box-sizing: border-box;
+  padding: 0.55em 1em;
+  border: 1px solid var(--portal-border, #e2e8f0);
+  border-radius: var(--portal-pill-radius, var(--ui-button-border-radius, 4px));
+  font-family: inherit;
+  font-size: 1em;
+  color: var(--portal-text, #0f172a);
+  background: var(--portal-surface, #fff);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-.add_contact_panel .add_contact_multiselect_field.um_field label {
+.contacts_label_modal .contacts_label_modal_field.um_field input:not([type="checkbox"]):disabled,
+.contacts_label_modal .contacts_label_modal_textarea.um_field_textarea:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+  background: var(--portal-muted-bg, #f8fafc);
+}
+
+.add_contact_panel .add_contact_multiselect_field.um_field > label {
   display: flex;
   align-items: center;
   gap: 0.45em;
@@ -826,6 +1307,25 @@
   padding: 0 !important;
   border-radius: 5px !important;
   box-sizing: border-box;
+}
+
+.add_contact_panel
+  .add_contact_multiselect_field.um_field
+  input.add_contact_multiselect_checkbox {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  opacity: 0;
+  cursor: pointer;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 /* Main contacts list uses `.deal_inv_table` (same as Deal Members / Investors) */
@@ -842,7 +1342,7 @@
   color: inherit;
 }
 
-/* View contact: no inner vertical scroll — body grows with content; overlay scrolls if needed; dialog centered. */
+/* View contact: stay inside the viewport; body scrolls, header/footer stay put. */
 .contacts_view_modal_overlay.um_modal_overlay {
   align-items: center;
   justify-content: center;
@@ -852,8 +1352,10 @@
 
 .contacts_view_modal.um_modal.um_modal_view {
   max-width: min(36em, 100%);
-  max-height: none;
-  overflow-x: hidden;
+  max-height: min(90dvh, calc(100dvh - 2rem));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   box-sizing: border-box;
 }
@@ -865,6 +1367,7 @@
 
 .contacts_view_modal .um_modal_head {
   min-width: 0;
+  flex-shrink: 0;
 }
 
 .contacts_view_modal .um_modal_head .um_modal_title {
@@ -874,10 +1377,10 @@
 }
 
 .contacts_view_modal .deals_add_inv_modal_scroll {
-  flex: none;
-  min-height: auto;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-x: hidden;
-  overflow-y: visible;
+  overflow-y: auto;
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
@@ -930,6 +1433,8 @@
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
+  flex-shrink: 0;
+  padding-top: 0.75rem;
 }
 
 .contacts_view_modal_footer .contacts_view_modal_close_btn {
@@ -945,6 +1450,136 @@
   overscroll-behavior-x: contain;
 }
 
+/*
+ * Sticky table header: rows scroll inside `.data_table_scroll_region`.
+ * Cap height to the viewport so page size 100 (and larger lists) can keep
+ * scrolling — without a max-height the region grows with all rows and never
+ * becomes a scroll container when a parent uses overflow clipping.
+ */
+.contacts_page
+  .contacts_table_panel
+  .um_table_wrap.data_table_shell
+  .data_table_scroll_region:not(.data_table_scroll_region--empty),
+.email_templates_page
+  .contacts_table_panel
+  .um_table_wrap.data_table_shell
+  .data_table_scroll_region:not(.data_table_scroll_region--empty) {
+  flex: 1 1 auto;
+  min-height: 10rem;
+  max-height: max(10rem, calc(100dvh - 15.5rem));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table_wrap.data_table_shell
+  .data_table_scroll_region.data_table_scroll_region--overflow-x:not(
+    .data_table_scroll_region--empty
+  ),
+.email_templates_page
+  .contacts_table_panel
+  .um_table_wrap.data_table_shell
+  .data_table_scroll_region.data_table_scroll_region--overflow-x:not(
+    .data_table_scroll_region--empty
+  ) {
+  overflow-x: auto;
+}
+
+.contacts_page .contacts_table_panel .um_table,
+.email_templates_page .contacts_table_panel .um_table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.contacts_page .contacts_table_panel .um_table thead th,
+.email_templates_page .contacts_table_panel .um_table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--portal-table-header-bg, #f8fafc);
+  background-clip: padding-box;
+  box-shadow: 0 1px 0 0
+    var(--portal-table-header-border, var(--portal-table-border, #e2e8f0));
+  padding-top: 0.45em;
+  padding-bottom: 0.45em;
+}
+
+.contacts_page .contacts_table_panel .um_table tbody td {
+  padding-top: 0.4em;
+  padding-bottom: 0.4em;
+}
+
+/* Override DataTable `position: relative` on non-pinned header cells. */
+.contacts_page
+  .contacts_table_panel
+  .um_table.data_table_sticky_first
+  thead
+  th:not(.data_table_col_sticky),
+.email_templates_page
+  .contacts_table_panel
+  .um_table.data_table_sticky_first
+  thead
+  th:not(.data_table_col_sticky) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table.data_table_sticky_first
+  thead
+  th.data_table_col_sticky--0,
+.email_templates_page
+  .contacts_table_panel
+  .um_table.data_table_sticky_first
+  thead
+  th.data_table_col_sticky--0 {
+  top: 0;
+  z-index: 5;
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table.data_table_sticky_first
+  thead
+  th.data_table_col_sticky--1,
+.email_templates_page
+  .contacts_table_panel
+  .um_table.data_table_sticky_first
+  thead
+  th.data_table_col_sticky--1 {
+  top: 0;
+  z-index: 6;
+}
+
+.contacts_table_loading_state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+  min-height: 12rem;
+  padding: 2.5rem 1.25rem;
+  text-align: center;
+}
+
+.contacts_table_loading_label,
+.contacts_table_empty_hint {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--portal-text-muted, #64748b);
+  text-align: center;
+}
+
+.contacts_table_empty_hint {
+  padding: 2.5rem 1.25rem;
+}
+
 .contacts_table_panel .um_table.contacts_um_table {
   table-layout: fixed;
   width: 100%;
@@ -954,6 +1589,23 @@
 .contacts_table_panel .um_table th,
 .contacts_table_panel .um_table td {
   vertical-align: middle;
+}
+
+/* User column — was expanding to fill leftover width (min-width: 220px from members table). */
+.contacts_table_panel .contacts_th_user,
+.contacts_table_panel .contacts_td_user.um_td_user {
+  width: 16rem;
+  min-width: 14rem !important;
+  max-width: 16rem;
+  box-sizing: border-box;
+}
+
+.contacts_table_panel .contacts_td_user .um_user_meta_username,
+.contacts_table_panel .contacts_td_user .um_user_meta_email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 
 /* Actions column — keep “Actions” header on one line (Contacts + Email templates). */
@@ -982,14 +1634,21 @@
   text-align: center;
 }
 
-/* Main contacts: Deals column — match centered numeric header/cell on `.deal_inv_table` */
+/* Main contacts: Deals column — keep count visible under fixed/sticky layout */
 .deal_inv_table_panel.contacts_table_panel
   .um_table.deal_inv_table
   th.contacts_th_deals_count,
 .deal_inv_table_panel.contacts_table_panel
   .um_table.deal_inv_table
   td.contacts_td_deals_count {
+  min-width: 5em;
+  width: 6.5em;
+  max-width: 7.5em;
   text-align: center;
+  vertical-align: middle;
+  font-variant-numeric: tabular-nums;
+  overflow: visible;
+  white-space: nowrap;
 }
 
 .deal_inv_table_panel.contacts_table_panel
@@ -1012,15 +1671,16 @@
   min-width: 1.25em;
   text-align: center;
   font-variant-numeric: tabular-nums;
+  line-height: 1.2;
 }
 
 .contacts_deals_count_num--empty {
-  color: var(--portal-text-muted, #94a3b8);
+  color: var(--portal-text-muted, #64748b);
   font-weight: 500;
 }
 
 .contacts_deals_count_num--value {
-  font-weight: 650;
+  font-weight: 600;
   color: var(--portal-text, #0f172a);
 }
 
@@ -1330,6 +1990,28 @@
   display: grid;
   gap: 0 1em;
   grid-template-columns: 1fr;
+  align-items: start;
+}
+
+.add_contact_name_grid .um_field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.add_contact_name_grid .um_field_label_row {
+  min-height: 1.375em;
+  flex-shrink: 0;
+}
+
+.add_contact_name_grid .um_field_label_with_suffix {
+  flex-wrap: nowrap;
+}
+
+.add_contact_name_grid .um_field_label_text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @media (min-width: 480px) {
@@ -1382,12 +2064,50 @@
   display: flex;
   align-items: center;
   gap: 0.5em;
-  min-height: 2.65em;
+  min-height: 2.6666667em;
   padding: 0.4em 0.75em 0.4em 0.8em;
-  border: 1px solid var(--portal-border, #e2e8f0);
-  border-radius: var(--portal-card-radius, 4px);
+  border: 1px solid var(--portal-border, #e5e5e5);
+  border-radius: var(--portal-pill-radius, 4px);
   background: var(--portal-surface, #fff);
   box-sizing: border-box;
+}
+
+.add_contact_multiselect_control.is_select {
+  position: relative;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35em 0.45em;
+  padding: 0.4em 2.1em 0.4em 0.7em;
+  cursor: text;
+}
+
+.add_contact_multiselect_control.is_select .add_contact_multiselect_inline_chips {
+  display: contents;
+}
+
+.add_contact_multiselect_control.is_select .contacts_chip {
+  max-width: calc(100% - 2.5em);
+}
+
+.add_contact_multiselect_chevron {
+  position: absolute;
+  top: 50%;
+  right: 0.6em;
+  flex-shrink: 0;
+  color: var(--portal-text-muted, #64748b);
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: transform 0.15s ease;
+}
+
+.add_contact_multiselect_control.is_open .add_contact_multiselect_chevron {
+  transform: translateY(-50%) rotate(180deg);
+}
+
+.add_contact_multiselect_control.is_select .add_contact_multiselect_search_input {
+  flex: 1 1 7em;
+  min-width: 6em;
+  min-height: 1.55em;
 }
 
 .add_contact_multiselect_search_icon {
@@ -1412,24 +2132,32 @@
   outline: none;
 }
 
-.add_contact_multiselect_control:focus-within {
-  border-color: var(--portal-primary, #2563eb);
-  box-shadow: 0 0 0 2px
-    color-mix(in srgb, var(--portal-primary, #2563eb) 22%, transparent);
+.add_contact_multiselect_control:focus-within,
+.add_contact_multiselect_control.is_open {
+  border-color: var(--portal-text-muted, #64748b);
+  box-shadow: var(--portal-field-focus-shadow, 0 0 0 2px rgb(17 24 39 / 8%));
+}
+
+.add_contact_owners_multiselect.add_contact_multiselect_field {
+  margin-bottom: 0.45rem;
+}
+
+.add_contact_owners_field .add_contact_owners_hint {
+  margin: 0.4em 0 0;
 }
 
 .add_contact_multiselect_panel {
   position: absolute;
   left: 0;
   right: 0;
-  top: calc(100% + 5px);
+  top: calc(100% + 4px);
   z-index: 20;
   margin-top: 0;
-  padding: 0.25em 0;
-  border: 1px solid var(--portal-border, #e2e8f0);
-  border-radius: var(--portal-card-radius, 4px);
+  padding: 0.3em 0;
+  border: 1px solid var(--portal-border, #e5e5e5);
+  border-radius: var(--portal-pill-radius, 4px);
   background: var(--portal-surface, #fff);
-  max-height: min(220px, 40vh);
+  max-height: min(240px, 42vh);
   overflow-y: auto;
   box-shadow:
     0 4px 6px -2px rgb(15 23 42 / 0.08),
@@ -1476,70 +2204,108 @@
   line-height: 1.45;
 }
 
+.um_field label.add_contact_multiselect_row,
+.add_contact_panel .um_field label.add_contact_multiselect_row,
 .add_contact_multiselect_row {
+  position: relative;
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 0.65em;
+  width: 100%;
   margin: 0;
-  padding: 0.55em 0.9em;
+  margin-bottom: 0;
+  padding: 0.5em 0.85em;
   cursor: pointer;
   font-family: inherit;
   font-style: normal;
-  font-size: 0.9375rem;
+  font-size: 0.875rem;
+  font-weight: 500;
   color: var(--portal-text, #334155);
+  box-sizing: border-box;
 }
 
 .add_contact_multiselect_row:hover {
   background: var(--portal-muted-surface, #f8fafc);
 }
 
-/* Tag / list options: black rounded square + white check (matches design ref) */
-.add_contact_multiselect_checkbox {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 1.05rem !important;
-  height: 1.05rem !important;
-  max-width: 1.05rem !important;
-  min-width: 1.05rem !important;
+.add_contact_multiselect_row.is_selected {
+  background: color-mix(
+    in srgb,
+    var(--portal-primary, #2563eb) 7%,
+    var(--portal-surface, #fff)
+  );
+}
+
+.add_contact_multiselect_check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 1rem;
+  width: 1rem;
+  height: 1rem;
   margin: 0;
-  flex: 0 0 auto !important;
-  flex-shrink: 0;
-  align-self: center;
-  box-sizing: border-box;
-  border: 2px solid #94a3b8;
-  border-radius: 4px;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 3px;
   background: #fff;
-  cursor: pointer;
-  transition:
-    background 0.12s ease,
-    border-color 0.12s ease,
-    box-shadow 0.12s ease;
+  color: #fff;
+  box-sizing: border-box;
 }
 
-.add_contact_multiselect_checkbox:hover {
-  border-color: #64748b;
+.add_contact_multiselect_row:hover .add_contact_multiselect_check {
+  border-color: #94a3b8;
 }
 
-.add_contact_multiselect_checkbox:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, #0f172a 18%, transparent);
+.add_contact_multiselect_row.is_selected .add_contact_multiselect_check {
+  border-color: var(--portal-primary, #2563eb);
+  background: var(--portal-primary, #2563eb);
 }
 
-.add_contact_multiselect_checkbox:checked {
-  border-color: #0f172a;
-  background: #0f172a
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.5 8.5 6.5 11.5 12.5 4.5' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
-    center / 0.65rem 0.65rem no-repeat;
+.add_contact_multiselect_row:has(.add_contact_multiselect_checkbox:focus-visible)
+  .add_contact_multiselect_check {
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--portal-primary, #2563eb) 28%, transparent);
+}
+
+.add_contact_owners_multiselect .add_contact_multiselect_row {
+  align-items: center;
+}
+
+.add_contact_owners_multiselect .add_contact_multiselect_check {
+  margin: 0;
 }
 
 .add_contact_multiselect_row_label {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
-  line-height: 1.4;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.4em;
+  line-height: 1.3;
   font-weight: 500;
   letter-spacing: -0.01em;
   color: #334155;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.add_contact_multiselect_row_name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.add_contact_multiselect_row_hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.75em;
+  font-weight: 400;
+  color: var(--portal-text-muted, #64748b);
 }
 
 :root[data-theme="dark"] .add_contact_multiselect_control {
@@ -1568,16 +2334,24 @@
   color: var(--portal-text, #e2e8f0);
 }
 
-:root[data-theme="dark"] .add_contact_multiselect_checkbox {
-  border-color: rgba(255, 255, 255, 0.35);
-  background: rgba(255, 255, 255, 0.06);
+:root[data-theme="dark"] .add_contact_multiselect_row.is_selected {
+  background: color-mix(
+    in srgb,
+    var(--portal-primary, #60a5fa) 12%,
+    transparent
+  );
 }
 
-:root[data-theme="dark"] .add_contact_multiselect_checkbox:checked {
-  border-color: #f8fafc;
-  background: #f8fafc
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.5 8.5 6.5 11.5 12.5 4.5' stroke='%230f172a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
-    center / 0.65rem 0.65rem no-repeat;
+:root[data-theme="dark"] .add_contact_multiselect_check {
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.06);
+  color: #0f172a;
+}
+
+:root[data-theme="dark"] .add_contact_multiselect_row.is_selected .add_contact_multiselect_check {
+  border-color: var(--portal-primary, #60a5fa);
+  background: var(--portal-primary, #60a5fa);
+  color: #0f172a;
 }
 
 :root[data-theme="dark"] .add_contact_step_dot {
@@ -1699,6 +2473,28 @@
 :root[data-theme="dark"] .contacts_chips_combobox {
   border-color: rgba(255, 255, 255, 0.12);
   background: var(--portal-surface, #1e293b);
+}
+
+:root[data-theme="dark"] .contacts_label_modal .contacts_label_modal_field.um_field input:not([type="checkbox"]),
+:root[data-theme="dark"] .contacts_label_modal .contacts_label_modal_textarea.um_field_textarea {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--portal-border);
+  color: var(--portal-text);
+}
+
+:root[data-theme="dark"] .contacts_label_modal .contacts_label_modal_field.um_field input:not([type="checkbox"]):disabled,
+:root[data-theme="dark"] .contacts_label_modal .contacts_label_modal_textarea.um_field_textarea:disabled {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"] .contacts_label_modal .contacts_label_modal_field .um_field_label_row,
+:root[data-theme="dark"] .contacts_label_modal .contacts_label_modal_field .um_field_label_icon {
+  color: var(--portal-form-label-color, var(--portal-text-muted));
+}
+
+:root[data-theme="dark"] .contacts_label_modal input::placeholder,
+:root[data-theme="dark"] .contacts_label_modal textarea::placeholder {
+  color: var(--portal-text-muted);
 }
 
 /* Suspend / activate contact modal */
@@ -1845,6 +2641,31 @@
   margin-bottom: 0.35em;
 }
 
+.contacts_crm_page .contacts_crm_filters_row {
+  align-items: center;
+}
+
+.contacts_crm_page .contacts_crm_hint {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.contacts_crm_page .contacts_crm_empty_hint {
+  margin: 1rem 1.1rem 1.25rem;
+}
+
+.contacts_crm_page .contacts_crm_row_clickable {
+  cursor: pointer;
+}
+
+.contacts_view_loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+}
+
 .contacts_send_mail_template_select_row {
   display: flex;
   align-items: center;
@@ -1886,4 +2707,396 @@
 
 .contacts_suspend_modal_actions {
   margin-top: 0.25em;
+}
+
+.contacts_catalog_link_btn {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--portal-primary, #2563eb);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+  text-align: inherit;
+}
+
+.contacts_catalog_link_btn:hover {
+  color: var(--portal-primary-hover, #1d4ed8);
+}
+
+.contacts_catalog_name_btn {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contacts_catalog_count_btn {
+  display: inline;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.contacts_catalog_count_btn:hover {
+  text-decoration: underline;
+}
+
+.contacts_active_tag_filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65em 1em;
+  margin: 0.75em 0 0.25em;
+  padding: 0.55em 0.75em;
+  border: 1px solid var(--portal-border, #cbd5e1);
+  border-radius: 0.5em;
+  background: var(--portal-surface-muted, #f8fafc);
+}
+
+.contacts_active_tag_filter_label {
+  font-size: 0.875em;
+  color: var(--portal-text-muted, #64748b);
+}
+
+.contacts_active_tag_filter_name {
+  color: var(--portal-text, #0f172a);
+  font-weight: 600;
+}
+
+.contacts_active_tag_filter_clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  margin: 0;
+  padding: 0.2em 0.55em;
+  border: 1px solid var(--portal-border, #cbd5e1);
+  border-radius: 999px;
+  background: var(--portal-surface, #fff);
+  color: var(--portal-text, #334155);
+  font: inherit;
+  font-size: 0.8125em;
+  cursor: pointer;
+}
+
+.contacts_active_tag_filter_clear:hover {
+  border-color: var(--portal-primary, #2563eb);
+  color: var(--portal-primary, #2563eb);
+}
+
+.contacts_user_name_link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.contacts_user_name_link:hover {
+  color: var(--portal-primary, #2563eb);
+  text-decoration: underline;
+}
+
+.contacts_th_phone,
+.contacts_td_phone {
+  width: 10.5rem;
+  min-width: 9.75rem;
+  max-width: 12rem;
+  vertical-align: middle;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.contacts_th_show_offerings,
+.contacts_td_show_offerings {
+  width: 8.25rem;
+  min-width: 7.75rem;
+  max-width: 8.75rem;
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+
+.contacts_td_show_offerings {
+  white-space: nowrap;
+}
+
+.contacts_th_accreditation,
+.contacts_td_accreditation {
+  min-width: 8.75rem;
+  max-width: 9.5rem;
+  width: 9rem;
+  text-align: center;
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+
+.contacts_td_accreditation {
+  white-space: nowrap;
+}
+
+/*
+ * Contacts table headers: smaller type, wrap long titles, sort icon at the
+ * trailing edge of the column (not glued to the label).
+ */
+.contacts_page
+  .contacts_table_panel
+  .um_table.deal_inv_table
+  thead
+  th {
+  font-size: 0.75rem;
+  line-height: 1.25;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table.deal_inv_table
+  .um_sort_header_ctl {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.35rem;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem 0.45rem;
+  white-space: normal;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table.deal_inv_table
+  .um_sort_header_label {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: manual;
+  line-height: 1.25;
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table.deal_inv_table
+  .um_sort_header_icon {
+  flex: 0 0 auto;
+  margin-left: auto;
+  margin-top: 0.1rem;
+  align-self: flex-start;
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table.deal_inv_table
+  thead
+  th.contacts_th_show_offerings
+  .um_sort_header_label,
+.contacts_page
+  .contacts_table_panel
+  .um_table.deal_inv_table
+  thead
+  th.contacts_th_accreditation
+  .um_sort_header_label {
+  white-space: normal;
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table.deal_inv_table
+  .um_sort_header_ctl.um_sort_header_ctl_align_center {
+  justify-content: center;
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table.deal_inv_table
+  .um_sort_header_ctl.um_sort_header_ctl_align_center
+  .um_sort_header_icon {
+  margin-left: 0.25rem;
+}
+
+.contacts_show_offerings_dd {
+  width: 100%;
+  max-width: 8rem;
+}
+
+.contacts_show_offerings_dropdown.portal_dropdown_select,
+.contacts_show_offerings_dropdown {
+  width: 100%;
+  max-width: 8rem;
+}
+
+.contacts_show_offerings_dropdown_trigger.portal_dropdown_select_trigger,
+.contacts_show_offerings_dropdown .portal_dropdown_select_trigger {
+  width: 100%;
+  min-height: 2rem;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.75rem;
+  gap: 0.25rem;
+}
+
+.contacts_show_offerings_dropdown_trigger .portal_dropdown_select_trigger_label,
+.contacts_show_offerings_dropdown .portal_dropdown_select_trigger_label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contacts_show_offerings_dropdown_panel.portal_dropdown_select_panel,
+.contacts_show_offerings_dropdown_panel {
+  min-width: 13.5rem;
+  max-width: 16rem;
+  font-size: 0.8125rem;
+}
+
+.contacts_toolbar_filter {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
+}
+
+.contacts_toolbar_filter_label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #4b5563;
+  white-space: nowrap;
+}
+
+.contacts_toolbar_filter_dropdown {
+  width: 12rem;
+  max-width: 14rem;
+}
+
+.contacts_toolbar_filter_dropdown_trigger.portal_dropdown_select_trigger,
+.contacts_toolbar_filter_dropdown .portal_dropdown_select_trigger {
+  width: 100%;
+  min-height: 2.15rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.contacts_toolbar_filter_dropdown_panel {
+  min-width: 14rem;
+  max-width: 18rem;
+  font-size: 0.8125rem;
+}
+
+.contacts_accreditation_filter {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
+}
+
+.contacts_accreditation_filter_label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #4b5563;
+  white-space: nowrap;
+}
+
+.contacts_accreditation_filter_select {
+  width: 8.5rem;
+  max-width: 9.5rem;
+}
+
+.contacts_accreditation_badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 7.25rem;
+  min-width: 7.25rem;
+  max-width: 7.25rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.contacts_accreditation_badge--accredited {
+  color: #16a34a;
+  background: color-mix(in srgb, #16a34a 14%, #ffffff);
+  border-color: color-mix(in srgb, #16a34a 28%, #ffffff);
+}
+
+.contacts_accreditation_badge--not-accredited {
+  color: #dc2626;
+  background: color-mix(in srgb, #dc2626 14%, #ffffff);
+  border-color: color-mix(in srgb, #dc2626 28%, #ffffff);
+}
+
+.contacts_accreditation_badge--na {
+  color: #6b7280;
+  background: #f3f4f6;
+  border-color: #e5e7eb;
+  font-weight: 500;
+}
+
+.contacts_toolbar_trailing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem 0.85rem;
+  min-width: 0;
+  margin-left: auto;
+}
+
+:root[data-theme="dark"] .contacts_status_pills {
+  background: color-mix(in srgb, var(--portal-surface, #0f172a) 70%, #fff 6%);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:root[data-theme="dark"] .contacts_status_pill_active {
+  background: color-mix(in srgb, var(--portal-surface, #0f172a) 40%, #fff 8%);
+  box-shadow: none;
+}
+
+.contacts_th_known_since,
+.contacts_td_known_since {
+  min-width: 7.5rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.contacts_inline_text_input,
+.contacts_inline_date_input {
+  width: 100%;
+  max-width: 12rem;
+  min-width: 8rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8125rem;
 }

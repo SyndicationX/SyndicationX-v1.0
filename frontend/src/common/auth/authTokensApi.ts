@@ -16,6 +16,11 @@ export function getStoredRefreshToken(): string | null {
   return raw?.trim() ? raw.trim() : null
 }
 
+/** True when refresh may be sent via HttpOnly cookie (no sessionStorage value). */
+export function usesHttpOnlyRefreshCookie(): boolean {
+  return !getStoredRefreshToken()
+}
+
 export function storeAuthTokens(
   accessToken: string,
   refreshToken?: string | null,
@@ -23,6 +28,8 @@ export function storeAuthTokens(
   sessionStorage.setItem(SESSION_BEARER_KEY, accessToken)
   if (typeof refreshToken === "string" && refreshToken.trim()) {
     sessionStorage.setItem(SESSION_REFRESH_KEY, refreshToken.trim())
+  } else {
+    sessionStorage.removeItem(SESSION_REFRESH_KEY)
   }
 }
 
@@ -30,14 +37,17 @@ export function storeAuthTokens(
 export async function refreshAuthTokens(): Promise<boolean> {
   const base = getApiV1Base()
   const refreshToken = getStoredRefreshToken()
-  if (!base || !refreshToken) return false
+  if (!base) return false
+  if (!refreshToken && typeof document === "undefined") return false
 
   try {
     const res = await fetch(`${base}/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ refreshToken }),
+      body: JSON.stringify(
+        refreshToken ? { refreshToken } : {},
+      ),
     })
     const data = (await res.json().catch(() => ({}))) as {
       accessToken?: string

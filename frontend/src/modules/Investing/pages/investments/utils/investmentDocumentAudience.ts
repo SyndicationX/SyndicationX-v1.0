@@ -1,6 +1,7 @@
 import type { DealInvestorClass } from "@/modules/Syndication/Deals/types/deal-investor-class.types"
 import type { DealInvestorRow } from "@/modules/Syndication/Deals/types/deal-investors.types"
 import { investorEsignIsFullyCompletedForRow } from "@/modules/Syndication/Deals/utils/investorEsignStatus"
+import { lpReceivesDocumentsSharedWithTheirSponsor } from "@/modules/Syndication/Deals/utils/offeringPreviewDocumentAudience"
 import {
   FUNDING_INFORMATION_DOCUMENTS_SECTION_ID,
   isFundingInstructionsAutoPdfDocument,
@@ -13,6 +14,8 @@ export type InvestmentDocumentAudienceContext = {
   dealClasses: DealInvestorClass[]
   /** All investor row ids for this viewer (email match), for Shared With id resolution. */
   viewerInvestorIds: ReadonlySet<string>
+  /** Portal `users.id` for the signed-in viewer (co-sponsor Shared With). */
+  viewerUserId?: string
 }
 
 export const EMPTY_INVESTMENT_DOCUMENT_AUDIENCE: InvestmentDocumentAudienceContext =
@@ -85,8 +88,9 @@ function fundingDocumentRequiresEsignCompletion(
 }
 
 /**
- * Workspace document is visible when Shared With targets this investor (or everyone),
- * or when no audience is selected (all LPs allowed by the section).
+ * LP portal access after Visibility already allows the surface.
+ * Empty Shared With → every signed-in investor on the deal.
+ * When Shared With is set, only those recipients (or All Investors / class / sponsor).
  */
 export function nestedDocumentVisibleToInvestor(
   doc: NestedPreviewDocument,
@@ -118,10 +122,23 @@ export function nestedDocumentVisibleToInvestor(
   for (const sponsorUid of doc.sharedSponsorUserIds ?? []) {
     const key = sponsorUid.trim().toLowerCase()
     if (!key) continue
+    const viewerUid = ctx.viewerUserId?.trim().toLowerCase()
+    if (viewerUid && viewerUid === key) return true
     for (const row of viewerRows) {
-      if (row.addedByUserId?.trim().toLowerCase() === key) return true
+      if (row.addedByUserId?.trim().toLowerCase() === key) {
+        if (lpReceivesDocumentsSharedWithTheirSponsor(row)) return true
+        continue
+      }
+      if (row.contactId?.trim().toLowerCase() === key) return true
     }
   }
 
   return false
+}
+
+/** True when Shared With has at least one class, investor, sponsor, or All Investors. */
+export function documentHasSharedWithAudience(
+  doc: NestedPreviewDocument,
+): boolean {
+  return hasExplicitDocumentAudience(doc)
 }

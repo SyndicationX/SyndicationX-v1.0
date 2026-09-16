@@ -140,8 +140,31 @@ a.deals_list_add_link.um_btn_primary {
   padding-top: 1rem;
 }
 
-.deals_detail_page > header.deals_list_head {
+.deals_detail_page > header.deals_list_head,
+.deals_detail_page > .deals_detail_sticky_chrome > header.deals_list_head {
   padding-top: 1rem;
+}
+
+/* Deal name + tabs stay pinned while tab content scrolls in `.app_main_content`. */
+.deals_detail_page > .deals_detail_sticky_chrome {
+  position: sticky;
+  top: 0;
+  /* Below the top navbar (z-index 200) so the Profile menu is not covered by deal tabs. */
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--portal-page-bg, #fcf8fa);
+  box-shadow: 0 8px 14px -12px rgba(16, 20, 19, 0.35);
+}
+
+.app_main_content:has(.deals_detail_sticky_chrome) {
+  scroll-padding-top: 8.5rem;
+}
+
+/* Dist / class setup sticky headers already pad themselves — avoid stacked gap above title */
+.deals_detail_page.deals_dist_setup_page > header.deals_list_head.ds_page_header,
+.deals_detail_page.deals_class_setup_page > header.deals_list_head.cs_page_header {
+  padding-top: 0.35rem;
 }
 
 /* Full-page create/edit flows: header back matches Edit deal gold secondary */
@@ -227,6 +250,14 @@ a.deals_list_add_link.um_btn_primary {
   font-size: 0.875em;
   line-height: 1.5;
   color: var(--portal-text-muted);
+}
+
+.deal_detail_wip_actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 1rem;
 }
 
 .deal_documents_tab_root {
@@ -1084,6 +1115,13 @@ a.deals_list_add_link.um_btn_primary {
   box-sizing: border-box;
 }
 
+.deals_list_table_panel .um_table thead th.deals_col_next_billing,
+.deals_list_table_panel .um_table tbody td.deals_col_next_billing {
+  min-width: 9.25rem;
+  width: 9.25rem;
+  box-sizing: border-box;
+}
+
 .deals_list_table_panel .um_table_members tbody td.um_td_numeric {
   font-variant-numeric: tabular-nums;
 }
@@ -1111,13 +1149,13 @@ a.deals_list_add_link.um_btn_primary {
   max-width: min(44em, 100%);
   width: min(44em, 100%);
   min-width: 0;
-  max-height: none;
+  max-height: min(90dvh, calc(100dvh - 2rem));
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   padding: 1em 1.15em 0.95em;
   box-sizing: border-box;
-  overflow-x: hidden;
+  overflow: hidden;
   border-radius: var(--portal-card-radius, 4px);
   border: 1px solid var(--portal-border, #e2e8f0);
   background: var(--portal-surface, #fff);
@@ -1144,9 +1182,9 @@ a.deals_list_add_link.um_btn_primary {
 }
 
 .deals_deal_view_modal_body {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   overflow-x: hidden;
-  overflow-y: visible;
+  overflow-y: auto;
   min-width: 0;
   min-height: 0;
   padding: 0;
@@ -1630,6 +1668,12 @@ a.deals_list_add_link.um_btn_primary {
   border-color: var(--portal-border);
 }
 
+.deals_stage_chip--archived {
+  color: #475569;
+  background: color-mix(in srgb, #64748b 16%, transparent);
+  border-color: color-mix(in srgb, #64748b 38%, transparent);
+}
+
 :root[data-theme="dark"] .deals_stage_chip--draft {
   color: #93c5fd;
   background: color-mix(in srgb, var(--um-focus-ring, #2563eb) 14%, transparent);
@@ -1672,6 +1716,12 @@ a.deals_list_add_link.um_btn_primary {
   color: #ddd6fe;
   background: color-mix(in srgb, #7c3aed 22%, transparent);
   border-color: color-mix(in srgb, #8b5cf6 40%, transparent);
+}
+
+:root[data-theme="dark"] .deals_stage_chip--archived {
+  color: #cbd5e1;
+  background: color-mix(in srgb, #64748b 22%, transparent);
+  border-color: color-mix(in srgb, #94a3b8 40%, transparent);
 }
 
 /* Kebab: disabled items (e.g. create-deal draft row — archive/delete N/A) */

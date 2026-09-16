@@ -124,6 +124,7 @@ export async function postCompany(req: Request, res: Response): Promise<void> {
   res.status(201).json({
     message: "Company created",
     company: result.company,
+    ghlProvisioning: result.ghlProvisioning,
   });
 }
 

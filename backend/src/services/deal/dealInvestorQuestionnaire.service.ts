@@ -32,6 +32,8 @@ export type InvestorQuestionnaireQuestion = {
   subtext?: string;
   options?: string[];
   isDefault?: boolean;
+  /** Links to investor profile wizard field for prefill (repeatable). */
+  investorProfileFieldKey?: string;
 };
 
 /** Per e-sign profile: sectionId → false hides that section on that profile's template. */
@@ -146,6 +148,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "text",
       isDefault: true,
+      investorProfileFieldKey: "firstName",
     },
     {
       id: "last_name",
@@ -155,6 +158,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "text",
       isDefault: true,
+      investorProfileFieldKey: "lastName",
     },
     {
       id: "telephone",
@@ -164,6 +168,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "phone",
       isDefault: true,
+      investorProfileFieldKey: "phone2",
     },
     {
       id: "address",
@@ -173,12 +178,13 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "address",
       isDefault: true,
+      investorProfileFieldKey: "taxAddress",
     },
     {
       id: "state_residency_duration",
       sectionId: "personal",
       label:
-        "How long have you been a resident of your state of residence?",
+        "How long have you been a resident of your state of residence? (years)",
       sortOrder: 4,
       required: true,
       fieldType: "text",
@@ -206,11 +212,12 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
     {
       id: "social_security_number",
       sectionId: "personal",
-      label: "Social security number",
+      label: "Social Security Number",
       sortOrder: 7,
       required: true,
       fieldType: "ssn",
       isDefault: true,
+      investorProfileFieldKey: "ssn",
     },
     {
       id: "entity_full_legal_name",
@@ -220,6 +227,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "text",
       isDefault: true,
+      investorProfileFieldKey: "entityLegalName",
     },
     {
       id: "entity_office_address",
@@ -229,6 +237,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "address",
       isDefault: true,
+      investorProfileFieldKey: "taxAddress",
     },
     {
       id: "entity_business_phone",
@@ -238,6 +247,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: true,
       fieldType: "phone",
       isDefault: true,
+      investorProfileFieldKey: "phone2",
     },
     {
       id: "entity_formation_date",
@@ -247,6 +257,7 @@ export const DEFAULT_INVESTOR_QUESTIONNAIRE_QUESTIONS: InvestorQuestionnaireQues
       required: false,
       fieldType: "date",
       isDefault: true,
+      investorProfileFieldKey: "entityDateFormed",
     },
     {
       id: "entity_jurisdiction_country",
@@ -672,6 +683,10 @@ function normalizeQuestionForStorage(
     delete next.options;
   }
 
+  const profileKey = next.investorProfileFieldKey?.trim();
+  if (profileKey) next.investorProfileFieldKey = profileKey;
+  else delete next.investorProfileFieldKey;
+
   return next;
 }
 
@@ -713,6 +728,18 @@ function syncStoredDefaultQuestion(
   const subtext = stored.subtext?.trim();
   if (subtext) next.subtext = subtext;
   else delete next.subtext;
+
+  const catalogProfileKey = catalog.investorProfileFieldKey?.trim();
+  const storedProfileKey = stored.investorProfileFieldKey?.trim();
+  if (catalogProfileKey) {
+    if (storedProfileKey !== catalogProfileKey) {
+      next.investorProfileFieldKey = catalogProfileKey;
+      changed = true;
+    }
+  } else if (storedProfileKey) {
+    delete next.investorProfileFieldKey;
+    changed = true;
+  }
 
   return { question: next, changed };
 }

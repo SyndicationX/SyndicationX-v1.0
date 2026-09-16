@@ -1,13 +1,14 @@
 import { getSessionUserEmail } from "@/common/auth/sessionUserEmail"
 import { inProgressNotCountersignedForViewer } from "@/modules/Investing/pages/dashboard/investingDashboardDealBucket"
-import { applyLpSessionDealIdScope } from "@/modules/Investing/utils/investingViewerDealScope"
+import { applyLpSessionDealIdScope, filterDealListRowsVisibleToInvestors } from "@/modules/Investing/utils/investingViewerDealScope"
+import { fetchMyDistributions } from "@/modules/Syndication/Deals/distribution-setup/api/myDistributionsApi"
 import { fetchDealInvestors, fetchDealsList } from "@/modules/Syndication/Deals/api/dealsApi"
 import { formatUsdDashboardAmount } from "@/modules/Syndication/Deals/dealsDashboardMoney"
 import type { DealInvestorsPayload } from "@/modules/Syndication/Deals/types/deal-investors.types"
 import { parseMoneyDigits } from "@/modules/Syndication/Deals/utils/offeringMoneyFormat"
 
 export interface InvestingDashboardMetrics {
-  /** Active (non-archived) deals in investing scope */
+  /** Deals in investing scope where you have committed capital (includes sponsor-archived). */
   dealCount: number
   totalInvestedDisplay: string
   totalDistributedDisplay: string
@@ -23,24 +24,6 @@ function formatInvestingMoney(n: number): string {
   const x = Number.isFinite(n) ? n : 0
   if (x === 0) return "$0"
   return formatUsdDashboardAmount(x)
-}
-
-/** Treated as “your” distributed amount: rows with a funded date use committed. */
-function distributedForViewer(
-  payload: DealInvestorsPayload,
-  viewerEmailNorm: string,
-): number {
-  if (!viewerEmailNorm) return 0
-  let sum = 0
-  for (const inv of payload.investors) {
-    const em = String(inv.userEmail ?? "").trim().toLowerCase()
-    if (!em || em === "—" || em !== viewerEmailNorm) continue
-    const fd = String(inv.fundedDate ?? "").trim()
-    if (!fd || fd === "—") continue
-    const n = parseMoneyDigits(String(inv.committed ?? ""))
-    if (Number.isFinite(n)) sum += n
-  }
-  return sum
 }
 
 /**
@@ -64,7 +47,7 @@ function committedAmountForViewerLpRows(
 
 /**
  * KPIs for investing home: only the signed-in user’s exposure (committed, in
- * progress, and funded rows), on deals in scope. Deal count = active deals
+ * progress, and distribution payments), on deals in scope. Deal count = active deals
  * with your committed amount &gt; 0.
  */
 export async function loadInvestingDashboardMetrics(): Promise<InvestingDashboardMetrics> {
@@ -79,10 +62,12 @@ export async function loadInvestingDashboardMetrics(): Promise<InvestingDashboar
     }
   }
 
-  const list = applyLpSessionDealIdScope(
-    await fetchDealsList({ includeParticipantDeals: true }),
+  const list = filterDealListRowsVisibleToInvestors(
+    applyLpSessionDealIdScope(
+      await fetchDealsList({ includeParticipantDeals: true }),
+    ),
   )
-  const active = list.filter((r) => !r.archived)
+  const active = list
   if (active.length === 0) {
     return {
       dealCount: 0,
@@ -92,17 +77,22 @@ export async function loadInvestingDashboardMetrics(): Promise<InvestingDashboar
     }
   }
 
-  const perDeal = await Promise.all(
-    active.map(async (row) => {
-      const payload = await fetchDealInvestors(row.id, {
-        lpInvestorsOnly: false,
-      })
-      return { row, payload }
-    }),
-  )
+  const [perDeal, myDistributions] = await Promise.all([
+    Promise.all(
+      active.map(async (row) => {
+        const payload = await fetchDealInvestors(row.id, {
+          lpInvestorsOnly: false,
+        })
+        return { row, payload }
+      }),
+    ),
+    fetchMyDistributions().catch(() => ({
+      distributions: [],
+      totalPayment: "0",
+    })),
+  ])
 
   let sumInvested = 0
-  let sumDistributed = 0
   let sumInProgress = 0
   let myDealCount = 0
 
@@ -111,13 +101,15 @@ export async function loadInvestingDashboardMetrics(): Promise<InvestingDashboar
     if (myCommitted > 0) myDealCount += 1
     sumInvested += myCommitted
     sumInProgress += inProgressNotCountersignedForViewer(payload, lpEmailNorm)
-    sumDistributed += distributedForViewer(payload, lpEmailNorm)
   }
+
+  const sumDistributed = parseMoneyDigits(String(myDistributions.totalPayment ?? ""))
+  const distributedNum = Number.isFinite(sumDistributed) ? sumDistributed : 0
 
   return {
     dealCount: myDealCount,
     totalInvestedDisplay: formatInvestingMoney(sumInvested),
-    totalDistributedDisplay: formatInvestingMoney(sumDistributed),
+    totalDistributedDisplay: formatInvestingMoney(distributedNum),
     totalInProgressDisplay: formatInvestingMoney(sumInProgress),
   }
 }

@@ -8,24 +8,32 @@ import {
   dealInvestment,
   type DealInvestmentRow,
 } from "../../schema/deal.schema/deal-investment.schema.js";
-import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema.js";
+import {
+  dealLpInvestor,
+  type DealLpInvestorRow,
+} from "../../schema/deal.schema/deal-lp-investor.schema.js";
 import { users } from "../../schema/auth.schema/signin.js";
 import { contact } from "../../schema/contact.schema.js";
+import { assertEligibleForNewDealRosterAdd } from "../user/portalUserRosterGuard.service.js";
 import {
   applyTotalCommittedToDealInvestmentRowForCanonical,
   enrichInvestorRolesForDealRows,
   formatCommittedUsdWhole,
+  GENERAL_PARTNER_ROLE_STORED,
   groupDealInvestmentsByCanonicalKey,
   listDealInvestmentsByDealId,
   mapContactIdsToCanonicalCommitmentKeys,
   loadInvitationMailSentFlags,
   mapRowToInvestorApi,
   resolveUserDisplayNamesByIds,
+  resolveUserInvestorProfileNamesByIds,
   resolveUsersByContactIds,
+  rowIsGeneralPartnerForRoster,
   sumCommittedFromInvestorsAddedByMemberContacts,
   totalCommittedByCanonicalKeyFromRows,
   DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER,
 } from "./dealInvestment.service.js";
+import { listInvestorClassesByDealId } from "./dealInvestorClass.service.js";
 
 export type UpsertDealMemberInput = {
   contactMemberId: string;
@@ -44,6 +52,29 @@ function normalizeContactKey(raw: string): string {
 
 function sendInvitationYesFromInput(raw: string | null | undefined): "yes" | "no" {
   return String(raw ?? "").toLowerCase() === "yes" ? "yes" : "no";
+}
+
+function investorClassIsLpOrGp(
+  stored: string | null | undefined,
+  classes: ReadonlyArray<{
+    id: string;
+    name: string;
+    subscriptionType: string;
+  }>,
+): boolean {
+  const t = String(stored ?? "").trim();
+  if (!t) return false;
+  const lower = t.toLowerCase();
+  const matched = classes.find(
+    (c) =>
+      c.id.trim().toLowerCase() === lower ||
+      c.name.trim().toLowerCase() === lower,
+  );
+  if (matched) {
+    const type = matched.subscriptionType.trim().toLowerCase();
+    return type === "lp" || type === "gp";
+  }
+  return /\blp\b|\bgp\b|limited partner|general partner/.test(lower);
 }
 
 /**
@@ -167,6 +198,43 @@ function syntheticInvestmentFromDealMember(m: DealMemberRow): DealInvestmentRow 
   };
 }
 
+/** GP-class people who were stored on the LP roster still belong on General Partners. */
+function syntheticInvestmentFromGpLpRoster(
+  m: DealLpInvestorRow,
+): DealInvestmentRow {
+  return {
+    id: m.id,
+    dealId: m.dealId,
+    offeringId: "",
+    contactId: m.contactMemberId,
+    contactDisplayName: String(m.investorName ?? "").trim(),
+    profileId: m.profileId?.trim() ?? "",
+    userInvestorProfileId: m.userInvestorProfileId ?? null,
+    investor_role: GENERAL_PARTNER_ROLE_STORED,
+    fundApproved: false,
+    fundApprovedBy: null,
+    fundApprovedAt: null,
+    fundApprovedCommitmentSnapshot: "",
+    status: "",
+    investorClass: m.investorClass,
+    docSignedDate: m.docSignedDate?.trim() ?? null,
+    esignStatusJson: m.esignStatusJson?.trim() ?? null,
+    investorQuestionnaireAnswersJson: null,
+    investorW9FormJson: null,
+    fundingMethod: "",
+    commitmentAmount: m.committed_amount,
+    extraContributionAmounts: [],
+    documentStoragePath: null,
+    createdAt: m.createdAt,
+  };
+}
+
+type MemberListRowMeta = {
+  addedBy: string | null;
+  contactMemberId: string;
+  investorKind?: "lp_roster";
+};
+
 /**
  * Upserts `(deal_id, contact_member_id)` when an investment is saved.
  * `added_by` is set on first insert only.
@@ -177,6 +245,17 @@ export async function upsertDealMemberForDeal(
 ): Promise<void> {
   const cid = input.contactMemberId.trim();
   if (!cid) return;
+
+  const [existing] = await db
+    .select({ contactMemberId: dealMember.contactMemberId })
+    .from(dealMember)
+    .where(
+      and(eq(dealMember.dealId, dealId), eq(dealMember.contactMemberId, cid)),
+    )
+    .limit(1);
+  if (!existing) {
+    await assertEligibleForNewDealRosterAdd(cid);
+  }
 
   const send = sendInvitationYesFromInput(input.sendInvitationMail);
   const now = new Date();
@@ -248,7 +327,8 @@ export async function assignCreatorAsLeadSponsorOnDeal(
  * commitment = **sum** of all `deal_investment` rows for that contact on this deal,
  * and other fields from the **newest** matching investment when present.
  *
- * Co-sponsors see the full deal member roster (Investors tab is scoped separately).
+ * Co-sponsors do not use this list in the UI (General Partners tab is hidden);
+ * the members API returns an empty roster for that role. Investors tab is scoped separately.
  */
 export async function listDealMembersMappedToInvestorApi(
   dealId: string,
@@ -260,10 +340,25 @@ export async function listDealMembersMappedToInvestorApi(
     .where(eq(dealMember.dealId, dealId))
     .orderBy(desc(dealMember.updatedAt));
 
-  const investments = await listDealInvestmentsByDealId(dealId);
+  const [investments, classes, lpRoster] = await Promise.all([
+    listDealInvestmentsByDealId(dealId),
+    listInvestorClassesByDealId(dealId),
+    db
+      .select()
+      .from(dealLpInvestor)
+      .where(eq(dealLpInvestor.dealId, dealId)),
+  ]);
+  // console.log("[Deal Members query]", {
+  //   dealId,
+  //   rawDealMemberRows: members.length,
+  //   investmentRows: investments.length,
+  //   investorClassRows: classes.length,
+  //   lpRosterRows: lpRoster.length,
+  // });
   const allContactIdsForCanonical = [
     ...members.map((m) => m.contactMemberId),
     ...investments.map((inv) => inv.contactId),
+    ...lpRoster.map((m) => m.contactMemberId),
   ];
   const rawToCanonical =
     await mapContactIdsToCanonicalCommitmentKeys(allContactIdsForCanonical);
@@ -276,7 +371,16 @@ export async function listDealMembersMappedToInvestorApi(
     rawToCanonical,
   );
 
+  function canonicalOf(raw: string): string {
+    const k = normalizeContactKey(raw);
+    if (!k) return "";
+    return rawToCanonical.get(k) ?? `id:${k}`;
+  }
+
   const rowsForMap: DealInvestmentRow[] = [];
+  const rowMeta: MemberListRowMeta[] = [];
+  const coveredCanonical = new Set<string>();
+
   for (const m of members) {
     const k = normalizeContactKey(m.contactMemberId);
     const canonicalKey = k
@@ -285,12 +389,20 @@ export async function listDealMembersMappedToInvestorApi(
     const arr = byCanonical.get(canonicalKey) ?? [];
     const rosterRole = m.dealMemberRole?.trim() ?? "";
     const picked = pickLatestInvestmentForDealMember(arr);
+    const classForRow = picked?.investorClass ?? "";
+    const effectiveRole = rowIsGeneralPartnerForRoster(
+      rosterRole,
+      classForRow,
+      classes,
+    )
+      ? GENERAL_PARTNER_ROLE_STORED
+      : rosterRole || picked?.investor_role;
     if (picked) {
       /** Roster role wins over `deal_investment.investor_role` (e.g. portal `deal_participant`). */
       const merged = applyTotalCommittedToDealInvestmentRowForCanonical(
         {
           ...picked,
-          investor_role: rosterRole || picked.investor_role,
+          investor_role: effectiveRole || picked.investor_role,
         },
         totalByCanonical,
         canonicalKey,
@@ -299,22 +411,89 @@ export async function listDealMembersMappedToInvestorApi(
     } else {
       rowsForMap.push(
         applyTotalCommittedToDealInvestmentRowForCanonical(
-          syntheticInvestmentFromDealMember(m),
+          {
+            ...syntheticInvestmentFromDealMember(m),
+            investor_role: effectiveRole || rosterRole,
+          },
           totalByCanonical,
           canonicalKey,
         ),
       );
     }
+    rowMeta.push({
+      addedBy: m.addedBy ?? null,
+      contactMemberId: m.contactMemberId,
+    });
+    if (canonicalKey && canonicalKey !== "id:__empty__") {
+      coveredCanonical.add(canonicalKey);
+    }
+  }
+
+  for (const inv of investments) {
+    const k = normalizeContactKey(inv.contactId ?? "");
+    const canonical = k ? canonicalOf(k) : "";
+    if (!canonical) continue;
+    const alreadyHasRosterRow = coveredCanonical.has(canonical);
+    const shouldShowClassRowForRosterMember =
+      alreadyHasRosterRow && investorClassIsLpOrGp(inv.investorClass, classes);
+    if (
+      !shouldShowClassRowForRosterMember &&
+      (alreadyHasRosterRow ||
+        !rowIsGeneralPartnerForRoster(
+          inv.investor_role,
+          inv.investorClass,
+          classes,
+        ))
+    ) {
+      continue;
+    }
+    rowsForMap.push(
+      applyTotalCommittedToDealInvestmentRowForCanonical(
+        { ...inv, investor_role: GENERAL_PARTNER_ROLE_STORED },
+        totalByCanonical,
+        canonical,
+      ),
+    );
+    rowMeta.push({
+      addedBy: null,
+      contactMemberId: inv.contactId,
+    });
+    if (!alreadyHasRosterRow) coveredCanonical.add(canonical);
+  }
+
+  for (const m of lpRoster) {
+    const k = normalizeContactKey(m.contactMemberId);
+    const canonical = k ? canonicalOf(k) : "";
+    if (!canonical || coveredCanonical.has(canonical)) continue;
+    if (!rowIsGeneralPartnerForRoster(m.role, m.investorClass, classes)) {
+      continue;
+    }
+    rowsForMap.push(
+      applyTotalCommittedToDealInvestmentRowForCanonical(
+        syntheticInvestmentFromGpLpRoster(m),
+        totalByCanonical,
+        canonical,
+      ),
+    );
+    rowMeta.push({
+      addedBy: m.addedBy ?? null,
+      contactMemberId: m.contactMemberId,
+      investorKind: "lp_roster",
+    });
+    coveredCanonical.add(canonical);
   }
 
   const patched = await enrichInvestorRolesForDealRows(dealId, rowsForMap);
   const resolved = await resolveUsersByContactIds(patched);
+  const profileNames = await resolveUserInvestorProfileNamesByIds(
+    patched.map((r) => String(r.userInvestorProfileId ?? "")),
+  );
   const addedByNames = await resolveUserDisplayNamesByIds(
-    members.map((m) => m.addedBy),
+    rowMeta.map((m) => m.addedBy),
   );
 
   const memberContactKeys = new Set<string>();
-  for (const m of members) {
+  for (const m of rowMeta) {
     const k = normalizeContactKey(m.contactMemberId);
     if (k) memberContactKeys.add(k);
   }
@@ -330,8 +509,8 @@ export async function listDealMembersMappedToInvestorApi(
     new Set<string>(),
   );
 
-  return patched.map((r, i) => {
-    const m = members[i];
+  const result = patched.map((r, i) => {
+    const m = rowMeta[i];
     const invitationMailSent = invitationMailFlags[i] === true;
     const base = mapRowToInvestorApi(r, resolved, { invitationMailSent });
     const addedByRaw = m?.addedBy;
@@ -342,12 +521,28 @@ export async function listDealMembersMappedToInvestorApi(
     const fromAdded = memberCk
       ? (committedFromAddedInvestors.get(memberCk) ?? 0)
       : 0;
+    const profileKey = String(r.userInvestorProfileId ?? "")
+      .trim()
+      .toLowerCase();
+    const userInvestorProfileName = profileKey
+      ? profileNames.get(profileKey)
+      : undefined;
     return {
       ...base,
       addedByDisplayName,
       addedInvestorsCommitted: formatCommittedUsdWhole(fromAdded),
+      ...(userInvestorProfileName
+        ? { userInvestorProfileName }
+        : {}),
+      ...(m?.investorKind ? { investorKind: m.investorKind } : {}),
     };
   });
+  console.log("[Deal Members result]", {
+    dealId,
+    mergedRowsBeforeMapping: patched.length,
+    returnedRows: result.length,
+  });
+  return result;
 }
 
 /**

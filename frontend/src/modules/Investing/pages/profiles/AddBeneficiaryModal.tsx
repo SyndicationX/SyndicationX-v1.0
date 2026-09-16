@@ -16,7 +16,6 @@ import {
   MapPin,
   Phone,
   Shield,
-  Plus,
   Save,
   UserRound,
   X,
@@ -42,6 +41,7 @@ import { AddAddressModal } from "./AddAddressModal"
 import { InvestingFormField } from "./InvestingFormField"
 import { postSavedAddress } from "./investingProfileBookApi"
 import { SavedAddressSelect } from "./SavedAddressSelect"
+import { DealsCreateDropdownSelect } from "@/modules/Syndication/Deals/components/DealsCreateDropdownSelect"
 import "@/modules/Syndication/Deals/tabs/investors/add-investment-modal.css"
 import "@/modules/Syndication/Deals/tabs/deal_members/add-investment/add_deal_modal.css"
 import "@/modules/Syndication/contacts/contacts.css"
@@ -79,7 +79,6 @@ const RELATIONSHIP_OPTIONS = [
 
 const BEN_FIELD_PILL = "deals_add_inv_field_pill"
 const BEN_INPUT_CLASS = `deals_add_inv_input deals_add_inv_field_control ${BEN_FIELD_PILL}`
-const BEN_SELECT_CLASS = `um_field_select deals_add_inv_field_control ${BEN_FIELD_PILL}`
 const BEN_DROPDOWN_TRIGGER = `deals_add_inv_field_control ${BEN_FIELD_PILL}`
 
 interface AddBeneficiaryModalProps {
@@ -317,20 +316,18 @@ export function AddBeneficiaryModal({
               Icon={HelpCircle}
               tight
             >
-              <select
+              <DealsCreateDropdownSelect
                 id="ben-rel"
-                className={BEN_SELECT_CLASS}
+                options={RELATIONSHIP_OPTIONS.filter(Boolean).map((o) => ({
+                  value: o,
+                  label: o,
+                }))}
                 value={d.relationship}
-                onChange={(e) => patch({ relationship: e.target.value })}
-                aria-label="Relationship to profile holder"
-              >
-                <option value="">Select</option>
-                {RELATIONSHIP_OPTIONS.filter(Boolean).map((o) => (
-                  <option key={o} value={o}>
-                    {o}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) => patch({ relationship: v })}
+                placeholder="Select"
+                ariaLabel="Relationship to profile holder"
+                triggerClassName={BEN_DROPDOWN_TRIGGER}
+              />
             </InvestingFormField>
 
             <div className="add_beneficiary_field_grid__full">
@@ -445,18 +442,18 @@ export function AddBeneficiaryModal({
           </div>
 
           <div className="um_modal_actions add_contact_modal_actions">
-            <button type="button" className="um_btn_secondary" onClick={onClose}>
+            <button
+              type="button"
+              className="um_btn_secondary add_contact_modal_actions_leading"
+              onClick={onClose}
+            >
               <X size={16} strokeWidth={2} aria-hidden />
               Close
             </button>
             <div className="add_contact_modal_actions_trailing">
               <button type="submit" className="um_btn_primary">
-                {isEdit ? (
-                  <Save size={18} strokeWidth={2} aria-hidden />
-                ) : (
-                  <Plus size={18} strokeWidth={2} aria-hidden />
-                )}
-                {isEdit ? "Save changes" : "Add beneficiary"}
+                <Save size={16} strokeWidth={2} aria-hidden />
+                Save
               </button>
             </div>
           </div>

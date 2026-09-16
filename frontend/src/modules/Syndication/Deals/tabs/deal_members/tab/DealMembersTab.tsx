@@ -1,12 +1,14 @@
 import {
   Download,
   Eye,
+  Handshake,
   Info,
   Mail,
   Pencil,
   Plus,
   Search,
   Send,
+  Users,
   X,
 } from "lucide-react"
 import {
@@ -18,6 +20,10 @@ import {
   useState,
 } from "react"
 import { toast } from "../../../../../../common/components/Toast"
+import {
+  TABLE_PAGE_SIZE_ID,
+  usePersistedTablePageSize,
+} from "@/common/hooks/usePersistedTablePageSize"
 import { FormTooltip } from "../../../../../../common/components/form-tooltip/FormTooltip"
 import {
   DataTable,
@@ -37,21 +43,31 @@ import { fetchDealInvestorClasses, fetchDealMembers } from "../../../api/dealsAp
 import { notifyDealMembersExportAudit } from "../../../api/dealMembersExportNotifyApi"
 import { formatMemberUsername } from "../../../../usermanagement/memberAdminShared"
 import { DealMemberUserCell } from "../../investors/DealMemberUserCell"
+import { DealInvestorIdentityCell } from "../../investors/DealInvestorIdentityCell"
+import { DealInvestorSignedCell } from "../../investors/DealInvestorSignedCell"
 import { ExportDealInvestorRowsModal } from "../../investors/ExportDealInvestorRowsModal"
+import { TabsScrollStrip } from "../../../../../../common/components/tabs-scroll-strip/TabsScrollStrip"
 import {
+  dealInvestorProfileDisplayName,
   investorRoleLabel,
   isDealMembersTabRole,
+  type DealRosterKind,
 } from "../../../constants/investor-profile"
 import type { DealInvestorClass } from "../../../types/deal-investor-class.types"
+import {
+  formatInvestorClassTableLabel,
+  investorRowIsGeneralPartner,
+  isGpInvestorClass,
+} from "../../../utils/investorClassOverviewFields"
 import type { DealInvestorRow } from "../../../types/deal-investors.types"
 import {
-  buildDealMembersTableExportCsv,
-  downloadDealExportCsv,
+  buildDealInvestorsExportMatrix,
+  buildDealMembersTableExportMatrix,
+  downloadDealRosterExportXlsx,
   exportAuditLinesForDealInvestorRows,
 } from "../../../utils/dealInvestorExportCsv"
-import { buildTableExportFilename } from "../../../../../../common/utils/tableExportFilename"
 import { dealInvestorStatusDisplayLabel } from "../../../utils/dealInvestorTableDisplay"
-import { applyInvitationMailSentMarks } from "../../../utils/dealInvitationMailStatus"
+import { applyInvitationMailSentMarks, rowInvitationMailMarkedSent } from "../../../utils/dealInvitationMailStatus"
 import {
   displayAddedInvestorsCommittedAmount,
   displayInvestorCommittedAmount,
@@ -62,7 +78,7 @@ import { TableCompactAmountCell } from "../../../../../../common/components/card
 import { DealInvestorCommittedAmountCell } from "../../investors/DealInvestorCommittedAmountCell"
 import { InviteMailStatusBadge } from "../../investors/InviteMailStatusBadge"
 import { DealInvestorRoleCell } from "../../investors/DealInvestorRoleBadge"
-// import { InvestorClassPillsDisplay } from "../../investors/InvestorClassPillsDisplay"
+import { InvestorClassPillsDisplay } from "../../investors/InvestorClassPillsDisplay"
 import { DealMemberRowActions } from "../components/DealMemberRowActions"
 import {
   loadEmailTemplates,
@@ -85,13 +101,134 @@ import "../../../../contacts/contacts.css"
 import "./deal-members.css"
 import "../../../../../../common/components/data-table/data-table.css"
 
-function includeInDealMembersTable(r: DealInvestorRow): boolean {
-  if (r.id === ADD_MEMBER_DRAFT_ROW_ID) {
-    const role = String(r.investorRole ?? "").trim()
-    if (!role || role === "—") return true
-    return isDealMembersTabRole(role)
+function includeInDealRosterTable(
+  r: DealInvestorRow,
+  rosterKind: DealRosterKind,
+  classes: DealInvestorClass[],
+): boolean {
+  const role = String(r.investorRole ?? "").trim()
+  const unset = !role || role === "—"
+  const isGp = investorRowIsGeneralPartner(r, classes)
+  if (rosterKind === "general_partners") {
+    if (r.id === ADD_MEMBER_DRAFT_ROW_ID && unset && !isGp) return false
+    return isGp
   }
-  return isDealMembersTabRole(r.investorRole)
+  if (isGp) return false
+  if (r.id === ADD_MEMBER_DRAFT_ROW_ID && unset) return true
+  return isDealMembersTabRole(role)
+}
+
+const ROSTER_COPY: Record<
+  DealRosterKind,
+  {
+    searchPlaceholder: string
+    searchAriaLabel: string
+    addButton: string
+    empty: string
+    loading: string
+    loadingAria: string
+    exportTitle: string
+    exportHint: string
+    exportSearchPlaceholder: string
+    exportSearchAria: string
+    exportListAria: string
+    paginationAria: string
+    noEmailTitle: string
+    noEmailBody: string
+  }
+> = {
+  deal_members: {
+    searchPlaceholder: "Search general partners…",
+    searchAriaLabel: "Search general partners",
+    addButton: "Add General Partner",
+    empty:
+      "No general partners yet. Add a member with a Lead Sponsor, Admin sponsor, or Co-sponsor role.",
+    loading: "Loading general partners…",
+    loadingAria: "Loading general partners",
+    exportTitle: "Export general partners",
+    exportHint:
+      "Search and select general partners, then export to Excel. The sheet is named General Partners.",
+    exportSearchPlaceholder: "Search general partners…",
+    exportSearchAria: "Search general partners in export list",
+    exportListAria: "General partners to export",
+    paginationAria: "General partners pagination",
+    noEmailTitle: "No email recipients",
+    noEmailBody: "Selected general partners have no valid email.",
+  },
+  general_partners: {
+    searchPlaceholder: "Search team members…",
+    searchAriaLabel: "Search team members",
+    addButton: "Add Team Member",
+    empty: "No team members yet. Add a team member to this deal.",
+    loading: "Loading team members…",
+    loadingAria: "Loading team members",
+    exportTitle: "Export team members",
+    exportHint:
+      "Search and select team members, then export to Excel. The sheet is named Team Members.",
+    exportSearchPlaceholder: "Search team members…",
+    exportSearchAria: "Search team members in export list",
+    exportListAria: "Team members to export",
+    paginationAria: "Team members pagination",
+    noEmailTitle: "No email recipients",
+    noEmailBody: "Selected team members have no valid email.",
+  },
+}
+
+function GpVerifiedAccBadge({ label }: { label: string }) {
+  const t = String(label ?? "").trim() || "—"
+  const hint = t !== "—" ? t : undefined
+  return (
+    <span
+      className="deal_inv_verified_badge deal_inv_verified_badge_ellipsis"
+      title={hint}
+    >
+      <span className="deal_inv_verified_badge_inner">{t}</span>
+    </span>
+  )
+}
+
+// function GpFundedBadge({ row }: { row: DealInvestorRow }) {
+//   const approved = investorRowIsFundApproved(row)
+//   const label = approved ? "Approved" : "Not Approved"
+//   return (
+//     <span
+//       className={`deal_inv_funded_badge${
+//         approved
+//           ? " deal_inv_funded_badge--approved"
+//           : " deal_inv_funded_badge--not_approved"
+//       }`}
+//       title={label}
+//     >
+//       {label}
+//     </span>
+//   )
+// }
+
+function GpEmptyDash() {
+  return (
+    <span className="deal_gp_empty_dash" aria-hidden>
+      <span>-</span>
+    </span>
+  )
+}
+
+function GpEllipsisText({
+  text,
+  alignEnd = false,
+}: {
+  text: string
+  alignEnd?: boolean
+}) {
+  const display = String(text ?? "").trim() || "—"
+  if (display === "—") return <GpEmptyDash />
+  return (
+    <span
+      className={`deal_inv_ellipsis_text${alignEnd ? " deal_inv_ellipsis_text_end" : ""}`}
+      title={display}
+    >
+      {display}
+    </span>
+  )
 }
 
 interface DealMembersTabProps {
@@ -106,7 +243,7 @@ interface DealMembersTabProps {
   addInvestmentOpen: boolean
   /** From DealInvestorsTab: true while Add or Edit modal is open — suppresses duplicate session draft row. */
   sharedInvestmentModalOpen?: boolean
-  onAddMember: () => void
+  onAddMember: (rosterKind: DealRosterKind) => void
   onEditMember: (row: DealInvestorRow) => void
   onCopyMemberOfferingLink: (row: DealInvestorRow) => void
   onSendMemberInvitationMail: (row: DealInvestorRow) => void
@@ -120,6 +257,8 @@ interface DealMembersTabProps {
    * until the members API includes invitation mail status.
    */
   invitationMailStatusByRowId?: Record<string, true>
+  /** Rows currently sending invitation email — Email status shows a loader. */
+  invitationMailSendingByRowId?: Record<string, true>
 }
 
 export function DealMembersTab({
@@ -137,6 +276,7 @@ export function DealMembersTab({
   onViewMember,
   investorsRefreshKey = 0,
   invitationMailStatusByRowId,
+  invitationMailSendingByRowId,
 }: DealMembersTabProps) {
   const navigate = useNavigate()
   const [rows, setRows] = useState<DealInvestorRow[]>([])
@@ -149,9 +289,22 @@ export function DealMembersTab({
   )
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [dealMembersPageSize, setDealMembersPageSize] =
+    usePersistedTablePageSize(TABLE_PAGE_SIZE_ID.dealMembers)
+  const [generalPartnersPageSize, setGeneralPartnersPageSize] =
+    usePersistedTablePageSize(TABLE_PAGE_SIZE_ID.generalPartners)
   const [addMemberDraftTick, setAddMemberDraftTick] = useState(0)
   const [query, setQuery] = useState("")
+  const [rosterKind, setRosterKind] = useState<DealRosterKind>("deal_members")
+  const pageSize =
+    rosterKind === "general_partners"
+      ? generalPartnersPageSize
+      : dealMembersPageSize
+  const setPageSize =
+    rosterKind === "general_partners"
+      ? setGeneralPartnersPageSize
+      : setDealMembersPageSize
+  const copy = ROSTER_COPY[rosterKind]
   const [exportModalOpen, setExportModalOpen] = useState(false)
   const [selectedMemberIds, setSelectedMemberIds] = useState<Set<string>>(
     () => new Set(),
@@ -221,6 +374,12 @@ export function DealMembersTab({
   }, [dealId])
 
   useEffect(() => {
+    setPage(1)
+    setQuery("")
+    setSelectedMemberIds(new Set())
+  }, [rosterKind])
+
+  useEffect(() => {
     function onDraftUpdated() {
       setAddMemberDraftTick((t) => t + 1)
     }
@@ -235,9 +394,12 @@ export function DealMembersTab({
   }, [dealId, investorClasses, addMemberDraftTick])
 
   const displayRows = useMemo(() => {
-    const filtered = rows.filter(includeInDealMembersTable)
+    const filtered = rows.filter((r) =>
+      includeInDealRosterTable(r, rosterKind, investorClasses),
+    )
     const draft =
-      sessionDraftRow && includeInDealMembersTable(sessionDraftRow)
+      sessionDraftRow &&
+      includeInDealRosterTable(sessionDraftRow, rosterKind, investorClasses)
         ? sessionDraftRow
         : null
     const hideSessionDraftRow =
@@ -257,16 +419,19 @@ export function DealMembersTab({
     sharedInvestmentModalOpen,
     dealId,
     addMemberDraftTick,
+    rosterKind,
+    investorClasses,
   ])
 
-  // const dealAllClassNamesLine = useMemo(
-  //   () =>
-  //     investorClasses
-  //       .map((c) => String(c.name ?? "").trim())
-  //       .filter(Boolean)
-  //       .join(", "),
-  //   [investorClasses],
-  // )
+  const gpClassNamesLine = useMemo(
+    () =>
+      investorClasses
+        .filter((c) => isGpInvestorClass(c))
+        .map((c) => formatInvestorClassTableLabel(c.name, [c]))
+        .filter(Boolean)
+        .join(", "),
+    [investorClasses],
+  )
 
   const displayRowsWithMail = useMemo(
     () => applyInvitationMailSentMarks(displayRows, invitationMailStatusByRowId),
@@ -295,6 +460,8 @@ export function DealMembersTab({
         r.userEmail,
         r.investorRole,
         r.investorClass,
+        formatInvestorClassTableLabel(r.investorClass, investorClasses),
+        dealInvestorProfileDisplayName(r),
         r.status,
         r.addedByDisplayName,
         investorRoleLabel(r.investorRole ?? ""),
@@ -306,7 +473,27 @@ export function DealMembersTab({
         .join(" ")
       return hay.includes(q)
     })
-  }, [displayRowsWithMail, query])
+  }, [displayRowsWithMail, query, investorClasses])
+
+  const gpMoneyTotals = useMemo(() => {
+    if (rosterKind !== "deal_members") return null
+    const source = filteredRows.filter((r) => r.id !== ADD_MEMBER_DRAFT_ROW_ID)
+    if (source.length === 0) return null
+    let commitment = 0
+    let added = 0
+    for (const r of source) {
+      const c = parseMoneyDigits(displayInvestorCommittedAmount(r))
+      if (Number.isFinite(c)) commitment += c
+      const a = parseMoneyDigits(displayAddedInvestorsCommittedAmount(r))
+      if (Number.isFinite(a)) added += a
+    }
+    return {
+      commitment: Math.round(commitment * 100) / 100,
+      added: Math.round(added * 100) / 100,
+      count: source.length,
+      filtered: Boolean(query.trim()),
+    }
+  }, [rosterKind, filteredRows, query])
 
   const allFilteredMembersSelected = useMemo(
     () =>
@@ -413,7 +600,7 @@ export function DealMembersTab({
         ),
       ]
       if (emails.length === 0) {
-        toast.error("No email recipients", "Selected deal members have no valid email.")
+        toast.error(copy.noEmailTitle, copy.noEmailBody)
         return
       }
       setSendMailEmailPreview({
@@ -430,7 +617,7 @@ export function DealMembersTab({
         startInEditMode: mode === "edit",
       })
     },
-    [emailTemplates, selectedMemberRows, selectedTemplateId, sendMailCc],
+    [emailTemplates, selectedMemberRows, selectedTemplateId, sendMailCc, copy],
   )
 
   const handleSendMailPreviewSaved = useCallback(
@@ -455,34 +642,303 @@ export function DealMembersTab({
   )
 
   const columns = useMemo((): DataTableColumn<DealInvestorRow>[] => {
+    const selectColumn: DataTableColumn<DealInvestorRow> = {
+      id: "select",
+      header: (
+        <input
+          ref={memberSelectAllRef}
+          type="checkbox"
+          className="um_table_header_select_cb"
+          checked={allFilteredMembersSelected}
+          onChange={toggleSelectAllFilteredMembers}
+          disabled={filteredRows.length === 0}
+          aria-label={
+            rosterKind === "general_partners"
+              ? "Select all team members in this list"
+              : "Select all general partners in this list"
+          }
+        />
+      ),
+      align: "center",
+      thClassName: "um_th_checkbox",
+      tdClassName: "um_td_checkbox",
+      cell: (r) => (
+        <input
+          type="checkbox"
+          className="um_table_row_select_cb"
+          checked={selectedMemberIds.has(r.id)}
+          onChange={() => toggleSelectMember(r.id)}
+          onClick={(e) => e.stopPropagation()}
+          aria-label={
+            rosterKind === "general_partners"
+              ? `Select team member ${r.displayName || r.userEmail || r.id}`
+              : `Select general partner ${r.displayName || r.userEmail || r.id}`
+          }
+        />
+      ),
+    }
+
+    const actionsColumn: DataTableColumn<DealInvestorRow> = {
+      id: "actions",
+      header: "Actions",
+      align: "center",
+      thClassName: "um_th_actions",
+      tdClassName: "um_td_actions deal_inv_td_actions",
+      cell: (r) => (
+        <div className="deal_members_actions_cell">
+          <DealMemberRowActions
+            row={r}
+            draftRow={r.id === ADD_MEMBER_DRAFT_ROW_ID}
+            invitationMailSent={r.invitationMailSent === true}
+            invitationMailSending={rowInvitationMailMarkedSent(
+              r,
+              invitationMailSendingByRowId,
+            )}
+            offeringLinkAvailable={offeringLinkAvailable}
+            offeringLinkBlockedBecauseDraft={offeringLinkBlockedBecauseDraft}
+            onView={handleViewMember}
+            onEdit={onEditMember}
+            onCopyLink={onCopyMemberOfferingLink}
+            onSendInvite={onSendMemberInvitationMail}
+            onDelete={onDeleteMember}
+          />
+        </div>
+      ),
+    }
+
+    if (rosterKind === "general_partners") {
+      return [
+        selectColumn,
+        {
+          id: "investor",
+          header: "Investor",
+          sortValue: (row) =>
+            `${row.displayName} ${row.entitySubtitle} ${formatMemberUsername(row.userDisplayName)} ${row.userEmail} ${row.firstName ?? ""} ${row.lastName ?? ""}`.toLowerCase(),
+          tdClassName: "deal_inv_td_member deal_inv_td_investor_identity",
+          cell: (row) => (
+            <DealInvestorIdentityCell
+              row={row}
+              isDraft={investorRowShowsDraftBadge(row)}
+              onNameClick={
+                row.id === ADD_MEMBER_DRAFT_ROW_ID
+                  ? undefined
+                  : handleViewMember
+              }
+            />
+          ),
+        },
+        {
+          id: "profile",
+          header: "Profile",
+          colWidth: "7.5rem",
+          thClassName: "deal_inv_th_profile deal_gp_th_profile",
+          tdClassName: "deal_inv_td_profile deal_gp_td_profile",
+          sortValue: (row) => dealInvestorProfileDisplayName(row).toLowerCase(),
+          cell: (row) => {
+            const text = dealInvestorProfileDisplayName(row)
+            if (!text || text === "—") return <GpEmptyDash />
+            return <span className="deal_inv_profile_full_text">{text}</span>
+          },
+        },
+        {
+          id: "investorClass",
+          align: "center",
+          header: (
+            <span className="deal_inv_th_investor_class_head">
+              <span>Investor Class</span>
+              {investorClasses.length === 0 ? (
+                <FormTooltip
+                  label="Please complete the Offering Details section to assign an investor class."
+                  content={
+                    <p className="deal_inv_class_tooltip_p">
+                      Please complete the Offering Details section to assign an
+                      investor class.
+                    </p>
+                  }
+                  placement="bottom"
+                  panelAlign="start"
+                  openOnHover={false}
+                  nativeButtonTrigger={false}
+                />
+              ) : null}
+            </span>
+          ),
+          thClassName: "deals_th_align_center",
+          tdClassName:
+            "deal_inv_td_investor_class deal_inv_td_investor_class_cell deal_inv_td_investor_class_center",
+          sortValue: (row) => {
+            const a = formatInvestorClassTableLabel(
+              row.investorClass,
+              investorClasses,
+            )
+            if (a) return a.toLowerCase()
+            return gpClassNamesLine.toLowerCase()
+          },
+          cell: (row) => {
+            const assignedRaw = formatInvestorClassTableLabel(
+              row.investorClass,
+              investorClasses,
+            )
+            const dealLine = gpClassNamesLine.trim()
+            const pillSource = assignedRaw || dealLine
+            if (!pillSource.trim())
+              return <span className="deal_inv_class_pill_muted">—</span>
+            const titleForTooltip =
+              assignedRaw && dealLine && assignedRaw !== dealLine
+                ? `${assignedRaw} · Deal: ${dealLine}`
+                : pillSource
+            return (
+              <InvestorClassPillsDisplay
+                pillSource={pillSource}
+                titleForTooltip={titleForTooltip}
+                disableHoverTooltip
+              />
+            )
+          },
+        },
+        {
+          id: "status",
+          header: "Status",
+          colWidth: "6.5rem",
+          thClassName: "deal_gp_th_status",
+          sortValue: (row) => dealInvestorStatusDisplayLabel(row).toLowerCase(),
+          tdClassName: "deal_inv_td_ellipsis deal_gp_td_status",
+          cell: (row) => (
+            <GpEllipsisText text={dealInvestorStatusDisplayLabel(row)} />
+          ),
+        },
+        // {
+        //   id: "added_by",
+        //   header: "Sponsor name",
+        //   sortValue: (row) => String(row.addedByDisplayName ?? "").toLowerCase(),
+        //   tdClassName: "deal_inv_td_ellipsis",
+        //   cell: (row) => {
+        //     const s = String(row.addedByDisplayName ?? "").trim()
+        //     const display = s && s !== "—" ? s : "—"
+        //     const email = String(row.addedByEmail ?? "").trim()
+        //     if (display === "—" || !email)
+        //       return <GpEllipsisText text={display} />
+        //     return (
+        //       <FormTooltip
+        //         triggerMode="inline"
+        //         placement="top"
+        //         panelAlign="start"
+        //         openOnHover
+        //         label={`Sponsor email for ${display}`}
+        //         content={
+        //           <p className="deal_inv_sponsor_email_tooltip">{email}</p>
+        //         }
+        //       >
+        //         <span className="deal_inv_ellipsis_text deal_inv_sponsor_name_hover">
+        //           {display}
+        //         </span>
+        //       </FormTooltip>
+        //     )
+        //   },
+        // },
+        {
+          id: "committed",
+          header: (
+            <span className="deal_inv_th_investor_class_head deal_inv_th_commitment_head">
+              <span>Committed</span>
+              <FormTooltip
+                label="What this amount means"
+                content={
+                  <p className="deal_inv_class_tooltip_p">
+                    Same as General Partners → Investors added: the sum of
+                    Investors-tab Committed amounts on this deal for investors
+                    whose Sponsor name is this team member. Their own
+                    subscription is not included. Shown in USD.
+                  </p>
+                }
+                placement="bottom"
+                panelAlign="end"
+                openOnHover
+                nativeButtonTrigger={false}
+              />
+            </span>
+          ),
+          align: "right",
+          thClassName: "deals_th_align_right",
+          sortValue: (row) =>
+            parseMoneyDigits(displayAddedInvestorsCommittedAmount(row)),
+          tdClassName: "deal_inv_td_ellipsis deal_inv_td_committed um_td_numeric",
+          cell: (row) => {
+            if (row.id === ADD_MEMBER_DRAFT_ROW_ID) return "—"
+            const text = displayAddedInvestorsCommittedAmount(row)
+            const display = String(text ?? "").trim()
+            if (!display || display === "—") return "—"
+            return (
+              <span className="deal_inv_ellipsis_text deal_inv_ellipsis_text_end">
+                <TableCompactAmountCell amount={display} />
+              </span>
+            )
+          },
+        },
+        {
+          id: "signed",
+          header: "Signed",
+          sortValue: (row) =>
+            row.esignStatus?.completedAt ??
+            row.esignStatus?.signedAt ??
+            row.esignStatus?.viewedAt ??
+            row.esignStatus?.sentAt ??
+            row.signedDate ??
+            "",
+          tdClassName: "deal_inv_td_ellipsis",
+          cell: (row) => <DealInvestorSignedCell row={row} />,
+        },
+        // {
+        //   id: "funded",
+        //   header: "Funded",
+        //   sortValue: (row) => (investorRowIsFundApproved(row) ? "1" : "0"),
+        //   tdClassName: "deal_inv_td_funded",
+        //   cell: (row) => <GpFundedBadge row={row} />,
+        // },
+        // {
+        //   id: "selfAcc",
+        //   header: "Self Acc",
+        //   sortValue: (row) => row.selfAccredited ?? "",
+        //   tdClassName: "deal_inv_td_ellipsis",
+        //   cell: (row) => (
+        //     <GpEllipsisText text={row.selfAccredited ?? "—"} />
+        //   ),
+        // },
+        {
+          id: "verifiedAcc",
+          header: "Verified Acc",
+          sortValue: (row) => row.verifiedAccLabel ?? "",
+          tdClassName: "deal_inv_td_ellipsis deal_inv_td_verified",
+          cell: (row) => (
+            <GpVerifiedAccBadge label={row.verifiedAccLabel ?? "—"} />
+          ),
+        },
+        {
+          id: "mailStatus",
+          header: "Email status",
+          sortValue: (row) =>
+            row.id === ADD_MEMBER_DRAFT_ROW_ID
+              ? -1
+              : row.invitationMailSent === true
+                ? 1
+                : 0,
+          tdClassName: "deal_inv_td_mail_status",
+          cell: (r) => (
+            <InviteMailStatusBadge
+              row={r}
+              sending={rowInvitationMailMarkedSent(
+                r,
+                invitationMailSendingByRowId,
+              )}
+            />
+          ),
+        },
+        actionsColumn,
+      ]
+    }
+
     return [
-      {
-        id: "select",
-        header: (
-          <input
-            ref={memberSelectAllRef}
-            type="checkbox"
-            className="um_table_header_select_cb"
-            checked={allFilteredMembersSelected}
-            onChange={toggleSelectAllFilteredMembers}
-            disabled={filteredRows.length === 0}
-            aria-label="Select all deal members in this list"
-          />
-        ),
-        align: "center",
-        thClassName: "um_th_checkbox",
-        tdClassName: "um_td_checkbox",
-        cell: (r) => (
-          <input
-            type="checkbox"
-            className="um_table_row_select_cb"
-            checked={selectedMemberIds.has(r.id)}
-            onChange={() => toggleSelectMember(r.id)}
-            onClick={(e) => e.stopPropagation()}
-            aria-label={`Select deal member ${r.displayName || r.userEmail || r.id}`}
-          />
-        ),
-      },
+      selectColumn,
       {
         id: "user",
         header: "User",
@@ -494,62 +950,29 @@ export function DealMembersTab({
         ),
       },
       {
+        id: "profile",
+        header: "Profile",
+        colWidth: "7.5rem",
+        thClassName: "deal_inv_th_profile deal_gp_th_profile",
+        tdClassName: "deal_inv_td_profile deal_gp_td_profile",
+        sortValue: (r) => dealInvestorProfileDisplayName(r).toLowerCase(),
+        cell: (r) => {
+          const text = dealInvestorProfileDisplayName(r)
+          if (!text || text === "—") return <GpEmptyDash />
+          return <span className="deal_inv_profile_full_text">{text}</span>
+        },
+      },
+      {
         id: "role",
         header: "Deal role",
+        colWidth: "11.5rem",
+        thClassName: "deal_inv_th_role deal_gp_th_role",
         sortValue: (r) =>
           String(investorRoleLabel(r.investorRole ?? "")).toLowerCase(),
-        tdClassName: "deal_inv_td_role deal_inv_td_role_badge_cell",
+        tdClassName:
+          "deal_inv_td_role deal_inv_td_role_badge_cell deal_gp_td_role",
         cell: (r) => <DealInvestorRoleCell row={r} />,
       },
-      // {
-      //   id: "class",
-      //   align: "center",
-      //   header: (
-      //     <span className="deal_inv_th_investor_class_head">
-      //       <span>Class</span>
-      //       {investorClasses.length === 0 ? (
-      //         <FormTooltip
-      //           label="Please complete the Offering Details section to assign an investor class."
-      //           content={
-      //             <p className="deal_inv_class_tooltip_p">
-      //               Please complete the Offering Details section to assign an
-      //               investor class.
-      //             </p>
-      //           }
-      //           placement="bottom"
-      //           panelAlign="start"
-      //           openOnHover={false}
-      //           nativeButtonTrigger={false}
-      //         />
-      //       ) : null}
-      //     </span>
-      //   ),
-      //   thClassName: "deals_th_align_center",
-      //   sortValue: (r) => {
-      //     const a = (r.investorClass ?? "").trim()
-      //     if (a) return a.toLowerCase()
-      //     return dealAllClassNamesLine.toLowerCase()
-      //   },
-      //   tdClassName:
-      //     "deal_inv_td_investor_class deal_inv_td_investor_class_cell deal_inv_td_investor_class_center",
-      //   cell: (r) => {
-      //     const assignedRaw = (r.investorClass ?? "").trim()
-      //     const dealLine = dealAllClassNamesLine.trim()
-      //     const pillSource = assignedRaw || dealLine
-      //     if (!pillSource.trim())
-      //       return <span className="deal_inv_class_pill_muted">—</span>
-      //     const titleForTooltip =
-      //       assignedRaw && dealLine && assignedRaw !== dealLine
-      //         ? `${assignedRaw} · Deal: ${dealLine}`
-      //         : pillSource
-      //     return (
-      //       <InvestorClassPillsDisplay
-      //         pillSource={pillSource}
-      //         titleForTooltip={titleForTooltip}
-      //       />
-      //     )
-      //   },
-      // },
       {
         id: "commitment",
         align: "right",
@@ -590,9 +1013,10 @@ export function DealMembersTab({
               label="Commitment from investors they added"
               content={
                 <p className="deal_inv_class_tooltip_p">
-                  Total subscription commitment (plus additional contribution lines)
-                  recorded on this deal for other roster contacts this member added
-                  to the deal. Your own commitment is not included. Shown in USD.
+                  Sum of the Investors tab Committed amounts on this deal for
+                  investors whose Sponsor name is this Lead Sponsor, Admin
+                  sponsor, or Co-sponsor. Their own commitment is not included.
+                  Shown in USD.
                 </p>
               }
               placement="bottom"
@@ -622,22 +1046,14 @@ export function DealMembersTab({
       {
         id: "status",
         header: "Status",
+        colWidth: "6.5rem",
+        thClassName: "deal_gp_th_status",
         sortValue: (r) =>
           dealInvestorStatusDisplayLabel(r).toLowerCase(),
-        tdClassName: "deal_inv_td_ellipsis",
-        cell: (r) => dealInvestorStatusDisplayLabel(r),
-      },
-      {
-        id: "added_by",
-        header: "Added by",
-        sortValue: (r) =>
-          String(r.addedByDisplayName ?? "").toLowerCase(),
-        tdClassName: "deal_inv_td_ellipsis",
-        cell: (r) => {
-          if (r.id === ADD_MEMBER_DRAFT_ROW_ID) return "—"
-          const s = String(r.addedByDisplayName ?? "").trim()
-          return s && s !== "—" ? s : "—"
-        },
+        tdClassName: "deal_inv_td_ellipsis deal_gp_td_status",
+        cell: (r) => (
+          <GpEllipsisText text={dealInvestorStatusDisplayLabel(r)} />
+        ),
       },
       {
         id: "mailStatus",
@@ -649,33 +1065,22 @@ export function DealMembersTab({
               ? 1
               : 0,
         tdClassName: "deal_inv_td_mail_status",
-        cell: (r) => <InviteMailStatusBadge row={r} />,
-      },
-      {
-        id: "actions",
-        header: "Actions",
-        align: "center",
-        thClassName: "um_th_actions",
-        tdClassName: "um_td_actions deal_inv_td_actions",
         cell: (r) => (
-          <div className="deal_members_actions_cell">
-            <DealMemberRowActions
-              row={r}
-              draftRow={r.id === ADD_MEMBER_DRAFT_ROW_ID}
-              invitationMailSent={r.invitationMailSent === true}
-              offeringLinkAvailable={offeringLinkAvailable}
-              offeringLinkBlockedBecauseDraft={offeringLinkBlockedBecauseDraft}
-              onView={handleViewMember}
-              onEdit={onEditMember}
-              onCopyLink={onCopyMemberOfferingLink}
-              onSendInvite={onSendMemberInvitationMail}
-              onDelete={onDeleteMember}
-            />
-          </div>
+          <InviteMailStatusBadge
+            row={r}
+            sending={rowInvitationMailMarkedSent(
+              r,
+              invitationMailSendingByRowId,
+            )}
+          />
         ),
       },
+      actionsColumn,
     ]
   }, [
+    rosterKind,
+    gpClassNamesLine,
+    investorClasses,
     allFilteredMembersSelected,
     toggleSelectAllFilteredMembers,
     filteredRows.length,
@@ -683,24 +1088,49 @@ export function DealMembersTab({
     toggleSelectMember,
     onEditMember,
     offeringLinkAvailable,
+    offeringLinkBlockedBecauseDraft,
     onCopyMemberOfferingLink,
     onSendMemberInvitationMail,
     onDeleteMember,
     handleViewMember,
+    invitationMailSendingByRowId,
   ])
 
   function handleExportDealMembers(selected: DealInvestorRow[]) {
-    const csv = buildDealMembersTableExportCsv(selected)
-    const filename = buildTableExportFilename({
+    const isTeamMembers = rosterKind === "general_partners"
+    const sheetName = isTeamMembers ? "Team Members" : "General Partners"
+    const matrix = isTeamMembers
+      ? buildDealInvestorsExportMatrix(
+          selected.map((row) => ({
+            ...row,
+            investorClass:
+              formatInvestorClassTableLabel(
+                row.investorClass,
+                investorClasses,
+              ) || row.investorClass,
+            committed: displayAddedInvestorsCommittedAmount(row),
+            commitmentAmountRaw: "",
+            extraContributionAmounts: [],
+            fundApprovedCommitmentSnapshot: undefined,
+          })),
+          gpClassNamesLine,
+        )
+      : buildDealMembersTableExportMatrix(selected)
+    const filename = downloadDealRosterExportXlsx({
+      sheetName,
+      matrix,
       dealName,
-      tableSlug: "deal-member",
+      tableSlug: isTeamMembers ? "team-members" : "general-partners",
     })
-    downloadDealExportCsv(csv, filename)
     void notifyDealMembersExportAudit(dealId, {
       rowCount: selected.length,
       exportedLines: exportAuditLinesForDealInvestorRows(selected),
+      rosterLabel: sheetName,
     })
-    toast.success("Deal members exported", `Saved as ${filename}`)
+    toast.success(
+      isTeamMembers ? "Team members exported" : "General partners exported",
+      `Saved as ${filename}`,
+    )
   }
 
   const handleSendMailToSelectedMembers = useCallback(async () => {
@@ -712,7 +1142,7 @@ export function DealMembersTab({
       ),
     ]
     if (emails.length === 0) {
-      toast.error("No email recipients", "Selected deal members have no valid email.")
+      toast.error(copy.noEmailTitle, copy.noEmailBody)
       return
     }
     const template = emailTemplates.find((t) => t.id === selectedTemplateId)
@@ -725,6 +1155,7 @@ export function DealMembersTab({
       ccRaw: sendMailCc,
       templateSubject: template.subject,
       templateBodyHtml: template.body,
+      templateAttachment: template.attachment,
       senderEmail,
     })
     if (!result.ok) {
@@ -740,18 +1171,70 @@ export function DealMembersTab({
     sendMailCc,
     senderEmail,
     closeSendMailModal,
+    copy,
   ])
 
   return (
     <div className="deal_members_tab">
+      <div className="um_members_tabs_outer deals_tabs_outer um_segmented_tabs_outer deal_members_roster_subtabs_outer">
+        <TabsScrollStrip scrollClassName="deals_tabs_scroll um_segmented_tabs_scroll">
+          <div
+            className="um_members_tabs_row deals_tabs_row um_segmented_tabs_row deal_members_roster_subtabs_row"
+            role="tablist"
+            aria-label="Deal roster"
+          >
+            <button
+              type="button"
+              id="deal-roster-subtab-members"
+              role="tab"
+              aria-selected={rosterKind === "deal_members"}
+              className={`um_members_tab deals_tabs_tab um_segmented_tab${
+                rosterKind === "deal_members" ? " um_members_tab_active" : ""
+              }`}
+              onClick={() => setRosterKind("deal_members")}
+            >
+              <Users
+                className="deals_tabs_icon um_segmented_tab_icon"
+                size={16}
+                strokeWidth={2}
+                aria-hidden
+              />
+              <span className="deals_tabs_label um_segmented_tab_label">
+                General Partners
+              </span>
+            </button>
+            <button
+              type="button"
+              id="deal-roster-subtab-gps"
+              role="tab"
+              aria-selected={rosterKind === "general_partners"}
+              className={`um_members_tab deals_tabs_tab um_segmented_tab${
+                rosterKind === "general_partners" ? " um_members_tab_active" : ""
+              }`}
+              onClick={() => setRosterKind("general_partners")}
+            >
+              <Handshake
+                className="deals_tabs_icon um_segmented_tab_icon"
+                size={16}
+                strokeWidth={2}
+                aria-hidden
+              />
+              <span className="deals_tabs_label um_segmented_tab_label">
+                Team Members
+              </span>
+            </button>
+          </div>
+        </TabsScrollStrip>
+      </div>
+
       <ExportDealInvestorRowsModal
         open={exportModalOpen}
         onClose={() => setExportModalOpen(false)}
-        title="Export deal members"
-        hint="Search and select members, then export to Excel (CSV format)."
-        searchPlaceholder="Search deal members…"
-        searchAriaLabel="Search deal members in export list"
-        listAriaLabel="Deal members to export"
+        title={copy.exportTitle}
+        hint={copy.exportHint}
+        searchPlaceholder={copy.exportSearchPlaceholder}
+        searchAriaLabel={copy.exportSearchAria}
+        listAriaLabel={copy.exportListAria}
         rows={exportModalRows}
         onExportExcel={handleExportDealMembers}
       />
@@ -931,11 +1414,11 @@ export function DealMembersTab({
             className="deal_members_page_loading"
             role="status"
             aria-live="polite"
-            aria-label="Loading deal members"
+            aria-label={copy.loadingAria}
           >
             <div className="data_table_loader_spinner" aria-hidden />
             <span className="deal_members_page_loading_text">
-              Loading deal members…
+              {copy.loading}
             </span>
           </div>
         ) : (
@@ -966,19 +1449,19 @@ export function DealMembersTab({
                   <input
                     type="search"
                     className="um_search_input"
-                    placeholder="Search deal members…"
+                    placeholder={copy.searchPlaceholder}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    aria-label="Search deal members"
+                    aria-label={copy.searchAriaLabel}
                   />
                 </div>
                 <button
                   type="button"
                   className="um_btn_primary deal_members_add_member_btn"
-                  onClick={onAddMember}
+                  onClick={() => onAddMember(rosterKind)}
                 >
                   <Plus size={18} strokeWidth={2} aria-hidden />
-                  Add Member
+                  {copy.addButton}
                 </button>
               </div>
             </div>
@@ -987,18 +1470,59 @@ export function DealMembersTab({
               visualVariant="members"
               membersTableClassName="um_table_members deal_inv_table"
               stickyColumnCount={2}
-              forceHorizontalScroll
               columns={columns}
               rows={filteredRows}
               getRowKey={(r, i) => r.id || `dm-${dealId}-${i}`}
               getRowClassName={(r) =>
                 investorRowShowsDraftBadge(r) ? "deal_inv_row_draft" : undefined
               }
-              onBodyRowClick={(r) => {
-                if (r.id !== ADD_MEMBER_DRAFT_ROW_ID) return
-                onEditMember(r)
-              }}
-              emptyLabel="No deal members yet. Add a member or record an investment on the Investors tab."
+              emptyLabel={copy.empty}
+              tableFooter={
+                gpMoneyTotals ? (
+                  <div
+                    className="deal_gp_totals_bar"
+                    role="status"
+                    aria-label="General partner commitment totals"
+                  >
+                    <div className="deal_gp_totals_bar_intro">
+                      <span className="deal_gp_totals_bar_kicker">Total</span>
+                      <span className="deal_gp_totals_bar_meta">
+                        {gpMoneyTotals.filtered
+                          ? `${gpMoneyTotals.count} matching`
+                          : `${gpMoneyTotals.count} general partner${
+                              gpMoneyTotals.count === 1 ? "" : "s"
+                            }`}
+                      </span>
+                    </div>
+                    <div className="deal_gp_totals_bar_metrics">
+                      <div className="deal_gp_totals_metric">
+                        <span className="deal_gp_totals_metric_label">
+                          Commitment
+                        </span>
+                        <span className="deal_gp_totals_metric_value">
+                          <TableCompactAmountCell
+                            amount={gpMoneyTotals.commitment}
+                          />
+                        </span>
+                      </div>
+                      <div
+                        className="deal_gp_totals_metric_divider"
+                        aria-hidden
+                      />
+                      <div className="deal_gp_totals_metric">
+                        <span className="deal_gp_totals_metric_label">
+                          Investors added
+                        </span>
+                        <span className="deal_gp_totals_metric_value">
+                          <TableCompactAmountCell
+                            amount={gpMoneyTotals.added}
+                          />
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : undefined
+              }
               pagination={{
                 page,
                 pageSize,
@@ -1008,7 +1532,7 @@ export function DealMembersTab({
                   setPageSize(n)
                   setPage(1)
                 },
-                ariaLabel: "Deal members pagination",
+                ariaLabel: copy.paginationAria,
               }}
             />
           </>

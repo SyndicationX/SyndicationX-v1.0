@@ -11,6 +11,7 @@ import {
   formatContactSinceLabel,
 } from "../utils/contactCsv"
 import { buildTableExportFilename } from "../../../../common/utils/tableExportFilename"
+import { displayEmail } from "../../../../common/utils/displayEmail"
 
 interface ExportContactsModalProps {
   open: boolean
@@ -234,7 +235,7 @@ export function ExportContactsModal({
                     {contactDisplayName(row)}
                   </span>
                   <span className="deals_export_modal_row_meta">
-                    {row.email || "—"}
+                    {displayEmail(row.email)}
                   </span>
                 </label>
               </li>
@@ -245,7 +246,7 @@ export function ExportContactsModal({
         <ExportModalFooter onClose={onClose}>
           <button
             type="button"
-            className="deals_export_modal_btn_primary"
+            className="um_btn_primary"
             onClick={handleExportExcel}
             disabled={selectedIds.size === 0}
           >

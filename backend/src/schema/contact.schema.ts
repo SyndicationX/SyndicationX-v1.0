@@ -1,5 +1,6 @@
 import {
   boolean,
+  date,
   jsonb,
   pgTable,
   text,
@@ -23,6 +24,8 @@ export const contact = pgTable("contact", {
   }),
   firstName: varchar("first_name", { length: 200 }).notNull(),
   lastName: varchar("last_name", { length: 200 }).notNull(),
+  /** Concat of first + last name; kept in sync on write for now. */
+  fullName: varchar("full_name", { length: 400 }).notNull().default(""),
   email: varchar("email", { length: 255 }).notNull(),
   /** True when this email is linked to a row in `users` — excluded from All Contacts lists. */
   isPortalUser: boolean("is_portal_user").notNull().default(false),
@@ -36,6 +39,15 @@ export const contact = pgTable("contact", {
   lists: jsonb("lists").$type<string[]>().notNull(),
   owners: jsonb("owners").$type<string[]>().notNull(),
   status: varchar("status", { length: 32 }).notNull().default("active"),
+  /**
+   * Per-contact offering visibility for the investor portal.
+   * `ALL_OFFERINGS` | `HIDE_OFFERINGS` | `506C_ONLY` — nullable when unset.
+   */
+  showOfferingsVisibility: varchar("show_offerings_visibility", { length: 32 }),
+  /** Accreditation status label; nullable when unset. */
+  accreditationStatus: text("accreditation_status"),
+  /** Date the relationship with this contact was established; nullable when unset. */
+  knownSince: date("known_since"),
   lastEditReason: text("last_edit_reason"),
   createdBy: uuid("created_by")
     .notNull()

@@ -12,8 +12,8 @@ import {
   filterBookProfilesByCommitmentKind,
 } from "@/modules/Syndication/Deals/utils/lpInvestNowSavedProfileOptions"
 import { parseMoneyDigits } from "@/modules/Syndication/Deals/utils/offeringMoneyFormat"
-import { previewMinimumInvestmentDisplay } from "@/modules/Syndication/Deals/dealOfferingPreviewShared"
 import type { DealInvestorClass } from "@/modules/Syndication/Deals/types/deal-investor-class.types"
+import { investorOnboardingSelectableClasses } from "@/modules/Syndication/Deals/utils/investorClassOverviewFields"
 import type { InvestNowW9FormValues } from "./investNowW9.types"
 
 export type InvestNowFieldErrors = Record<string, string>
@@ -116,16 +116,18 @@ export function validateInvestNowInvestorFields({
     }
   }
 
+  const selectableClasses = investorOnboardingSelectableClasses(investorClasses)
+
   if (!selectedInvestorClassId.trim()) {
     fieldErrors[INVEST_NOW_FIELD.investmentClass] =
-      investorClasses.length === 0
-        ? "No investment classes are configured for this deal"
+      selectableClasses.length === 0
+        ? "No investment classes are configured for investor onboarding on this deal"
         : "Select an investment class"
   } else if (
-    !investorClasses.some((c) => c.id === selectedInvestorClassId.trim())
+    !selectableClasses.some((c) => c.id === selectedInvestorClassId.trim())
   ) {
     fieldErrors[INVEST_NOW_FIELD.investmentClass] =
-      "Selected investment class is not available on this deal"
+      "Selected investment class is not available for investor onboarding"
   }
   if (!sponsorLabel.trim() || sponsorLabel === "—") {
     fieldErrors[INVEST_NOW_FIELD.sponsor] =
@@ -135,16 +137,32 @@ export function validateInvestNowInvestorFields({
   return { fieldErrors, stepError: null }
 }
 
-export function validateInvestNowInvestmentFields({
+export const INVEST_NOW_BELOW_MINIMUM_AMOUNT_NOTICE =
+  "Invested amount is less than the minimum amount. The sponsor needs to approve the investment."
+
+export function investNowBelowMinimumAmountNotice({
   amount,
-  fundingMethod,
-  investorClasses,
   minimumInvestmentAmount,
 }: {
   amount: string
-  fundingMethod: string
-  investorClasses: DealInvestorClass[]
   minimumInvestmentAmount: number | null
+}): string | null {
+  if (minimumInvestmentAmount == null) return null
+  const n = parseMoneyDigits(String(amount).trim())
+  if (!Number.isFinite(n) || n <= 0) return null
+  if (n >= minimumInvestmentAmount) return null
+  return INVEST_NOW_BELOW_MINIMUM_AMOUNT_NOTICE
+}
+
+export function validateInvestNowInvestmentFields({
+  amount,
+  fundingMethod,
+}: {
+  amount: string
+  fundingMethod: string
+  investorClasses?: DealInvestorClass[]
+  selectedInvestorClassId?: string
+  minimumInvestmentAmount?: number | null
 }): InvestNowFieldErrors {
   const fieldErrors: InvestNowFieldErrors = {}
   const n = parseMoneyDigits(String(amount).trim())
@@ -152,15 +170,6 @@ export function validateInvestNowInvestmentFields({
   if (!Number.isFinite(n) || n <= 0) {
     fieldErrors[INVEST_NOW_FIELD.amount] =
       "Enter an investment amount greater than 0"
-  } else if (
-    minimumInvestmentAmount != null &&
-    n < minimumInvestmentAmount
-  ) {
-    const minLabel = previewMinimumInvestmentDisplay(investorClasses)
-    fieldErrors[INVEST_NOW_FIELD.amount] =
-      minLabel && minLabel !== "—"
-        ? `Investment amount must be at least ${minLabel}`
-        : `Investment amount must be at least ${minimumInvestmentAmount}`
   }
 
   if (!fundingMethod.trim()) {
@@ -192,7 +201,7 @@ export function validateInvestNowW9Fields(
 
   const ssnErr = ssnItinFieldError(values.ssn, {
     required: true,
-    requiredMessage: "Enter your social security number",
+    requiredMessage: "Enter your Social Security Number",
   })
   if (ssnErr) {
     fieldErrors[INVEST_NOW_FIELD.w9Ssn] = ssnErr

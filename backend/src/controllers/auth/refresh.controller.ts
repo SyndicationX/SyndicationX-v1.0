@@ -1,10 +1,16 @@
 import type { Request, Response } from "express";
 import { getValidJwtUser } from "../../middleware/jwtUser.js";
 import {
+  clearAuthCookies,
+  readRefreshTokenFromRequest,
+  setRefreshTokenCookie,
+} from "../../utils/authCookies.js";
+import {
   refreshAuthTokens,
   revokeAccessTokenByJti,
   revokeRefreshToken,
 } from "../../services/auth/token.service.js";
+import { endOpenPortalSessionsForUser } from "../../services/platform/userActivity.service.js";
 
 type RefreshBody = {
   refreshToken?: unknown;
@@ -15,15 +21,15 @@ export async function postRefreshTokens(
   req: Request,
   res: Response,
 ): Promise<void> {
-  const body = req.body as RefreshBody;
-  const refreshToken =
-    typeof body.refreshToken === "string" ? body.refreshToken : "";
+  const refreshToken = readRefreshTokenFromRequest(req);
 
   const result = await refreshAuthTokens(refreshToken, req);
   if (!result.ok) {
     res.status(result.status).json({ message: result.message });
     return;
   }
+
+  setRefreshTokenCookie(res, result.refreshToken);
 
   res.status(200).json({
     accessToken: result.accessToken,
@@ -42,9 +48,15 @@ export async function postAuthLogout(
   res: Response,
 ): Promise<void> {
   const jwtUser = await getValidJwtUser(req);
-  const body = req.body as LogoutBody;
-  const refreshToken =
-    typeof body.refreshToken === "string" ? body.refreshToken : "";
+  const refreshToken = readRefreshTokenFromRequest(req);
+
+  if (jwtUser?.id) {
+    try {
+      await endOpenPortalSessionsForUser(jwtUser.id);
+    } catch (err) {
+      console.error("postAuthLogout close portal session:", err);
+    }
+  }
 
   if (jwtUser?.jti) {
     try {
@@ -62,5 +74,6 @@ export async function postAuthLogout(
     }
   }
 
+  clearAuthCookies(res);
   res.status(200).json({ ok: true });
 }

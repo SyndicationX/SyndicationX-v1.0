@@ -1,6 +1,10 @@
 export const INVEST_NOW_FUNDING_METHOD_OPTIONS = [
+  // Investor contributions: workflow (Stripe Checkout) — disabled for now
+  // {
+  //   value: "stripe_checkout",
+  //   label: "Card or ACH (Stripe Checkout)",
+  // },
   { value: "wire_transfer", label: "Wire transfer" },
-  { value: "ach", label: "ACH" },
   { value: "check", label: "Check" },
 ] as const
 

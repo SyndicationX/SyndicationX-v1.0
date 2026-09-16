@@ -1,5 +1,6 @@
-import { useLayoutEffect, useRef } from "react"
+import { useLayoutEffect, useMemo, useRef } from "react"
 
+import { buildSignFlowEmbedSignUrlClient } from "@/modules/Syndication/Deals/utils/esignSignflowEditorUrl"
 import "../dropbox-sign-embedded/dropbox-sign-embedded.css"
 
 
@@ -48,6 +49,8 @@ export function SignFlowEmbeddedSigner({
 
   signUrl,
 
+  embedApiKey,
+
   useInlineContainer = false,
 
   onSign,
@@ -82,11 +85,19 @@ export function SignFlowEmbeddedSigner({
 
   onErrorRef.current = onError
 
-
+  const embedSignUrl = useMemo(
+    () =>
+      buildSignFlowEmbedSignUrlClient(signUrl, {
+        embedApiKey,
+        parentOrigin:
+          typeof window !== "undefined" ? window.location.origin : null,
+      }),
+    [signUrl, embedApiKey],
+  )
 
   useLayoutEffect(() => {
 
-    const url = signUrl?.trim()
+    const url = embedSignUrl?.trim()
 
     if (!url) return
 
@@ -190,7 +201,7 @@ export function SignFlowEmbeddedSigner({
 
     }
 
-  }, [signUrl, useInlineContainer])
+  }, [embedSignUrl, useInlineContainer])
 
 
 

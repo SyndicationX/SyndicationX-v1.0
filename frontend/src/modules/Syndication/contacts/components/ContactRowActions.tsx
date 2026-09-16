@@ -21,8 +21,10 @@ interface ContactRowActionsProps {
   onView: () => void
   /** Omitted on Archived tab — edit is not offered for archived contacts. */
   onEdit?: () => void
-  onSuspend: () => void
-  onExport: () => void
+  onSuspend?: () => void
+  onExport?: () => void
+  /** Read-only rows (e.g. GoHighLevel) — only show View in the menu. */
+  viewOnly?: boolean
 }
 
 export function ContactRowActions({
@@ -32,6 +34,7 @@ export function ContactRowActions({
   onEdit,
   onSuspend,
   onExport,
+  viewOnly = false,
 }: ContactRowActionsProps) {
   const label = contactLabel.trim() || "contact"
   const [open, setOpen] = useState(false)
@@ -162,47 +165,51 @@ export function ContactRowActions({
                   </button>
                 </li>
               ) : null}
-              <li role="none">
-                <button
-                  type="button"
-                  className="um_kebab_menuitem"
-                  role="menuitem"
-                  onClick={() => run(onSuspend)}
-                >
-                  {isSuspended ? (
-                    <CheckCircle2
+              {!viewOnly && onSuspend ? (
+                <li role="none">
+                  <button
+                    type="button"
+                    className="um_kebab_menuitem"
+                    role="menuitem"
+                    onClick={() => run(onSuspend)}
+                  >
+                    {isSuspended ? (
+                      <CheckCircle2
+                        className="um_kebab_menuitem_icon"
+                        size={16}
+                        strokeWidth={2}
+                        aria-hidden
+                      />
+                    ) : (
+                      <Ban
+                        className="um_kebab_menuitem_icon"
+                        size={16}
+                        strokeWidth={2}
+                        aria-hidden
+                      />
+                    )}
+                    {isSuspended ? "Activate" : "Suspend"}
+                  </button>
+                </li>
+              ) : null}
+              {!viewOnly && onExport ? (
+                <li role="none">
+                  <button
+                    type="button"
+                    className="um_kebab_menuitem"
+                    role="menuitem"
+                    onClick={() => run(onExport)}
+                  >
+                    <Upload
                       className="um_kebab_menuitem_icon"
                       size={16}
                       strokeWidth={2}
                       aria-hidden
                     />
-                  ) : (
-                    <Ban
-                      className="um_kebab_menuitem_icon"
-                      size={16}
-                      strokeWidth={2}
-                      aria-hidden
-                    />
-                  )}
-                  {isSuspended ? "Activate" : "Suspend"}
-                </button>
-              </li>
-              <li role="none">
-                <button
-                  type="button"
-                  className="um_kebab_menuitem"
-                  role="menuitem"
-                  onClick={() => run(onExport)}
-                >
-                  <Upload
-                    className="um_kebab_menuitem_icon"
-                    size={16}
-                    strokeWidth={2}
-                    aria-hidden
-                  />
-                  Export
-                </button>
-              </li>
+                    Export
+                  </button>
+                </li>
+              ) : null}
             </ul>,
             document.body,
           )

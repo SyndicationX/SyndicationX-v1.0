@@ -16,7 +16,10 @@ import type {
 
 } from "../types/deal-investors.types"
 
-import { isLpInvestorClass } from "./investorClassOverviewFields"
+import {
+  investorOnboardingSelectableClasses,
+  isLpInvestorClass,
+} from "./investorClassOverviewFields"
 
 import type { LpInvestNowPrefill } from "./prefillLpInvestNowFields"
 
@@ -188,9 +191,11 @@ export function investNowDefaultInvestorClassId(
 
 ): string {
 
+  const selectable = investorOnboardingSelectableClasses(classes)
+
   const fromSaved = resolveDealInvestorClassId(
 
-    classes,
+    selectable,
 
     options?.savedInvestorClass,
 
@@ -200,7 +205,7 @@ export function investNowDefaultInvestorClassId(
 
   const fromViewer = resolveDealInvestorClassId(
 
-    classes,
+    selectable,
 
     options?.viewerInvestorClass,
 
@@ -208,7 +213,7 @@ export function investNowDefaultInvestorClassId(
 
   if (fromViewer) return fromViewer
 
-  if (classes.length === 1) return classes[0]!.id
+  if (selectable.length === 1) return selectable[0]!.id
 
   return ""
 

@@ -36,6 +36,8 @@ button.um_btn_secondary {
 .um_btn_secondary svg,
 .um_btn_toolbar svg,
 .um_toolbar_export_btn svg,
+.deals_export_modal_footer .um_btn_primary svg,
+.deals_export_modal_footer .um_btn_secondary svg,
 .deals_suspend_all_btn svg,
 .deal_docs_toolbar_btn svg,
 .contacts_table_icon_action_btn svg,
@@ -64,6 +66,8 @@ button.um_btn_secondary {
 }
 
 /* Modal/export/custom action buttons — same height as Close / Save / Add */
+.deals_export_modal_footer .um_btn_primary,
+.deals_export_modal_footer .um_btn_secondary,
 .deals_export_modal_btn_primary,
 .deals_export_modal_btn_secondary,
 .deal_stage_modal_btn,

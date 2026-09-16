@@ -209,7 +209,7 @@ export function ExportDealsModal({
         <ExportModalFooter onClose={onClose}>
           <button
             type="button"
-            className="deals_export_modal_btn_primary"
+            className="um_btn_primary"
             onClick={handleExportExcel}
             disabled={selectedIds.size === 0}
           >
