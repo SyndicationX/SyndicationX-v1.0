@@ -77,6 +77,22 @@ const TAB_IDS: Record<DealsTab, string> = {
   coming_soon: "investing-dash-deals-coming-soon",
 };
 
+function secTypeIs506(raw: string | null | undefined, letter: "b" | "c"): boolean {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (!value) return false;
+  if (value === `506_${letter}` || value === `506${letter}`) return true;
+  return new RegExp(`506\\s*\\(?\\s*${letter}\\s*\\)?`, "i").test(value);
+}
+
+/** Server already applied unset visibility: 506(c), or a 506(b) deal they are on. */
+function investingRowKeptByUnsetOfferingVisibility(row: DealListRow): boolean {
+  return secTypeIs506(row.secType, "c") || secTypeIs506(row.secType, "b");
+}
+
+function isDealSecType506b(raw: string | null | undefined): boolean {
+  return secTypeIs506(raw, "b");
+}
+
 const EMPTY_BY_BUCKET: InvestingDashboardDealsByBucket = {
   active: [],
   in_progress: [],
@@ -179,6 +195,15 @@ async function loadDealsByBucket(
     );
     if (!bucket && isInvestingDashboardOpportunityDeal(row)) {
       bucket = "coming_soon";
+    }
+    /**
+     * The deals API already applied offering visibility. A 506(c) offering,
+     * or a 506(b) deal this investor is already on, must still appear when
+     * they have no separate LP investment row (for example after being
+     * added as a sponsor).
+     */
+    if (!bucket && investingRowKeptByUnsetOfferingVisibility(row)) {
+      bucket = isDealSecType506b(row.secType) ? "active" : "coming_soon";
     }
     if (!bucket) continue;
     out[bucket].push(

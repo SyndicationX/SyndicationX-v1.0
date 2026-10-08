@@ -11,12 +11,20 @@ import {
 } from "../../services/deal/dealAccess.service.js";
 import {
   deleteDealMemberRosterEntry,
+  DealLeadSponsorValidationError,
+  getDealMemberRosterEntryById,
   listDealMembersMappedToInvestorApi,
   markDealMemberInvitationMailSent,
   resolveDealLeadSponsorDisplayName,
+  saveDealMemberRoleForDeal,
 } from "../../services/deal/dealMember.service.js";
-import { sendDealMemberInvitationEmail } from "../../services/deal/dealMemberInvitationEmail.service.js";
+import {
+  sendDealMemberInvitationEmail,
+  sendDealMemberInviteForInvestmentIfRequested,
+  sendNewLeadSponsorInvitationIfAssigned,
+} from "../../services/deal/dealMemberInvitationEmail.service.js";
 import { isPortalUserSponsorOnDeal } from "../../services/deal/dealMemberScope.service.js";
+import { isPlatformAdminRole } from "../../constants/roles.js";
 import {
   dealHasEsignTemplateDocuments,
   getDealEsignTemplatesState,
@@ -213,6 +221,14 @@ function bodyString(v: unknown): string {
   }
   if (v != null) return String(v);
   return "";
+}
+
+const LEAD_SPONSOR_EDIT_FORBIDDEN_MESSAGE =
+  "Only platform admins can edit the Lead Sponsor.";
+
+function isLeadSponsorRoleLabel(role: string | null | undefined): boolean {
+  const t = String(role ?? "").trim().toLowerCase().replace(/[_\s]+/g, " ");
+  return t === "lead sponsor";
 }
 
 /**
@@ -617,6 +633,126 @@ export async function getDealMemberEsignStatus(
   } catch (err) {
     console.error("getDealMemberEsignStatus:", err);
     res.status(500).json({ message: "Could not load eSign status from Dropbox Sign" });
+  }
+}
+
+/**
+ * PUT /deals/:dealId/members/:rowId — update a roster-only deal_member row.
+ * Used when the table row has no backing deal_investment id.
+ */
+export async function putDealMember(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const dealId =
+    typeof req.params.dealId === "string"
+      ? req.params.dealId
+      : req.params.dealId?.[0];
+  const rowId =
+    typeof req.params.rowId === "string"
+      ? req.params.rowId
+      : req.params.rowId?.[0];
+  if (!dealId || !rowId) {
+    res.status(400).json({ message: "Missing deal id or member id" });
+    return;
+  }
+
+  const b = req.body as Record<string, unknown>;
+  const investorRole = bodyString(
+    b.investor_role ?? b.investorRole ?? b.deal_member_role,
+  );
+  const sendInvitationMail = bodyString(b.send_invitation_mail);
+  const replacementLeadSponsorContactId = bodyString(
+    b.replacement_lead_sponsor_contact_id ??
+      b.replacementLeadSponsorContactId,
+  );
+  const contactDisplayName = bodyString(
+    b.contact_display_name ?? b.contactDisplayName,
+  );
+  const contactEmail = bodyString(
+    b.contact_email ?? b.contactEmail ?? b.email,
+  );
+
+  if (!investorRole.trim()) {
+    res.status(400).json({ message: "Role is required" });
+    return;
+  }
+
+  try {
+    const scope = await resolveDealViewerScope(
+      user.id,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    if (!(await assertDealIdInViewerScope(dealId, scope))) {
+      res.status(404).json({ message: "Deal not found" });
+      return;
+    }
+
+    const existing = await getDealMemberRosterEntryById(dealId, rowId);
+    if (!existing) {
+      res.status(404).json({ message: "Member not found" });
+      return;
+    }
+
+    if (
+      !isPlatformAdminRole(user.userRole) &&
+      (isLeadSponsorRoleLabel(existing.dealMemberRole) ||
+        isLeadSponsorRoleLabel(investorRole) ||
+        Boolean(replacementLeadSponsorContactId.trim()))
+    ) {
+      res
+        .status(403)
+        .json({ message: LEAD_SPONSOR_EDIT_FORBIDDEN_MESSAGE });
+      return;
+    }
+
+    const savedRole = await saveDealMemberRoleForDeal(dealId, {
+      contactMemberId: existing.contactMemberId,
+      dealMemberRole: investorRole,
+      sendInvitationMail,
+      addedByUserId: user.id,
+      replacementLeadSponsorContactId,
+    });
+    const editingLeadSponsor =
+      isLeadSponsorRoleLabel(existing.dealMemberRole) ||
+      isLeadSponsorRoleLabel(investorRole) ||
+      Boolean(replacementLeadSponsorContactId.trim());
+    const notifyYes = sendInvitationMail.toLowerCase() === "yes";
+    await sendDealMemberInviteForInvestmentIfRequested({
+      dealId,
+      contactId: existing.contactMemberId,
+      contactDisplayName: contactDisplayName.trim(),
+      sendInvitationMail,
+      dealMemberRole: investorRole,
+      contactEmail: contactEmail.trim() || null,
+      invitationSource: "deal_member",
+      ccUserId:
+        editingLeadSponsor && !savedRole.newLeadSponsorContactId
+          ? user.id
+          : null,
+    });
+    await sendNewLeadSponsorInvitationIfAssigned({
+      dealId,
+      newLeadSponsorContactId: savedRole.newLeadSponsorContactId,
+      alreadyNotifiedContactId: existing.contactMemberId,
+      alreadyNotified: notifyYes,
+      requireNotifyChoice: editingLeadSponsor,
+      ccUserId: editingLeadSponsor ? user.id : null,
+    });
+    res.status(200).json({ message: "Member updated" });
+  } catch (err) {
+    if (err instanceof DealLeadSponsorValidationError) {
+      res.status(400).json({ message: err.message });
+      return;
+    }
+    console.error("putDealMember:", err);
+    res.status(500).json({ message: "Could not update member" });
   }
 }
 

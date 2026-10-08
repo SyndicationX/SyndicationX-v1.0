@@ -10,7 +10,7 @@ function authHeaders(): HeadersInit {
 
 export type PatchMyLpDealInvestNowCommitmentResult =
   | { ok: true; investorsPayload: DealInvestorsPayload; investmentId: string | null }
-  | { ok: false; message: string }
+  | { ok: false; message: string; duplicateProfile?: boolean }
 
 export type MyLpDealInvestNowCommitmentPayload = {
   investmentId: string
@@ -51,6 +51,10 @@ export type PatchMyLpDealInvestNowCommitmentOptions = {
   skipCommittedAmount?: boolean
   /** Server sets commitment to this value instead of adding. */
   replaceCommittedAmount?: boolean
+  /** Existing investment row to continue editing. */
+  investmentId?: string
+  /** User confirmed they want another investment using the same saved profile. */
+  allowDuplicateProfile?: boolean
   /** Encrypted sponsor ref from the offering preview link. */
   referringSponsorRef?: string
 }
@@ -197,6 +201,12 @@ export async function patchMyLpDealInvestNowCommitment(
     if (body.includeUserInvestorProfileInBody) {
       bodyObj.user_investor_profile_id = (body.userInvestorProfileId ?? "").trim()
     }
+    if (body.investmentId?.trim()) {
+      bodyObj.investment_id = body.investmentId.trim()
+    }
+    if (body.allowDuplicateProfile) {
+      bodyObj.allow_duplicate_profile = true
+    }
     if (body.questionnaireAnswers && Object.keys(body.questionnaireAnswers).length > 0) {
       bodyObj.questionnaire_answers = body.questionnaireAnswers
     }
@@ -224,7 +234,12 @@ export async function patchMyLpDealInvestNowCommitment(
         typeof data.message === "string"
           ? data.message
           : `Could not save commitment (${res.status})`
-      return { ok: false, message: msg }
+      const code = String(data.code ?? "").trim()
+      return {
+        ok: false,
+        message: msg,
+        duplicateProfile: code === "duplicate_profile_for_deal",
+      }
     }
     const investorsPayload = await fetchDealInvestors(did, {
       lpInvestorsOnly: true,

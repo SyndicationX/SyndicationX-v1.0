@@ -36,6 +36,12 @@ export const dealInvestment = pgTable("deal_investment", {
   fundApprovedCommitmentSnapshot: text("fund_approved_commitment_snapshot")
     .notNull()
     .default(""),
+  /**
+   * Debounced autosave from the Add Member / Add Investor modal. Draft rows are
+   * excluded from investor lists, rosters, KPIs and billing until an explicit
+   * Save clears the flag.
+   */
+  isDraft: boolean("is_draft").notNull().default(false),
   status: text("status").notNull().default(""),
   investorClass: text("investor_class").notNull().default(""),
   docSignedDate: text("doc_signed_date"),

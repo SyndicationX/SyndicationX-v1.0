@@ -27,6 +27,7 @@ import {
   isSponsorWorkspaceInvestingViewer,
 } from "@/common/auth/roleUtils"
 import { usePortalMode } from "@/modules/Investing/context/PortalModeContext"
+import { formatCount } from "@/common/utils/formatCount"
 import {
   dealRowSupportsRosterApiPrefetch,
   filterDealListRowsVisibleToInvestors,
@@ -41,6 +42,7 @@ import {
 import { TabsScrollStrip } from "../../../common/components/tabs-scroll-strip/TabsScrollStrip"
 import { toast } from "../../../common/components/Toast"
 import {
+  areRequiredDealListRowFieldsIncomplete,
   deleteDeal,
   fetchDealInvestorClasses,
   fetchDealInvestors,
@@ -79,6 +81,7 @@ import { TableCompactAmountCell } from "../../../common/components/card-compact-
 import {
   committedSortValue,
   dateSortValue,
+  dealFieldsMatchSearch,
   dealTypeDisplayLabel,
   formatDealListDateDisplay,
   secTypeDisplayLabel,
@@ -481,7 +484,15 @@ export function DealsListPage({
     const q = query.trim().toLowerCase()
     if (!q) return [...rowsForTab]
     return rowsForTab.filter((r) =>
-      (r.dealName ?? "").toLowerCase().includes(q),
+      dealFieldsMatchSearch(
+        {
+          name: r.dealName,
+          dealType: r.dealType,
+          secType: r.secType,
+          location: r.locationDisplay,
+        },
+        q,
+      ),
     )
   }, [query, rowsForTab])
 
@@ -601,7 +612,15 @@ export function DealsListPage({
     const q = query.trim().toLowerCase()
     if (
       q &&
-      !(sessionCreateDealDraftRow.dealName ?? "").toLowerCase().includes(q)
+      !dealFieldsMatchSearch(
+        {
+          name: sessionCreateDealDraftRow.dealName,
+          dealType: sessionCreateDealDraftRow.dealType,
+          secType: sessionCreateDealDraftRow.secType,
+          location: sessionCreateDealDraftRow.locationDisplay,
+        },
+        q,
+      )
     )
       return base
     return [...base, sessionCreateDealDraftRow]
@@ -1062,6 +1081,9 @@ export function DealsListPage({
           <div className="deal_members_actions_cell">
             <DealRowActions
               draftRow={row.id === CREATE_DEAL_DRAFT_ROW_ID}
+              requiredFieldsIncomplete={areRequiredDealListRowFieldsIncomplete(
+                row,
+              )}
               readOnlyActions={dealsListContext === "investing"}
               canEditDeal={row.viewerCanEditDeal !== false}
               dealId={row.id}
@@ -1311,7 +1333,7 @@ export function DealsListPage({
                   aria-hidden
                 />
                 <span className="deals_tabs_label um_segmented_tab_label">Deals</span>
-                <span className="deals_tabs_count">({activeDealsCount})</span>
+                <span className="deals_tabs_count">({formatCount(activeDealsCount)})</span>
               </button>
               <button
                 type="button"
@@ -1331,7 +1353,7 @@ export function DealsListPage({
                   aria-hidden
                 />
                 <span className="deals_tabs_label um_segmented_tab_label">Archives</span>
-                <span className="deals_tabs_count">({archivedDealsCount})</span>
+                <span className="deals_tabs_count">({formatCount(archivedDealsCount)})</span>
               </button>
             </div>
           </TabsScrollStrip>

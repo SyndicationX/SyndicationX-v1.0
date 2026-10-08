@@ -2,11 +2,15 @@ import type { LucideIcon } from "lucide-react"
 import {
   ArrowLeft,
   BarChart3,
+  Check,
+  Copy,
   File,
   FileSignature,
   FileText,
+  Link2,
   Pencil,
   Users,
+  X,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
@@ -27,6 +31,7 @@ import { getSessionUserId } from "../../../common/auth/sessionUserId"
 import { isCompanyAdmin, isPlatformAdmin } from "../../../common/auth/roleUtils"
 import { setAppDocumentTitle } from "../../../common/utils/appDocumentTitle"
 import {
+  areRequiredDealDetailFieldsIncomplete,
   buildDealOfferingPreviewShareUrl,
   deleteDealMemberRoster,
   fetchDealById,
@@ -36,12 +41,14 @@ import {
   isDealDetailFormIncomplete,
   DEAL_ESIGN_TEMPLATES_CHANGED_EVENT,
   fetchDealEsignTemplates,
+  fetchDealInvestorInviteLink,
   postDealInvestorSendEsign,
   postDealMemberInvitationEmail,
   type DealDetailApi,
 } from "./api/dealsApi"
 import { DealAnnouncementBanner } from "./components/DealAnnouncementBanner"
 import { DealsPageCenteredLoader } from "./components/DealsPageCenteredLoader"
+import { DealManageStageModal } from "./components/DealManageStageModal"
 import { DealSaasPaywallModal } from "./components/DealSaasPaywallModal"
 import {
   dealInvestNowPath,
@@ -91,6 +98,7 @@ import {
   type ViewerDealMemberRole,
 } from "./utils/dealDetailTabVisibility"
 import { toast } from "../../../common/components/Toast"
+import { FormTooltip } from "../../../common/components/form-tooltip/FormTooltip"
 import { getSessionOrganizationCompanyId } from "../../../common/auth/sessionOrganization"
 import { syncExtraCompanyUserCheckout } from "../company/companyBillingApi"
 import {
@@ -176,6 +184,7 @@ export function DealDetailPage() {
   const [dealDetailApi, setDealDetailApi] = useState<DealDetailApi | null>(null)
   const [saasPaywallDeal, setSaasPaywallDeal] =
     useState<DealSaasPaywallDeal | null>(null)
+  const [manageStageOpen, setManageStageOpen] = useState(false)
   const [upgradePromptDeal, setUpgradePromptDeal] =
     useState<DealSaasPaywallDeal | null>(null)
 
@@ -197,6 +206,11 @@ export function DealDetailPage() {
   >([])
   const [viewerDealMemberRoleFromApi, setViewerDealMemberRoleFromApi] =
     useState<ViewerDealMemberRole | undefined>(undefined)
+  const [inviteLinkOpen, setInviteLinkOpen] = useState(false)
+  const [inviteLinkCopied, setInviteLinkCopied] = useState(false)
+  const [inviteShareUrl, setInviteShareUrl] = useState("")
+  const [inviteLinkLoading, setInviteLinkLoading] = useState(false)
+  const [inviteLinkError, setInviteLinkError] = useState("")
 
   const openInvestNow = useCallback(() => {
     const id = dealId?.trim()
@@ -560,16 +574,66 @@ export function DealDetailPage() {
   /** Stage chip already says Draft — avoid a second draft marker beside the title. */
   const showIncompleteDraftBadge = dealFormIncomplete && !isDealDraftStage
 
+  /** General Partner invitation emails can be sent from draft/incomplete deals. */
+  const rosterInvitationMailBlocked = false
+
   const offeringLinkAvailable = useMemo(
     () => dealHasOfferingShareLink(dealDetailApi) && !isDealOfferingShareBlocked,
     [dealDetailApi, isDealOfferingShareBlocked],
   )
 
+  /** Required fields still hold autosave placeholders — the wizard must be finished first. */
+  const dealRequiredFieldsIncomplete =
+    dealDetailApi != null &&
+    areRequiredDealDetailFieldsIncomplete(dealDetailApi)
+
   const handleEditDeal = useCallback(() => {
     if (!dealId?.trim()) return
+    if (!dealRequiredFieldsIncomplete) {
+      setManageStageOpen(true)
+      return
+    }
     const id = encodeURIComponent(dealId.trim())
     navigate(`/deals/create?edit=${id}&from=detail`)
-  }, [dealId, navigate])
+  }, [dealId, dealRequiredFieldsIncomplete, navigate])
+
+  const canShareDealInvestorInvite =
+    viewerDealMemberRole === "lead_sponsor" ||
+    viewerDealMemberRole === "admin_sponsor" ||
+    viewerDealMemberRole === "co_sponsor"
+
+  const openDealInviteLinkModal = useCallback(() => {
+    if (!dealId?.trim() || isDealOfferingShareBlocked) return
+    setInviteLinkCopied(false)
+    setInviteLinkError("")
+    setInviteLinkOpen(true)
+    setInviteShareUrl("")
+    setInviteLinkLoading(true)
+    void fetchDealInvestorInviteLink(dealId.trim())
+      .then((url) => setInviteShareUrl(url))
+      .catch((err) =>
+        setInviteLinkError(
+          err instanceof Error ? err.message : "Could not load your invite link.",
+        ),
+      )
+      .finally(() => setInviteLinkLoading(false))
+  }, [dealId, isDealOfferingShareBlocked])
+
+  const closeDealInviteLinkModal = useCallback(() => {
+    setInviteLinkOpen(false)
+    setInviteLinkCopied(false)
+  }, [])
+
+  const copyDealInviteLink = useCallback(async () => {
+    if (!inviteShareUrl) return
+    try {
+      await navigator.clipboard.writeText(inviteShareUrl)
+      setInviteLinkCopied(true)
+      window.setTimeout(() => setInviteLinkCopied(false), 2000)
+    } catch {
+      setInviteLinkError("Could not copy the link. Select it and copy manually.")
+    }
+  }, [inviteShareUrl])
 
   const handleCopyMemberOfferingLink = useCallback(
     async (row: DealInvestorRow) => {
@@ -833,15 +897,57 @@ export function DealDetailPage() {
               </span>
             ) : null}
           </div>
-          {canEditDeal ? (
+          {canShareDealInvestorInvite || canEditDeal ? (
+          <div className="deals_detail_header_actions">
+            {canShareDealInvestorInvite ? (
+              <span className="deals_detail_invite_link_wrap">
+                <button
+                  type="button"
+                  className="um_btn_secondary deals_detail_invite_link_btn"
+                  disabled={isDealOfferingShareBlocked}
+                  title={
+                    isDealOfferingShareBlocked
+                      ? "Change the deal stage before sharing an investor invite link."
+                      : "Copy a unique invite link for this deal"
+                  }
+                  onClick={openDealInviteLinkModal}
+                >
+                  <Link2 size={16} strokeWidth={2} aria-hidden />
+                  Invite Investor Link
+                </button>
+                <FormTooltip
+                  label="About the investor invite link"
+                  placement="bottom"
+                  panelAlign="end"
+                  content={
+                    <div className="deals_invite_link_tooltip">
+                      <p>
+                        A sign-up link that is unique to you and this deal. Share
+                        it with investors you want on this offering.
+                      </p>
+                      <p>
+                        When someone joins through it they can sign up or sign
+                        in, and they are saved to your organization’s contacts
+                        against this deal with you as the sponsor.
+                      </p>
+                    </div>
+                  }
+                />
+              </span>
+            ) : null}
+            {canEditDeal ? (
           <button
             type="button"
             className="um_btn_secondary deals_detail_edit_deal_btn"
             onClick={handleEditDeal}
           >
             <Pencil size={16} strokeWidth={2} aria-hidden />
-            {dealFormIncomplete ? "Continue editing" : "Edit deal"}
+            {dealRequiredFieldsIncomplete
+              ? "Continue editing"
+              : "Manage deal stage"}
           </button>
+            ) : null}
+          </div>
           ) : null}
         </div>
       </header>
@@ -933,6 +1039,7 @@ export function DealDetailPage() {
                 investorsRefreshKey={dealMembersRefreshKey}
                 invitationMailStatusByRowId={invitationMailSentByRowId}
                 invitationMailSendingByRowId={invitationMailSendingByRowId}
+                invitationMailBlocked={rosterInvitationMailBlocked}
                 onAddMember={(kind) => {
                   setInvestmentModalEntry(
                     dealInvestmentModalEntryFromRosterKind(kind),
@@ -1050,6 +1157,27 @@ export function DealDetailPage() {
       </div>
         </>
       ) : null}
+      <DealManageStageModal
+        open={manageStageOpen && dealDetailApi != null}
+        dealId={dealId ?? ""}
+        dealName={displayName}
+        currentStage={dealDetailApi?.dealStage ?? ""}
+        onClose={() => setManageStageOpen(false)}
+        onSaved={(updated, pendingDealStage) => {
+          handleDealPersisted(updated)
+          if (pendingDealStage) {
+            toast.error(
+              "Stage change on hold",
+              "Pay monthly SaaS (MRR) for this deal to move it out of Draft.",
+            )
+            return
+          }
+          toast.success(
+            "Deal stage updated",
+            `This deal is now ${dealStageLabel(updated.dealStage)}.`,
+          )
+        }}
+      />
       <DealSaasPaywallModal
         deal={upgradePromptDeal}
         onClose={() => {
@@ -1064,6 +1192,98 @@ export function DealDetailPage() {
           setUpgradePromptDeal(null)
         }}
       />
+      {inviteLinkOpen ? (
+        <div
+          className="um_modal_overlay"
+          role="presentation"
+          onClick={closeDealInviteLinkModal}
+        >
+          <div
+            className="um_modal deals_invite_link_modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="deal-invite-link-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="um_modal_head">
+              <h3
+                id="deal-invite-link-title"
+                className="um_modal_title um_title_with_icon"
+              >
+                <Link2
+                  className="um_title_icon"
+                  size={22}
+                  strokeWidth={2}
+                  aria-hidden
+                />
+                <span>Invite Investor Link</span>
+              </h3>
+              <button
+                type="button"
+                className="um_modal_close"
+                aria-label="Close"
+                onClick={closeDealInviteLinkModal}
+              >
+                <X size={20} strokeWidth={2} aria-hidden />
+              </button>
+            </div>
+            <p className="deals_invite_link_help">
+              Share this unique link with investors you want to invite to this
+              deal. They can sign up or sign in; the contact is saved to your
+              organization with this deal and your user.
+            </p>
+            <div className="um_field deals_invite_link_field">
+              <div className="um_field_label_row">
+                <Link2
+                  className="um_field_label_icon"
+                  size={16}
+                  strokeWidth={2}
+                  aria-hidden
+                />
+                <label htmlFor="deal-invite-share-url">Sharable link</label>
+              </div>
+              <div className="deals_invite_link_copy_row">
+                <input
+                  id="deal-invite-share-url"
+                  type="text"
+                  readOnly
+                  value={
+                    inviteLinkLoading
+                      ? "Loading your link…"
+                      : inviteShareUrl || "—"
+                  }
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+                <button
+                  type="button"
+                  className="um_btn_primary"
+                  disabled={inviteLinkLoading || !inviteShareUrl}
+                  onClick={() => void copyDealInviteLink()}
+                >
+                  {inviteLinkCopied ? (
+                    <Check size={16} strokeWidth={2} aria-hidden />
+                  ) : (
+                    <Copy size={16} strokeWidth={2} aria-hidden />
+                  )}
+                  {inviteLinkCopied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              {inviteLinkError ? (
+                <p className="deals_invite_link_error">{inviteLinkError}</p>
+              ) : null}
+            </div>
+            <div className="um_modal_actions">
+              <button
+                type="button"
+                className="um_btn_secondary"
+                onClick={closeDealInviteLinkModal}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

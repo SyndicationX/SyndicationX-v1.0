@@ -5,6 +5,7 @@ import {
   TrendingUp,
   type LucideIcon,
 } from "lucide-react"
+import { memo } from "react"
 import type { NotificationCategory, PortalNotification } from "../types/notification.types"
 import { formatNotificationTime } from "../utils/formatNotificationTime"
 
@@ -18,7 +19,7 @@ const CATEGORY_META: Record<
   system: { label: "System", icon: Bell },
 }
 
-export function NotificationListItem({
+function NotificationListItemImpl({
   item,
   onOpen,
   compact = false,
@@ -70,3 +71,6 @@ export function NotificationListItem({
     </li>
   )
 }
+
+/** Rows are pure for a given notification; skip re-render when the list identity changes. */
+export const NotificationListItem = memo(NotificationListItemImpl)

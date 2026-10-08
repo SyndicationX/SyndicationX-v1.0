@@ -1,4 +1,13 @@
-import { CheckCircle2, ClipboardList, Eye, MessageSquareText, Pencil, Plus } from "lucide-react"
+import {
+  CheckCircle2,
+  ClipboardList,
+  Download,
+  Eye,
+  Flag,
+  MessageSquareText,
+  Pencil,
+  Plus,
+} from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import {
@@ -11,17 +20,37 @@ import {
 } from "@/common/components/data-table/DataTable"
 import { TabsScrollStrip } from "@/common/components/tabs-scroll-strip/TabsScrollStrip"
 import { toast } from "@/common/components/Toast"
+import { TABLE_PAGE_SIZE_ID } from "@/common/hooks/usePersistedTablePageSize"
+import {
+  useServerPagedTable,
+  type PagedRequest,
+  type PagedResult,
+} from "@/common/hooks/useServerPagedTable"
 import { formatDateDdMmmYyyy } from "@/common/utils/formatDateDisplay"
+import { formatCount } from "@/common/utils/formatCount"
+import { ExportFeedbackModal } from "./ExportFeedbackModal"
 import { FeedbackDetailsModal } from "./FeedbackDetailsModal"
 import { FeedbackFormModal } from "./FeedbackFormModal"
+import { FeedbackPriorityModal } from "./FeedbackPriorityModal"
+import { FeedbackTypeModal } from "./FeedbackTypeModal"
 import {
   fetchFeedbackItem,
   fetchFeedbackList,
+  fetchFeedbackPage,
   fetchMyFeedback,
   notifyFeedbackPendingChanged,
   reviewFeedback,
+  setFeedbackPriority,
+  setFeedbackType,
 } from "./api/feedbackApi"
-import type { FeedbackItem, FeedbackReviewAction, FeedbackStatus } from "./types"
+import type {
+  FeedbackItem,
+  FeedbackPriority,
+  FeedbackReviewAction,
+  FeedbackStatus,
+  FeedbackType,
+} from "./types"
+import { feedbackPriorityLabel, feedbackUserRoleLabel } from "./types"
 import "../Syndication/usermanagement/user_management.css"
 import "../Syndication/Deals/deals-list.css"
 import "./feedback.css"
@@ -70,30 +99,53 @@ export default function FeedbackPage() {
   const [editItem, setEditItem] = useState<FeedbackItem | null>(null)
   const sponsorCanEditPending = canEditOwnPendingFeedback()
   const [tab, setTab] = useState<FeedbackStatus>("Pending")
-  const [items, setItems] = useState<FeedbackItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [activeItem, setActiveItem] = useState<FeedbackItem | null>(null)
   const [modalMode, setModalMode] = useState<"review" | "view">("view")
-  const [submitting, setSubmitting] = useState(false)
+  const [priorityItem, setPriorityItem] = useState<FeedbackItem | null>(null)
+  const [prioritySaving, setPrioritySaving] = useState(false)
+  const [typeItem, setTypeItem] = useState<FeedbackItem | null>(null)
+  const [typeSaving, setTypeSaving] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  /** Tab badges come from the API so they count every match, not just this page. */
+  const [statusCounts, setStatusCounts] = useState<Record<FeedbackStatus, number>>({
+    Pending: 0,
+    Reviewed: 0,
+    Resolved: 0,
+  })
   const suppressViewOpenRef = useRef(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    const result = admin ? await fetchFeedbackList() : await fetchMyFeedback()
-    if (result.ok) {
-      setItems(result.items)
-      setError(null)
-    } else {
-      setItems([])
-      setError(result.message)
-    }
-    setLoading(false)
-  }, [admin])
+  const fetchPage = useCallback<
+    (req: PagedRequest) => Promise<PagedResult<FeedbackItem>>
+  >(
+    async ({ page, pageSize, search, sort, signal }) => {
+      const result = await fetchFeedbackPage({
+        admin,
+        status: tab,
+        page,
+        pageSize,
+        search,
+        sort,
+        signal,
+      })
+      if (result.counts) setStatusCounts(result.counts)
+      return { rows: result.rows, total: result.total }
+    },
+    [admin, tab],
+  )
 
-  useEffect(() => {
-    void load()
-  }, [load])
+  const table = useServerPagedTable<FeedbackItem>({
+    tableId: TABLE_PAGE_SIZE_ID.feedback,
+    fetchPage,
+    deps: [admin, tab],
+    initialSort: { columnId: "submitted", direction: "desc" },
+  })
+
+  const { page, pageSize, rows: items, isLoading: loading, refresh } = table
+  const error = table.error
+
+  const load = useCallback(async () => {
+    refresh()
+  }, [refresh])
 
   useEffect(() => {
     if (!viewId) {
@@ -121,9 +173,18 @@ export default function FeedbackPage() {
     }
   }, [viewId, items, admin])
 
-  const visible = useMemo(
-    () => (admin ? items.filter((row) => row.status === tab) : items),
-    [admin, items, tab],
+  /** The API already narrowed to the active tab. */
+  const visible = items
+
+  const pagination = useMemo(
+    () => ({
+      ...table.pagination,
+      serverSide: true,
+      ariaLabel: admin
+        ? `${tab} feedback table pagination`
+        : "Feedback table pagination",
+    }),
+    [table.pagination, admin, tab],
   )
 
   function openReview(row: FeedbackItem) {
@@ -167,7 +228,6 @@ export default function FeedbackPage() {
   function closeDetails() {
     suppressViewOpenRef.current = true
     setActiveItem(null)
-    setSubmitting(false)
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev)
@@ -189,14 +249,8 @@ export default function FeedbackPage() {
       setModalMode("review")
       return
     }
-    setItems((prev) => {
-      const next = prev.map((item) =>
-        item.id === result.feedback.id ? result.feedback : item,
-      )
-      return prev.some((item) => item.id === result.feedback.id)
-        ? next
-        : [result.feedback, ...prev]
-    })
+    /** The row moves to another tab, so reload rather than patching in place. */
+    refresh()
     toast.success(
       action === "resolved" ? "Feedback resolved" : "Feedback reviewed",
       `${row.username} will be notified.`,
@@ -206,8 +260,57 @@ export default function FeedbackPage() {
     else setTab("Reviewed")
   }
 
+  async function handlePrioritySave(priority: FeedbackPriority) {
+    if (!priorityItem) return
+    setPrioritySaving(true)
+    const result = await setFeedbackPriority(priorityItem.id, priority)
+    setPrioritySaving(false)
+    if (!result.ok) {
+      toast.error("Could not update priority", result.message)
+      return
+    }
+    setPriorityItem(null)
+    setActiveItem((prev) =>
+      prev && prev.id === result.feedback.id ? result.feedback : prev,
+    )
+    refresh()
+    toast.success("Priority updated", feedbackPriorityLabel(priority))
+  }
+
+  async function handleTypeSave(feedbackType: FeedbackType) {
+    if (!typeItem) return
+    setTypeSaving(true)
+    const result = await setFeedbackType(typeItem.id, feedbackType)
+    setTypeSaving(false)
+    if (!result.ok) {
+      toast.error("Could not update feedback type", result.message)
+      return
+    }
+    setTypeItem(null)
+    setActiveItem((prev) =>
+      prev && prev.id === result.feedback.id ? result.feedback : prev,
+    )
+    refresh()
+    toast.success("Feedback type updated", feedbackType)
+  }
+
+  const serialNoColumn = useMemo<DataTableColumn<FeedbackItem>>(
+    () => ({
+      id: "sno",
+      header: "S.No",
+      align: "center",
+      colWidth: "3.75rem",
+      thClassName: "feedback_sno_col",
+      tdClassName: "feedback_sno_col um_td_numeric",
+      cell: (_row, rowIndex) =>
+        (page - 1) * pageSize + (rowIndex ?? 0) + 1,
+    }),
+    [page, pageSize],
+  )
+
   const sharedIdentityCols = useMemo<DataTableColumn<FeedbackItem>[]>(
     () => [
+      serialNoColumn,
       {
         id: "username",
         header: "Username",
@@ -221,6 +324,12 @@ export default function FeedbackPage() {
         cell: (row) => row.userEmail || "—",
       },
       {
+        id: "role",
+        header: "Role",
+        sortValue: (row) => feedbackUserRoleLabel(row.userRole).toLowerCase(),
+        cell: (row) => feedbackUserRoleLabel(row.userRole),
+      },
+      {
         id: "page",
         header: "Page",
         sortValue: (row) => row.pageLabel.toLowerCase(),
@@ -231,6 +340,44 @@ export default function FeedbackPage() {
         header: "Sub Page / Tab",
         sortValue: (row) => row.subPageLabel.toLowerCase(),
         cell: (row) => row.subPageLabel || "—",
+      },
+      {
+        id: "priority",
+        header: "Priority",
+        sortValue: (row) => row.priority ?? "P9",
+        cell: (row) => (
+          <button
+            type="button"
+            className={`feedback_priority_btn${
+              row.priority
+                ? ` feedback_priority feedback_priority_${row.priority.toLowerCase()}`
+                : ""
+            }`}
+            onClick={() => setPriorityItem(row)}
+            title={row.priority ? "Change priority" : "Set priority"}
+          >
+            <Flag size={13} strokeWidth={2} aria-hidden />
+            {row.priority ? feedbackPriorityLabel(row.priority) : "Set"}
+          </button>
+        ),
+      },
+      {
+        id: "feedbackType",
+        header: "Feedback Type",
+        sortValue: (row) => row.feedbackType ?? "zzz",
+        cell: (row) => (
+          <button
+            type="button"
+            className={`feedback_priority_btn${
+              row.feedbackType ? " feedback_type_value" : ""
+            }`}
+            onClick={() => setTypeItem(row)}
+            title={row.feedbackType ? "Change feedback type" : "Set feedback type"}
+          >
+            <ClipboardList size={13} strokeWidth={2} aria-hidden />
+            {row.feedbackType ?? "Set"}
+          </button>
+        ),
       },
       {
         id: "description",
@@ -250,7 +397,7 @@ export default function FeedbackPage() {
         cell: (row) => formatDateTime(row.createdAt),
       },
     ],
-    [],
+    [serialNoColumn],
   )
 
   const pendingColumns = useMemo<DataTableColumn<FeedbackItem>[]>(
@@ -372,6 +519,7 @@ export default function FeedbackPage() {
 
   const myColumns = useMemo<DataTableColumn<FeedbackItem>[]>(
     () => [
+      serialNoColumn,
       {
         id: "page",
         header: "Page",
@@ -445,15 +593,42 @@ export default function FeedbackPage() {
         },
       },
     ],
-    [sponsorCanEditPending],
+    [serialNoColumn, sponsorCanEditPending],
   )
 
-  const pendingCount = items.filter((r) => r.status === "Pending").length
-  const reviewedCount = items.filter((r) => r.status === "Reviewed").length
-  const resolvedCount = items.filter((r) => r.status === "Resolved").length
+  const pendingCount = statusCounts.Pending
+  const reviewedCount = statusCounts.Reviewed
+  const resolvedCount = statusCounts.Resolved
+
+  /**
+   * Export covers every submission, not just the loaded page, so it uses the
+   * unpaginated form of the same endpoints.
+   */
+  const [exportList, setExportList] = useState<FeedbackItem[]>([])
+  useEffect(() => {
+    if (!exportOpen) return
+    let cancelled = false
+    void (async () => {
+      const result = admin ? await fetchFeedbackList(tab) : await fetchMyFeedback()
+      if (!cancelled && result.ok) setExportList(result.items)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [exportOpen, admin, tab])
+  const exportDisabled = loading || table.total === 0
 
   const actions = (
     <div className="um_members_top_row_actions">
+      <button
+        type="button"
+        className="um_toolbar_export_btn"
+        onClick={() => setExportOpen(true)}
+        disabled={exportDisabled}
+      >
+        <Download size={16} strokeWidth={2} aria-hidden />
+        <span>Export All</span>
+      </button>
       <button
         type="button"
         className="um_btn_primary"
@@ -514,7 +689,7 @@ export default function FeedbackPage() {
                     <span className="deals_tabs_label um_segmented_tab_label">
                       Pending
                     </span>
-                    <span className="feedback_tab_count">{pendingCount}</span>
+                    <span className="feedback_tab_count">{formatCount(pendingCount)}</span>
                   </button>
                   <button
                     type="button"
@@ -535,7 +710,7 @@ export default function FeedbackPage() {
                     <span className="deals_tabs_label um_segmented_tab_label">
                       Reviewed
                     </span>
-                    <span className="feedback_tab_count">{reviewedCount}</span>
+                    <span className="feedback_tab_count">{formatCount(reviewedCount)}</span>
                   </button>
                   <button
                     type="button"
@@ -556,7 +731,7 @@ export default function FeedbackPage() {
                     <span className="deals_tabs_label um_segmented_tab_label">
                       Resolved
                     </span>
-                    <span className="feedback_tab_count">{resolvedCount}</span>
+                    <span className="feedback_tab_count">{formatCount(resolvedCount)}</span>
                   </button>
                 </div>
               </TabsScrollStrip>
@@ -580,6 +755,8 @@ export default function FeedbackPage() {
               visualVariant="members"
               membersShell="plain"
               stripedRows
+              controlledSort={{ value: table.sort, onChange: table.setSort }}
+              pagination={table.total > 0 ? pagination : undefined}
             />
           </div>
         </>
@@ -599,6 +776,8 @@ export default function FeedbackPage() {
             visualVariant="members"
             membersShell="plain"
             stripedRows
+            controlledSort={{ value: table.sort, onChange: table.setSort }}
+            pagination={table.total > 0 ? pagination : undefined}
           />
         </>
       )}
@@ -619,9 +798,35 @@ export default function FeedbackPage() {
         open={activeItem != null}
         item={activeItem}
         mode={modalMode}
-        submitting={submitting}
         onClose={closeDetails}
         onAction={(action, notes) => void handleAction(action, notes)}
+      />
+      <FeedbackPriorityModal
+        open={priorityItem != null}
+        item={priorityItem}
+        submitting={prioritySaving}
+        onClose={() => {
+          if (prioritySaving) return
+          setPriorityItem(null)
+        }}
+        onSave={(priority) => void handlePrioritySave(priority)}
+      />
+      <FeedbackTypeModal
+        open={typeItem != null}
+        item={typeItem}
+        submitting={typeSaving}
+        onClose={() => {
+          if (typeSaving) return
+          setTypeItem(null)
+        }}
+        onSave={(feedbackType) => void handleTypeSave(feedbackType)}
+      />
+      <ExportFeedbackModal
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        items={exportList}
+        listKind={admin ? tab : "all"}
+        showPriorityFilter={admin}
       />
     </section>
   )

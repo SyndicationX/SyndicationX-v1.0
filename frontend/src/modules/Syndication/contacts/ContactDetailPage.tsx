@@ -21,10 +21,14 @@ import {
   displayEmail,
   isDisplayableEmail,
 } from "../../../common/utils/displayEmail"
+import { isPlatformAdmin } from "../../../common/auth/roleUtils"
 import { TabsScrollStrip } from "../../../common/components/tabs-scroll-strip/TabsScrollStrip"
 import { toast } from "../../../common/components/Toast"
 import { fetchContact } from "./api/contactsApi"
-import type { ContactRow } from "./types/contact.types"
+import {
+  withPlatformContactTag,
+  type ContactRow,
+} from "./types/contact.types"
 import "../Deals/deals-list.css"
 import "./contacts.css"
 import "./contact-detail.css"
@@ -137,7 +141,7 @@ function buildActivities(contact: ContactRow): ActivityItem[] {
       id: `welcome-${contact.id}`,
       kind: "email",
       title: "System email",
-      subject: "Welcome to Cash Flow Portal",
+      subject: "Welcome to SyndicationX",
       at: contact.createdAt,
     })
   }
@@ -175,6 +179,7 @@ function buildActivities(contact: ContactRow): ActivityItem[] {
 function ContactDetailPage() {
   const { contactId = "" } = useParams<{ contactId: string }>()
   const navigate = useNavigate()
+  const platformAdmin = isPlatformAdmin()
   const [contact, setContact] = useState<ContactRow | null>(null)
   const [loading, setLoading] = useState(true)
   const [mainTab, setMainTab] = useState<MainTab>("activities")
@@ -194,7 +199,7 @@ function ContactDetailPage() {
     setLoading(true)
     try {
       const row = await fetchContact(id)
-      setContact(row)
+      setContact(row ? withPlatformContactTag(row) : row)
       if (!row) toast.error("Not found", "This contact could not be loaded.")
     } catch {
       setContact(null)
@@ -430,6 +435,18 @@ function ContactDetailPage() {
                               : "—"}
                           </dd>
                         </div>
+                        <div>
+                          <dt>Invited by</dt>
+                          <dd>{contact.invitedByDisplayName?.trim() || "—"}</dd>
+                        </div>
+                        {platformAdmin ? (
+                          <div>
+                            <dt>Visible on platform</dt>
+                            <dd>
+                              {contact.visibleToUsers === true ? "Yes" : "No"}
+                            </dd>
+                          </div>
+                        ) : null}
                         <div>
                           <dt>Added by</dt>
                           <dd>{contact.createdByDisplayName?.trim() || "—"}</dd>

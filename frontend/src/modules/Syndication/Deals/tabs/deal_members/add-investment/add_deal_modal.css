@@ -163,16 +163,32 @@
   border: 1px solid var(--portal-border, #e5e5e5);
   cursor: pointer;
   text-overflow: ellipsis;
-  color-scheme: light dark;
-  /* background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); */
+}
+
+.deals_add_inv_modal_form select.um_field_select.deals_add_inv_field_control {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 2.25rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.65rem center;
   background-size: 1rem;
 }
 
+.deals_add_inv_modal_form select.um_field_select.deals_add_inv_field_control::picker-icon {
+  display: none;
+  width: 0;
+  opacity: 0;
+}
+
+.deals_add_inv_modal_form .portal_dropdown_select_trigger.um_field_select {
+  background-image: none;
+}
+
 :root[data-theme="dark"]
   .deals_add_inv_modal_form
-  .um_field_select.deals_add_inv_field_control {
+  select.um_field_select.deals_add_inv_field_control {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
 }
 
@@ -303,6 +319,17 @@
 /* Same vertical rhythm for tight two-column fields and full-width rows */
 .deals_add_inv_modal_panel.add_contact_panel .add_contact_section .um_field {
   margin-bottom: 0.85em;
+}
+
+/* Add Investors: sections sit on the same rhythm as fields (no extra gap above headings). */
+.deals_add_lp_inv_panel .deal_inv_view_body {
+  gap: 0.85em;
+}
+
+.deals_add_lp_inv_panel.deals_add_inv_modal_panel.add_contact_panel
+  .add_contact_section.deal_inv_view_section
+  > *:last-child {
+  margin-bottom: 0;
 }
 
 .deals_add_inv_modal_form .portal_dropdown_select {

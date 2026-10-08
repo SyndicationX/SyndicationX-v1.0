@@ -16,6 +16,7 @@ import {
   type ReactNode,
 } from "react"
 import { EMAIL_UNAVAILABLE_LABEL } from "../../../../../common/utils/displayEmail"
+import { formatCount } from "@/common/utils/formatCount"
 import {
   groupDealMailRecipients,
   type DealMailRecipient,
@@ -290,7 +291,7 @@ function TabButton({
       onClick={() => onSelect(id)}
     >
       <span className="deal_inv_comm_recip_tab_label">{label}</span>
-      <span className="deal_inv_comm_recip_tab_count">{count}</span>
+      <span className="deal_inv_comm_recip_tab_count">{formatCount(count)}</span>
     </button>
   )
 }
@@ -591,9 +592,9 @@ export function DealMailRecipientPicker({
       </div>
 
       <p className="deal_inv_comm_recip_summary" role="status">
-        <strong>{selectedCount} selected</strong>
+        <strong>{formatCount(selectedCount)} selected</strong>
         {releaseCount > 0
-          ? ` · ${releaseCount} require cosponsor release.`
+          ? ` · ${formatCount(releaseCount)} require cosponsor release.`
           : "."}
       </p>
     </div>

@@ -31,6 +31,12 @@ import {
 } from "../services/org/orgResolution.service.js";
 import { getEmailBccFromEnv } from "../functions/emailconfig.js";
 import {
+  filterRowsBySearch,
+  paginateInMemory,
+  parsePageQuery,
+  sortRowsBy,
+} from "../common/pagination.js";
+import {
   sendHtmlMailPerRecipient,
   type MailAttachment,
 } from "../services/mail/sendHtmlMailPerRecipient.service.js";
@@ -204,12 +210,20 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     if (active) filterOrganizationId = active;
   }
 
+  const sortRaw = String(req.query.sort ?? req.query.order ?? "")
+    .trim()
+    .toLowerCase();
+  const sort =
+    sortRaw === "name" || sortRaw === "asc" || sortRaw === "alphabetical"
+      ? "name"
+      : "createdAt";
+
   const rows = await listUsersForAdmin(
     role,
     actor.organizationId ?? null,
     filterOrganizationId
-      ? { filterOrganizationId, actorUserId: jwtUser.id }
-      : { actorUserId: jwtUser.id },
+      ? { filterOrganizationId, actorUserId: jwtUser.id, sort }
+      : { actorUserId: jwtUser.id, sort },
   );
   if (rows === null) {
     res.status(403).json({ message: "Not allowed to list members" });
@@ -228,9 +242,23 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
   const useGlobalCounts =
     isPlatformAdminRole(role) && restrictToOrganizationId == null;
 
+  /**
+   * Search, sort and slice before counting assigned deals so that lookup runs
+   * for one page of members rather than the whole directory.
+   */
+  const pageQuery = parsePageQuery(req);
+  const matched = filterRowsBySearch(rows, pageQuery.search);
+  const sorted = sortRowsBy(
+    matched,
+    pageQuery.sortId,
+    pageQuery.sortDir,
+    memberSortValue,
+  );
+  const { items: pageRows, envelope } = paginateInMemory(sorted, pageQuery);
+
   const userIds = [
     ...new Set(
-      rows
+      pageRows
         .map((r) => String(r.id ?? "").trim().toLowerCase())
         .filter((id) => ORG_UUID_RE.test(id)),
     ),
@@ -240,7 +268,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     restrictToOrganizationId: useGlobalCounts ? null : restrictToOrganizationId,
   });
 
-  const enriched = rows.map((r) => {
+  const enriched = pageRows.map((r) => {
     const id = String(r.id ?? "").trim().toLowerCase();
     const c = dealCounts.get(id) ?? 0;
     return {
@@ -263,7 +291,37 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
     organizationScopeId: scopeLog ?? undefined,
   });
 
-  res.status(200).json({ users: enriched });
+  res.status(200).json({ users: enriched, ...envelope });
+}
+
+/**
+ * Sort values for the Members table columns, keyed by the column ids the UI
+ * sends. Returning `undefined` for an unknown column leaves the ordering the
+ * query already applied.
+ */
+function memberSortValue(
+  row: Record<string, unknown>,
+  sortId: string,
+): string | undefined {
+  const text = (v: unknown) => String(v ?? "").trim().toLowerCase();
+  switch (sortId) {
+    case "user":
+      return [row.firstName, row.lastName, row.email, row.username]
+        .map(text)
+        .join(" ");
+    case "role":
+      return text(row.role);
+    case "organizations":
+      return text(row.companyName);
+    case "status":
+      return text(row.userStatus);
+    case "accountStatus":
+      return text(row.accountStatus ?? row.account_status);
+    case "deals":
+      return text(row.assignedDealCount);
+    default:
+      return undefined;
+  }
 }
 
 /** Frontend send-mail composer defaults (auth required). */

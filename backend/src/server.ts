@@ -50,11 +50,14 @@ import { uploadCompanySettingsBranding } from "./middleware/companySettingsBrand
 
 import { socHttpAuditMiddleware } from "./middleware/socHttpAudit.middleware.js";
 
+import { requestBudgetMiddleware } from "./middleware/requestBudget.middleware.js";
+
 import { protectedUploadsMiddleware } from "./middleware/protectedUploads.middleware.js";
 
 import { signflowWebhookBodyParser } from "./middleware/signflowWebhook.middleware.js";
 
 import { stripeWebhookBodyParser } from "./middleware/stripeWebhook.middleware.js";
+import { processDueDealSaasBillingFromSavedMethods } from "./services/billing/companyBilling.service.js";
 
 // import {
 //
@@ -151,6 +154,9 @@ app.use((req, res, next) => {
   next();
 
 });
+
+/* Latency budget observer — mounted before uploads so every /api/v1 call is measured. */
+app.use("/api/v1", requestBudgetMiddleware);
 
 
 
@@ -604,6 +610,53 @@ async function runMigrations(): Promise<void> {
 
 }
 
+const automaticDealSaasBillingIntervalMs = Math.max(
+  5 * 60 * 1000,
+  Number(process.env.DEAL_SAAS_BILLING_INTERVAL_MS ?? "") || 60 * 60 * 1000,
+);
+let automaticDealSaasBillingStarted = false;
+let automaticDealSaasBillingInFlight = false;
+
+function runAutomaticDealSaasBillingJob(reason: string): void {
+  if (automaticDealSaasBillingInFlight) return;
+  automaticDealSaasBillingInFlight = true;
+  void processDueDealSaasBillingFromSavedMethods()
+    .then((result) => {
+      if (result.started > 0 || result.failed > 0) {
+        console.log(
+          `Automatic deal SaaS billing (${reason}) checked=${result.checked} started=${result.started} skipped=${result.skipped} failed=${result.failed}`,
+        );
+      }
+    })
+    .catch((err) => {
+      console.warn("Automatic deal SaaS billing failed:", err);
+    })
+    .finally(() => {
+      automaticDealSaasBillingInFlight = false;
+    });
+}
+
+function startAutomaticDealSaasBillingJob(): void {
+  if (
+    automaticDealSaasBillingStarted ||
+    process.env.DISABLE_AUTO_DEAL_SAAS_BILLING === "1"
+  ) {
+    return;
+  }
+  automaticDealSaasBillingStarted = true;
+  runAutomaticDealSaasBillingJob("startup");
+  const timer = setInterval(
+    () => runAutomaticDealSaasBillingJob("interval"),
+    automaticDealSaasBillingIntervalMs,
+  );
+  timer.unref?.();
+  console.log(
+    `Automatic deal SaaS billing job enabled every ${Math.round(
+      automaticDealSaasBillingIntervalMs / 60000,
+    )} minute(s).`,
+  );
+}
+
 
 
 async function verifyPoolConnection(): Promise<void> {
@@ -633,6 +686,8 @@ async function initDatabaseAfterListen(): Promise<void> {
       await runMigrations();
 
     }
+
+    startAutomaticDealSaasBillingJob();
 
   } catch (err) {
 

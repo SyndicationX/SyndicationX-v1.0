@@ -7,7 +7,16 @@ import {
 import { getValidJwtUser } from "../../middleware/jwtUser.js";
 import { db } from "../../database/db.js";
 import { users } from "../../schema/schema.js";
-import { isPlatformAdminRole } from "../../constants/roles.js";
+import {
+  isInvestorPortalRole,
+  isPlatformAdminRole,
+} from "../../constants/roles.js";
+import {
+  filterRowsBySearch,
+  paginateInMemory,
+  parsePageQuery,
+  sortRowsBy,
+} from "../../common/pagination.js";
 import type { AddDealFormRow } from "../../schema/deal.schema/add-deal-form.schema.js";
 import {
   assertDealIdReadableOrAssignedParticipant,
@@ -68,6 +77,7 @@ import {
   type OfferingOverviewFieldErrors,
   updateDealOfferingGalleryPathsById,
   updateDealArchivedById,
+  updateDealStageById,
   sanitizeOfferingOverviewPatch,
   normalizeOverviewAssetIdsFromBody,
   parseStoredOfferingOverviewAssetIds,
@@ -113,6 +123,11 @@ import {
   mapDealInvestmentsToInvestorApi,
 } from "../../services/deal/dealInvestment.service.js";
 import { countDealLpInvestorsByDealIdsForViewer } from "../../services/deal/dealLpInvestor.service.js";
+import { mapWithConcurrency } from "../../common/mapWithConcurrency.js";
+import {
+  dealsListCache,
+  invalidateDealsListCache,
+} from "../../services/cache/listReadCache.js";
 import {
   listInvestingParticipantDealIdsForUser,
   mapLpInvestorRoleDisplayByDealIdForUserEmail,
@@ -121,11 +136,15 @@ import {
   listInvestorClassesByDealId,
   mapRowToJson as mapInvestorClassRowToJson,
 } from "../../services/deal/dealInvestorClass.service.js";
-import { enrichDealListRowForApi } from "../../services/deal/dealListRowEnrichment.service.js";
+import {
+  enrichDealListRowForApi,
+  mapDealListEnrichmentByDealId,
+} from "../../services/deal/dealListRowEnrichment.service.js";
 import {
   dealSaasBillingListFields,
   dealSaasPaymentRequiredPayload,
   evaluateDealSaasWorkspaceAccessRefreshing,
+  mapDealRaiseAmountByDealIds,
 } from "../../services/billing/dealBilling.service.js";
 
 function parseBoolField(
@@ -312,6 +331,19 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
     const requestedOrg = includeParticipantDeals
       ? null
       : requestedOrganizationIdFromRequest(req);
+    const dealsCacheKey = [
+      user.id,
+      includeParticipantDeals ? "1" : "0",
+      requestedOrg ?? "",
+      orgParam,
+    ].join(":");
+    const cachedDeals = dealsListCache.get(dealsCacheKey) as
+      | { deals: unknown }
+      | undefined;
+    if (cachedDeals) {
+      res.status(200).json(cachedDeals);
+      return;
+    }
     const scope = await resolveDealViewerScope(
       user.id,
       user.userRole,
@@ -337,7 +369,13 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
        */
       const dealSponsorUsesInvestorScope =
         !scope.seesAllDeals && (await viewerIsDealSponsorOnAnyDeal(user.id));
+      /**
+       * Self-serve investors have no company deal list. Investing must use the
+       * contact’s offerings (506(c), plus 506(b) deals they are already on),
+       * even when they were later added as a sponsor.
+       */
       const investingUsesWorkspaceDeals =
+        !isInvestorPortalRole(user.userRole) &&
         !dealSponsorUsesInvestorScope &&
         (scope.seesAllDeals ||
           (scope.lpInvestorEmailScopedDealIds == null &&
@@ -370,13 +408,23 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
          * Intersect viewer-scoped deals with the requested organization.
          */
         const scoped = await listDealsForViewer(scope);
-        rows = scoped.filter(
-          (r) =>
-            String(r.organizationId ?? "").trim() === orgParam ||
-            scope.organizationId == null ||
-            String(r.organizationId ?? "").trim() ===
-              String(scope.organizationId ?? "").trim(),
+        const [leadAdminIds, coSponsorIds] = await Promise.all([
+          listDealIdsWhereViewerIsLeadOrAdminSponsor(user.id),
+          listDealIdsWhereViewerIsCoSponsor(user.id),
+        ]);
+        const rosterDealIds = new Set(
+          [...leadAdminIds, ...coSponsorIds].map((id) =>
+            String(id).trim().toLowerCase(),
+          ),
         );
+        const viewerOrg = String(scope.organizationId ?? "").trim();
+        rows = scoped.filter((r) => {
+          const dealOrg = String(r.organizationId ?? "").trim();
+          if (dealOrg === orgParam) return true;
+          if (viewerOrg && dealOrg === viewerOrg) return true;
+          // Lead / Admin / Co deals stay visible even when the deal belongs to another company.
+          return rosterDealIds.has(String(r.id).trim().toLowerCase());
+        });
         // If org filter emptied a valid co-sponsor/LP set (legacy null org_id),
         // keep the viewer-scoped list instead of falling back to all org deals.
         if (rows.length === 0 && scoped.length > 0) rows = scoped;
@@ -476,12 +524,19 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
       }
     }
 
+    /* Batched up front: querying classes / commitments / raise per row made the
+       deals list slow down linearly with the number of deals. */
+    const [enrichmentByDealId, raiseAmountByDealId] = await Promise.all([
+      mapDealListEnrichmentByDealId(rows),
+      mapDealRaiseAmountByDealIds(rows.map((r: AddDealFormRow) => String(r.id))),
+    ]);
+
     const dealsPayload = (
-      await Promise.all(
-        rows.map(async (r: AddDealFormRow) => {
+      await mapWithConcurrency(rows, 8, async (r: AddDealFormRow) => {
           const id = String(r.id);
           const n = lpInvestorCounts.get(id) ?? 0;
-          const enriched = await enrichDealListRowForApi(r);
+          const enriched =
+            enrichmentByDealId.get(id) ?? (await enrichDealListRowForApi(r));
           const listRow = {
             ...mapRowToJson(r, {
               investmentRowCount: n,
@@ -500,7 +555,9 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
             !includeParticipantDeals || viewerIsLeadSponsor
             ? {
                 ...withRole,
-                ...(await dealSaasBillingListFields(r)),
+                ...(await dealSaasBillingListFields(r, {
+                  raiseAmount: raiseAmountByDealId.get(id),
+                })),
                 viewerIsLeadSponsor,
                 viewerCanEditDeal: (() => {
                   if (leadOrAdminSponsorDealIds.has(dealKey)) return true;
@@ -518,16 +575,76 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
           // visibility Hide / 506c-only) — avoids "Deal not found" on click.
           if (!readable) return null;
           return { ...withBilling, rosterReadable: true as const };
-        }),
-      )
+      })
     ).filter((row): row is NonNullable<typeof row> => row != null);
 
-    res.status(200).json({
-      deals: dealsPayload,
-    });
+    const dealsBody = { deals: dealsPayload };
+    dealsListCache.set(dealsCacheKey, dealsBody);
+
+    /**
+     * Paged from the cached full list: the per-deal enrichment above is already
+     * batched and cached, so slicing here shrinks the response without losing
+     * the archived/active counts the list header shows.
+     */
+    const pageQuery = parsePageQuery(req);
+    if (!pageQuery.paginated) {
+      res.status(200).json(dealsBody);
+      return;
+    }
+    const matched = filterRowsBySearch(dealsPayload, pageQuery.search);
+    const sorted = sortRowsBy(
+      matched,
+      pageQuery.sortId,
+      pageQuery.sortDir,
+      (row, sortId) => dealListSortValue(row as Record<string, unknown>, sortId),
+    );
+    const { items, envelope } = paginateInMemory(sorted, pageQuery);
+    res.status(200).json({ deals: items, ...envelope });
   } catch (err) {
     console.error("getDeals:", err);
     res.status(500).json({ message: "Could not load deals" });
+  }
+}
+
+/**
+ * Sort values for the Deals list columns, keyed by the UI column ids.
+ *
+ * The Funded, Gap, Committed and Your Role columns are derived from investor
+ * metrics the browser fetches per deal, so they are not sortable here and fall
+ * back to the list's own ordering.
+ */
+function dealListSortValue(
+  row: Record<string, unknown>,
+  sortId: string,
+): string | number | undefined {
+  const text = (v: unknown) => String(v ?? "").trim().toLowerCase();
+  const amount = (v: unknown) =>
+    Number(String(v ?? "").replace(/[^0-9.-]/g, "")) || 0;
+  switch (sortId) {
+    case "name":
+      return text(row.dealName);
+    case "dealStage":
+      return text(row.dealStage);
+    case "start":
+      return text(row.startDateDisplay ?? row.createdDateDisplay);
+    case "close":
+      return text(row.closeDateDisplay);
+    case "nextBilling":
+      return text(row.nextBillingDate);
+    case "dealType":
+      return text(row.dealType);
+    case "secType":
+      return text(row.secType);
+    case "propertyName":
+      return text(row.propertyName);
+    case "owningEntity":
+      return text(row.owningEntityName);
+    case "targetRaised":
+      return amount(row.raiseTarget);
+    case "softCommitted":
+      return amount(row.totalInProgress);
+    default:
+      return undefined;
   }
 }
 
@@ -1665,6 +1782,7 @@ export async function postDeal(req: Request, res: Response): Promise<void> {
     const dealId = String(created.id);
     await assignCreatorToDeal(dealId, user.id);
     await assignCreatorAsLeadSponsorOnDeal(dealId, user.id);
+    invalidateDealsListCache();
     res.status(201).json({
       message: "Deal created",
       deal: mapRowToJson(created, { investmentRowCount: 0 }),
@@ -1788,6 +1906,7 @@ export async function putDeal(req: Request, res: Response): Promise<void> {
       res.status(404).json({ message: "Deal not found" });
       return;
     }
+    invalidateDealsListCache();
     res.status(200).json({
       message: "Deal updated",
       deal: await mapRowToJsonWithInvestmentCount(updated, scope),
@@ -1858,6 +1977,7 @@ export async function patchDealArchived(
       ...enriched,
       archived: Boolean(updated.archived),
     };
+    invalidateDealsListCache();
     res.status(200).json({
       message: archived ? "Deal archived" : "Deal restored",
       deal: listRow,
@@ -1865,6 +1985,76 @@ export async function patchDealArchived(
   } catch (err) {
     console.error("patchDealArchived:", err);
     res.status(500).json({ message: "Could not update deal archive status" });
+  }
+}
+
+/**
+ * Manage deal stage: changes only `deal_stage` (plus the offering status the transition
+ * implies). When SaaS payment is still required the stage is held in Draft and the
+ * requested stage is returned as `pendingDealStage`.
+ */
+export async function patchDealStage(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const rawId = req.params.dealId;
+  const dealId = typeof rawId === "string" ? rawId : rawId?.[0];
+  if (!dealId) {
+    res.status(400).json({ message: "Missing deal id" });
+    return;
+  }
+  const b = req.body as Record<string, unknown>;
+  const requestedStage = bodyString(b.deal_stage ?? b.dealStage);
+  if (!requestedStage) {
+    res.status(400).json({ message: "Field deal_stage is required" });
+    return;
+  }
+
+  try {
+    const scope = await resolveDealViewerScope(
+      user.id,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    const visible = await getAddDealFormForViewer(dealId, scope);
+    if (!visible) {
+      res.status(404).json({ message: "Deal not found" });
+      return;
+    }
+    if (!(await viewerMayEditDealProfile(dealId, user.id))) {
+      res.status(403).json({
+        message: "Only the lead or admin sponsor on this deal can edit it",
+      });
+      return;
+    }
+    if (await sendDealSaasLockIfNeeded(res, visible, scope)) return;
+
+    const updated = await updateDealStageById(dealId, requestedStage);
+    if (updated === "INVALID_STAGE") {
+      res.status(400).json({ message: "Unknown deal stage" });
+      return;
+    }
+    if (!updated) {
+      res.status(404).json({ message: "Deal not found" });
+      return;
+    }
+    const pendingDealStage = updated.pendingDealStage ?? null;
+    invalidateDealsListCache();
+    res.status(200).json({
+      message: pendingDealStage
+        ? "Pay monthly SaaS (MRR) for this deal to move it out of Draft."
+        : "Deal stage updated",
+      pendingDealStage,
+      deal: await mapRowToJsonWithInvestmentCount(updated, scope),
+    });
+  } catch (err) {
+    console.error("patchDealStage:", err);
+    res.status(500).json({ message: "Could not update deal stage" });
   }
 }
 
@@ -1904,6 +2094,7 @@ export async function deleteDeal(req: Request, res: Response): Promise<void> {
       actorUserId: user.id,
       dealId,
     });
+    invalidateDealsListCache();
     res.status(204).send();
   } catch (err) {
     console.error("deleteDeal:", err);

@@ -20,6 +20,7 @@ import {
   useState,
 } from "react"
 import { toast } from "../../../../../../common/components/Toast"
+import { isPlatformAdmin } from "../../../../../../common/auth/roleUtils"
 import {
   TABLE_PAGE_SIZE_ID,
   usePersistedTablePageSize,
@@ -51,6 +52,7 @@ import {
   dealInvestorProfileDisplayName,
   investorRoleLabel,
   isDealMembersTabRole,
+  isLeadSponsorRole,
   type DealRosterKind,
 } from "../../../constants/investor-profile"
 import type { DealInvestorClass } from "../../../types/deal-investor-class.types"
@@ -94,6 +96,7 @@ import {
   parseEmailInput,
 } from "../../../../../../common/features/send-mail"
 import { useNavigate } from "react-router-dom"
+import { formatCount } from "@/common/utils/formatCount"
 import "../../../deal-investors-tab.css"
 import "../../../deals-list.css"
 import "../../../../usermanagement/user_management.css"
@@ -259,6 +262,11 @@ interface DealMembersTabProps {
   invitationMailStatusByRowId?: Record<string, true>
   /** Rows currently sending invitation email — Email status shows a loader. */
   invitationMailSendingByRowId?: Record<string, true>
+  /**
+   * Deal is in draft or required deal details are incomplete — disables “Send invitation
+   * email” row actions, matching the add/edit modal’s notify-the-member rule.
+   */
+  invitationMailBlocked?: boolean
 }
 
 export function DealMembersTab({
@@ -277,6 +285,7 @@ export function DealMembersTab({
   investorsRefreshKey = 0,
   invitationMailStatusByRowId,
   invitationMailSendingByRowId,
+  invitationMailBlocked = false,
 }: DealMembersTabProps) {
   const navigate = useNavigate()
   const [rows, setRows] = useState<DealInvestorRow[]>([])
@@ -487,9 +496,12 @@ export function DealMembersTab({
       const a = parseMoneyDigits(displayAddedInvestorsCommittedAmount(r))
       if (Number.isFinite(a)) added += a
     }
+    const commitmentRounded = Math.round(commitment * 100) / 100
+    const addedRounded = Math.round(added * 100) / 100
     return {
-      commitment: Math.round(commitment * 100) / 100,
-      added: Math.round(added * 100) / 100,
+      commitment: commitmentRounded,
+      added: addedRounded,
+      total: Math.round((commitmentRounded + addedRounded) * 100) / 100,
       count: source.length,
       filtered: Boolean(query.trim()),
     }
@@ -689,11 +701,18 @@ export function DealMembersTab({
           <DealMemberRowActions
             row={r}
             draftRow={r.id === ADD_MEMBER_DRAFT_ROW_ID}
+            editDisabled={
+              !isPlatformAdmin() &&
+              r.id !== ADD_MEMBER_DRAFT_ROW_ID &&
+              isLeadSponsorRole(r.investorRole)
+            }
+            editDisabledTitle="Only platform admins can edit the Lead Sponsor."
             invitationMailSent={r.invitationMailSent === true}
             invitationMailSending={rowInvitationMailMarkedSent(
               r,
               invitationMailSendingByRowId,
             )}
+            invitationMailBlocked={invitationMailBlocked}
             offeringLinkAvailable={offeringLinkAvailable}
             offeringLinkBlockedBecauseDraft={offeringLinkBlockedBecauseDraft}
             onView={handleViewMember}
@@ -845,7 +864,7 @@ export function DealMembersTab({
                 label="What this amount means"
                 content={
                   <p className="deal_inv_class_tooltip_p">
-                    Same as General Partners → Investors added: the sum of
+                    Same as General Partners → Investors committed: the sum of
                     Investors-tab Committed amounts on this deal for investors
                     whose Sponsor name is this team member. Their own
                     subscription is not included. Shown in USD.
@@ -978,7 +997,7 @@ export function DealMembersTab({
         align: "right",
         header: (
           <span className="deal_inv_th_investor_class_head deal_inv_th_commitment_head">
-            <span>Commitment</span>
+            <span>Sponsor committed</span>
             <FormTooltip
               label="What this amount means"
               content={
@@ -1008,7 +1027,7 @@ export function DealMembersTab({
         align: "right",
         header: (
           <span className="deal_inv_th_investor_class_head deal_inv_th_commitment_head">
-            <span>Investors added</span>
+            <span>Investors committed</span>
             <FormTooltip
               label="Commitment from investors they added"
               content={
@@ -1094,6 +1113,7 @@ export function DealMembersTab({
     onDeleteMember,
     handleViewMember,
     invitationMailSendingByRowId,
+    invitationMailBlocked,
   ])
 
   function handleExportDealMembers(selected: DealInvestorRow[]) {
@@ -1488,8 +1508,8 @@ export function DealMembersTab({
                       <span className="deal_gp_totals_bar_kicker">Total</span>
                       <span className="deal_gp_totals_bar_meta">
                         {gpMoneyTotals.filtered
-                          ? `${gpMoneyTotals.count} matching`
-                          : `${gpMoneyTotals.count} general partner${
+                          ? `${formatCount(gpMoneyTotals.count)} matching`
+                          : `${formatCount(gpMoneyTotals.count)} general partner${
                               gpMoneyTotals.count === 1 ? "" : "s"
                             }`}
                       </span>
@@ -1497,7 +1517,7 @@ export function DealMembersTab({
                     <div className="deal_gp_totals_bar_metrics">
                       <div className="deal_gp_totals_metric">
                         <span className="deal_gp_totals_metric_label">
-                          Commitment
+                          Sponsor committed
                         </span>
                         <span className="deal_gp_totals_metric_value">
                           <TableCompactAmountCell
@@ -1511,11 +1531,25 @@ export function DealMembersTab({
                       />
                       <div className="deal_gp_totals_metric">
                         <span className="deal_gp_totals_metric_label">
-                          Investors added
+                          Investors committed
                         </span>
                         <span className="deal_gp_totals_metric_value">
                           <TableCompactAmountCell
                             amount={gpMoneyTotals.added}
+                          />
+                        </span>
+                      </div>
+                      <div
+                        className="deal_gp_totals_metric_divider"
+                        aria-hidden
+                      />
+                      <div className="deal_gp_totals_metric">
+                        <span className="deal_gp_totals_metric_label">
+                          Total
+                        </span>
+                        <span className="deal_gp_totals_metric_value">
+                          <TableCompactAmountCell
+                            amount={gpMoneyTotals.total}
                           />
                         </span>
                       </div>

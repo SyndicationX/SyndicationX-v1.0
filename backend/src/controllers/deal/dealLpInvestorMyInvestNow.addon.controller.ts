@@ -150,6 +150,13 @@ export async function patchDealLpInvestorMyInvestNowAddon(
       String(b.replace_committed_amount ?? b.replaceCommittedAmount ?? "")
         .trim()
         .toLowerCase() === "true";
+    const allowDuplicateProfile =
+      b.allow_duplicate_profile === true ||
+      b.allowDuplicateProfile === true ||
+      String(b.allow_duplicate_profile ?? b.allowDuplicateProfile ?? "")
+        .trim()
+        .toLowerCase() === "true";
+    const investmentIdRaw = bodyString(b.investment_id ?? b.investmentId).trim();
 
     const referringSponsorRefRaw = bodyString(
       b.referring_sponsor_ref ?? b.referringSponsorRef,
@@ -163,6 +170,8 @@ export async function patchDealLpInvestorMyInvestNowAddon(
       progressOnly,
       skipCommittedAmount,
       replaceCommittedAmount,
+      investmentId: investmentIdRaw || undefined,
+      allowDuplicateProfile,
       profileId: profileRaw,
       userInvestorProfileInBody: hasUserInvestorProfileIdKey,
       userInvestorProfileId: hasUserInvestorProfileIdKey
@@ -187,7 +196,10 @@ export async function patchDealLpInvestorMyInvestNowAddon(
       referringSponsorRef: referringSponsorRefRaw || undefined,
     });
     if (!result.ok) {
-      res.status(400).json({ message: result.message });
+      res.status(result.code === "duplicate_profile_for_deal" ? 409 : 400).json({
+        message: result.message,
+        ...(result.code ? { code: result.code } : {}),
+      });
       return;
     }
 

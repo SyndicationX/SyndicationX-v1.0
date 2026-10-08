@@ -10,6 +10,7 @@ import { toast } from "../../../../../common/components/Toast"
 import { useDataTableRowSelection } from "../../../../../common/hooks/useDataTableRowSelection"
 import { getSessionUserId } from "../../../../../common/auth/sessionUserId"
 import { formatDateDdMmmYyyy } from "../../../../../common/utils/formatDateDisplay"
+import { formatCount } from "@/common/utils/formatCount"
 import { isDisplayableEmail } from "../../../../../common/utils/displayEmail"
 import { DealSendMailModal } from "./DealSendMailModal"
 import { MailRecipientsModal } from "./MailRecipientsModal"
@@ -348,7 +349,7 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
           )
           const canOpen = sentRecipients.length > 0
           if (!canOpen) {
-            return count > 0 ? String(count) : "—"
+            return count > 0 ? formatCount(count) : "—"
           }
           return (
             <button
@@ -360,7 +361,7 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
               }
             >
               <span className="deal_inv_comm_sent_to">
-                <span className="deal_inv_comm_sent_to_count">{count}</span>
+                <span className="deal_inv_comm_sent_to_count">{formatCount(count)}</span>
                 <span className="deal_inv_comm_sent_to_label">
                   {count === 1 ? "recipient" : "recipients"}
                 </span>

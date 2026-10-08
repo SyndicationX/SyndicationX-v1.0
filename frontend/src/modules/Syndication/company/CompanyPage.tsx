@@ -19,13 +19,11 @@ import {
   Download,
   Eye,
   LayoutGrid,
-  Mail,
   MoreHorizontal,
   Pencil,
   Plus,
   RefreshCw,
   Search,
-  Settings,
   Upload,
   Users,
   X,
@@ -39,6 +37,7 @@ import { TabsScrollStrip } from "../../../common/components/tabs-scroll-strip/Ta
 import { ViewReadonlyField } from "../../../common/components/ViewReadonlyField";
 import { toast } from "../../../common/components/Toast";
 import { getApiV1Base } from "../../../common/utils/apiBaseUrl";
+import { formatCount } from "@/common/utils/formatCount";
 import {
   SESSION_BEARER_KEY,
   SESSION_USER_DETAILS_KEY,
@@ -48,14 +47,13 @@ import { getSessionOrganizationCompanyId, getActiveWorkspaceCompanyName } from "
 import {
   canAccessCompanyPage,
   canAccessMembersPage,
-  canEditCompanyWorkspace,
   isPlatformAdmin,
 } from "../../../common/auth/roleUtils";
-import { CompanyContactAttributesTab } from "./CompanyContactAttributesTab";
-import { CompanyEmailSettingsTab } from "./CompanyEmailSettingsTab";
-import { CompanyOfferingsPageTab } from "./CompanyOfferingsPageTab";
+// import { CompanyContactAttributesTab } from "./CompanyContactAttributesTab";
+// import { CompanyEmailSettingsTab } from "./CompanyEmailSettingsTab";
+// import { CompanyOfferingsPageTab } from "./CompanyOfferingsPageTab";
 import { CompanyBillingTab } from "./CompanyBillingTab";
-import { CompanySettingsTabPanel } from "./CompanySettingsTabPanel";
+// import { CompanySettingsTabPanel } from "./CompanySettingsTabPanel";
 import { ExportCompaniesModal } from "./ExportCompaniesModal";
 import { UserManagementPage } from "../usermanagement/UserManagementPage";
 import {
@@ -83,45 +81,45 @@ type CompanyPageTab =
   | "companies";
 
 /** Keep sign-in `userDetails` in sync when the user edits company name on Settings (client-side). */
-function writeSessionCompanyDisplayName(next: string): void {
-  const trimmed = next.trim();
-  try {
-    const raw = sessionStorage.getItem(SESSION_USER_DETAILS_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      Array.isArray(parsed) &&
-      parsed[0] &&
-      typeof parsed[0] === "object" &&
-      !Array.isArray(parsed[0])
-    ) {
-      const first = {
-        ...(parsed[0] as Record<string, unknown>),
-        companyName: trimmed,
-        company_name: trimmed,
-        organizationName: trimmed,
-        organization_name: trimmed,
-      };
-      sessionStorage.setItem(
-        SESSION_USER_DETAILS_KEY,
-        JSON.stringify([first, ...parsed.slice(1)]),
-      );
-      return;
-    }
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const o = {
-        ...(parsed as Record<string, unknown>),
-        companyName: trimmed,
-        company_name: trimmed,
-        organizationName: trimmed,
-        organization_name: trimmed,
-      };
-      sessionStorage.setItem(SESSION_USER_DETAILS_KEY, JSON.stringify(o));
-    }
-  } catch {
-    /* ignore */
-  }
-}
+// function writeSessionCompanyDisplayName(next: string): void {
+//   const trimmed = next.trim();
+//   try {
+//     const raw = sessionStorage.getItem(SESSION_USER_DETAILS_KEY);
+//     if (!raw) return;
+//     const parsed = JSON.parse(raw) as unknown;
+//     if (
+//       Array.isArray(parsed) &&
+//       parsed[0] &&
+//       typeof parsed[0] === "object" &&
+//       !Array.isArray(parsed[0])
+//     ) {
+//       const first = {
+//         ...(parsed[0] as Record<string, unknown>),
+//         companyName: trimmed,
+//         company_name: trimmed,
+//         organizationName: trimmed,
+//         organization_name: trimmed,
+//       };
+//       sessionStorage.setItem(
+//         SESSION_USER_DETAILS_KEY,
+//         JSON.stringify([first, ...parsed.slice(1)]),
+//       );
+//       return;
+//     }
+//     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+//       const o = {
+//         ...(parsed as Record<string, unknown>),
+//         companyName: trimmed,
+//         company_name: trimmed,
+//         organizationName: trimmed,
+//         organization_name: trimmed,
+//       };
+//       sessionStorage.setItem(SESSION_USER_DETAILS_KEY, JSON.stringify(o));
+//     }
+//   } catch {
+//     /* ignore */
+//   }
+// }
 
 /** Organization UUID for workspace settings API (same as `companies.id`). */
 function readSessionOrganizationId(): string {
@@ -244,7 +242,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
   const apiV1 = getApiV1Base();
   const token = sessionStorage.getItem(SESSION_BEARER_KEY);
   const platformAdmin = isPlatformAdmin();
-  const canEditWorkspace = canEditCompanyWorkspace();
+  // const canRenameCompanyName = platformAdmin || isCompanyAdmin();
 
   const [companies, setCompanies] = useState<CompanyRow[]>([]);
   const [companiesLoading, setCompaniesLoading] = useState(true);
@@ -257,7 +255,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
   const [companyPageTab, setCompanyPageTab] = useState<CompanyPageTab>(() => {
     if (variant === "customers" && isPlatformAdmin()) return "companies";
     if (canAccessMembersPage()) return "members";
-    return "settings";
+    return "billing";
   });
   const [companiesPage, setCompaniesPage] = useState(1);
   const [companiesPageSize, setCompaniesPageSize] = useState(10);
@@ -354,7 +352,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
     void loadCompanies();
   }, [loadCompanies]);
 
-  const [userDetailsRev, setUserDetailsRev] = useState(0);
+  const [userDetailsRev] = useState(0);
 
   const sessionCompanyName = useMemo(
     () => (token ? getActiveWorkspaceCompanyName() : ""),
@@ -446,21 +444,21 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
     return false;
   }, [platformAdmin, userDetailsRev, workspaceCompanyId]);
 
-  const handleCompanyDisplayNamePersisted = useCallback(
-    (name: string) => {
-      writeSessionCompanyDisplayName(name);
-      const wid = workspaceCompanyId.trim().toLowerCase();
-      if (wid) {
-        setCompanies((prev) =>
-          prev.map((c) =>
-            c.id.trim().toLowerCase() === wid ? { ...c, name } : c,
-          ),
-        );
-      }
-      setUserDetailsRev((n) => n + 1);
-    },
-    [workspaceCompanyId],
-  );
+  // const handleCompanyDisplayNamePersisted = useCallback(
+  //   (name: string) => {
+  //     writeSessionCompanyDisplayName(name);
+  //     const wid = workspaceCompanyId.trim().toLowerCase();
+  //     if (wid) {
+  //       setCompanies((prev) =>
+  //         prev.map((c) =>
+  //           c.id.trim().toLowerCase() === wid ? { ...c, name } : c,
+  //         ),
+  //       );
+  //     }
+  //     setUserDetailsRev((n) => n + 1);
+  //   },
+  //   [workspaceCompanyId],
+  // );
 
   /** Active workspace company name; directory is fallback (e.g. platform admin). */
   const effectiveCompanyName = useMemo(() => {
@@ -480,10 +478,10 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
       return [{ id: "billing" as const, label: "Billing", icon: CreditCard }];
     }
     const mainTabs: { id: CompanyPageTab; label: string; icon: LucideIcon }[] = [
-      { id: "settings", label: "Settings", icon: Settings },
-      { id: "email", label: "Email settings", icon: Mail },
-      { id: "contact", label: "Contact attributes", icon: Contact2 },
-      { id: "offerings", label: "Offerings page", icon: LayoutGrid },
+      // { id: "settings", label: "Settings", icon: Settings },
+      // { id: "email", label: "Email settings", icon: Mail },
+      // { id: "contact", label: "Contact attributes", icon: Contact2 },
+      // { id: "offerings", label: "Offerings page", icon: LayoutGrid },
       { id: "billing", label: "Billing", icon: CreditCard },
     ];
     if (canAccessMembersPage()) {
@@ -492,7 +490,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
     return mainTabs;
   }, [userDetailsRev]);
 
-  const firstCompanyPageTab: CompanyPageTab = companyPageTabDefs[0]?.id ?? "settings";
+  const firstCompanyPageTab: CompanyPageTab = companyPageTabDefs[0]?.id ?? "billing";
 
   const activeCompanyPageTab = useMemo(() => {
     const allowed = new Set(companyPageTabDefs.map((t) => t.id));
@@ -627,7 +625,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
         colWidth: "9%",
         sortValue: (row) => Number(row.dealCount ?? 0),
         align: "center",
-        cell: (row) => String(row.dealCount ?? 0),
+        cell: (row) => formatCount(row.dealCount ?? 0),
       },
       {
         id: "members",
@@ -636,7 +634,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
         sortValue: (row) => Number(row.userCount ?? 0),
         align: "center",
         tdClassName: "um_td_numeric",
-        cell: (row) => String(row.userCount ?? 0),
+        cell: (row) => formatCount(row.userCount ?? 0),
       },
       {
         id: "contacts",
@@ -645,7 +643,17 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
         sortValue: (row) => Number(row.contactCount ?? 0),
         align: "center",
         tdClassName: "um_td_numeric",
-        cell: (row) => String(row.contactCount ?? 0),
+        cell: (row) =>
+          customersStandalone && platformAdmin ? (
+            <Link
+              className="um_user_meta_username cp_company_name_link"
+              to={`/customers/${encodeURIComponent(row.id)}/contacts`}
+            >
+              {formatCount(row.contactCount ?? 0)}
+            </Link>
+          ) : (
+            formatCount(row.contactCount ?? 0)
+          ),
       },
       {
         id: "status",
@@ -1052,7 +1060,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
                 role="tab"
                 aria-selected={customersListTab === "active"}
                 aria-controls="cp-customers-panel-active"
-                aria-label={`Active companies, ${customersActiveCount}`}
+                aria-label={`Active companies, ${formatCount(customersActiveCount)}`}
                 className={`um_members_tab deals_tabs_tab um_segmented_tab${
                   customersListTab === "active" ? " um_members_tab_active" : ""
                 }`}
@@ -1071,7 +1079,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
                   Active
                 </span>
                 <span className="deals_tabs_count" aria-hidden>
-                  ({customersActiveCount})
+                  ({formatCount(customersActiveCount)})
                 </span>
               </button>
               <button
@@ -1080,7 +1088,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
                 role="tab"
                 aria-selected={customersListTab === "archived"}
                 aria-controls="cp-customers-panel-archived"
-                aria-label={`Archived companies, ${customersArchivedCount}`}
+                aria-label={`Archived companies, ${formatCount(customersArchivedCount)}`}
                 className={`um_members_tab deals_tabs_tab um_segmented_tab${
                   customersListTab === "archived" ? " um_members_tab_active" : ""
                 }`}
@@ -1099,7 +1107,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
                   Archived
                 </span>
                 <span className="deals_tabs_count" aria-hidden>
-                  ({customersArchivedCount})
+                  ({formatCount(customersArchivedCount)})
                 </span>
               </button>
             </div>
@@ -1152,6 +1160,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
       <div className="um_members_tab_content">
         {!customersStandalone ? (
           <>
+            {/* Settings, Email settings, Contact attributes, Offerings page tabs
             <div
               className="um_panel um_members_tab_panel cp_settings_tab_panel"
               id="cp-page-panel-settings"
@@ -1161,7 +1170,8 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
             >
               <CompanySettingsTabPanel
                 initialCompanyName={effectiveCompanyName}
-                readOnly={!canEditWorkspace}
+                readOnly
+                canRenameCompanyName={canRenameCompanyName}
                 workspaceCompanyId={workspaceCompanyId || undefined}
                 onCompanyDisplayNamePersisted={handleCompanyDisplayNamePersisted}
               />
@@ -1176,7 +1186,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
             >
               <CompanyEmailSettingsTab
                 companyName={effectiveCompanyName}
-                readOnly={!canEditWorkspace}
+                readOnly
                 workspaceCompanyId={workspaceCompanyId || undefined}
               />
             </div>
@@ -1190,7 +1200,7 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
             >
               <CompanyContactAttributesTab
                 companyName={effectiveCompanyName}
-                readOnly={!canEditWorkspace}
+                readOnly
                 workspaceCompanyId={workspaceCompanyId || undefined}
               />
             </div>
@@ -1204,10 +1214,11 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
             >
               <CompanyOfferingsPageTab
                 companyName={effectiveCompanyName}
-                readOnly={!canEditWorkspace}
+                readOnly
                 workspaceCompanyId={workspaceCompanyId || undefined}
               />
             </div>
+            */}
 
             <div
               className="um_panel um_members_tab_panel"
@@ -1526,17 +1537,17 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
                   <ViewReadonlyField
                     Icon={Users}
                     label="Members"
-                    value={String(viewRow.userCount ?? 0)}
+                    value={formatCount(viewRow.userCount ?? 0)}
                   />
                   <ViewReadonlyField
                     Icon={Contact2}
                     label="No. of contacts"
-                    value={String(viewRow.contactCount ?? 0)}
+                    value={formatCount(viewRow.contactCount ?? 0)}
                   />
                   <ViewReadonlyField
                     Icon={LayoutGrid}
                     label="Deals"
-                    value={String(viewRow.dealCount ?? 0)}
+                    value={formatCount(viewRow.dealCount ?? 0)}
                   />
                 </div>
               </div>

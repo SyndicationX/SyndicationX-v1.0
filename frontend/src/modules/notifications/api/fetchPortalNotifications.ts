@@ -1,4 +1,5 @@
 import { getSessionUserEmail } from "@/common/auth/sessionUserEmail"
+import { getSessionUserId } from "@/common/auth/sessionUserId"
 import {
   canAccessFeedback,
   getLpInvestorDealIdsFromSession,
@@ -28,6 +29,10 @@ import {
   billingPlanDisplayName,
   isDealListRowSaasLocked,
 } from "@/modules/Syndication/Deals/utils/dealSaasAccess"
+import {
+  dealSaasBillingHasStarted,
+  formatSaasBillingStartIsoDisplay,
+} from "@/modules/Syndication/Deals/utils/saasBillingStartDate"
 import {
   dealRowSupportsRosterApiPrefetch,
   filterDealListRowsVisibleToInvestors,
@@ -352,6 +357,7 @@ function pushLeadSponsorBillingAlert(
     id: string
     dealName: string
     nextBillingDate?: string | null
+    saasBillingStartsAt?: string | null
     billed?: boolean
     billable?: boolean
     needsPlanUpgrade?: boolean
@@ -406,6 +412,8 @@ function pushLeadSponsorBillingAlert(
     .trim()
     .toLowerCase()
   const paid = row.billed === true || status === "active" || status === "trialing"
+  const startIso =
+    row.saasBillingStartsAt?.trim() || row.nextBillingDate?.trim() || ""
 
   if (locked) {
     out.push({
@@ -413,27 +421,34 @@ function pushLeadSponsorBillingAlert(
       title: "Payment is due",
       message: `Monthly SaaS for ${dealName} is due. Pay now so this deal stays open to view and edit.`,
       category: "deal",
-      createdAt: isoOrNow(row.nextBillingDate),
+      createdAt: isoOrNow(row.nextBillingDate || startIso),
       href,
     })
     return
   }
 
   if (!billable || paid) return
-  const next = row.nextBillingDate?.trim()
-  if (!next) return
-  const nextMs = Date.parse(next)
-  const upcoming = Number.isFinite(nextMs) && nextMs > Date.now()
+  if (!startIso) return
+
+  const complimentary = !dealSaasBillingHasStarted(startIso)
+  if (complimentary) {
+    out.push({
+      id: `deal-billing-upcoming:${dealId}`,
+      title: "Billing coming up",
+      message: `SaaS billing for ${dealName} is complimentary until ${formatSaasBillingStartIsoDisplay(startIso)}. Pay before then so this deal stays open.`,
+      category: "deal",
+      createdAt: isoOrNow(startIso),
+      href,
+    })
+    return
+  }
+
   out.push({
-    id: upcoming
-      ? `deal-billing-upcoming:${dealId}`
-      : `deal-billing-started:${dealId}`,
-    title: upcoming ? "Billing coming up" : "Payment is due",
-    message: upcoming
-      ? `SaaS billing for ${dealName} starts soon. Pay so this deal stays open after the complimentary period.`
-      : `Monthly SaaS for ${dealName} is due. Pay now so this deal stays open to view and edit.`,
+    id: `deal-billing-started:${dealId}`,
+    title: "Payment is due",
+    message: `Monthly SaaS for ${dealName} is due. Pay now so this deal stays open to view and edit.`,
     category: "deal",
-    createdAt: isoOrNow(next),
+    createdAt: isoOrNow(row.nextBillingDate || startIso),
     href,
   })
 }
@@ -483,11 +498,13 @@ async function collectLeadSponsorBillingNotifications(
           id: row.id,
           dealName: row.dealName,
           nextBillingDate: row.nextBillingDate,
+          saasBillingStartsAt: row.saasBillingStartsAt,
           billed: row.billed,
           billable: row.billable,
           needsPlanUpgrade: row.needsPlanUpgrade,
           planId: row.planId,
           suggestedPlanId: row.suggestedPlanId,
+          billingSubscriptionStatus: row.subscriptionStatus,
         })
       }
     }
@@ -521,6 +538,13 @@ async function collectLeadSponsorBillingNotifications(
     pushLeadSponsorBillingAlert(out, deal)
   }
 }
+
+/**
+ * Reads are otherwise uncapped, but the bell fans out one request per deal in the
+ * background. Bounding them keeps a stalled deal from holding a connection open
+ * indefinitely for a count nobody is waiting on.
+ */
+const NOTIFICATIONS_FETCH_TIMEOUT_MS = 15_000
 
 async function collectSponsorNotifications(
   out: NotificationDraft[],
@@ -558,7 +582,9 @@ async function collectSponsorNotifications(
     const dealId = deal.id.trim()
     if (!dealId) return
     const dealName = deal.dealName?.trim() || "Deal"
-    const payload = await fetchDealInvestors(dealId)
+    const payload = await fetchDealInvestors(dealId, {
+      timeoutMs: NOTIFICATIONS_FETCH_TIMEOUT_MS,
+    })
     const investors = payload.investors
 
     const allInvestorsSigned = allInvestorsInvestorPhaseComplete(investors)
@@ -722,7 +748,7 @@ async function collectFeedbackReviewNotifications(
   }
 }
 
-export async function fetchPortalNotifications(): Promise<NotificationDraft[]> {
+async function buildPortalNotifications(): Promise<NotificationDraft[]> {
   const out: NotificationDraft[] = []
   const isLpOnly = isLpInvestorSessionUser()
 
@@ -755,4 +781,50 @@ export async function fetchPortalNotifications(): Promise<NotificationDraft[]> {
   return [...byId.values()].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   )
+}
+
+/** How long a built notification set stays good enough to reuse. */
+const NOTIFICATIONS_TTL_MS = 60_000
+
+let cachedNotifications: {
+  at: number
+  userId: string
+  data: NotificationDraft[]
+} | null = null
+let notificationsInFlight: Promise<NotificationDraft[]> | null = null
+
+/** Drop the cache so the next read rebuilds (sign-out, or after an action changes state). */
+export function clearPortalNotificationsCache(): void {
+  cachedNotifications = null
+  notificationsInFlight = null
+}
+
+/**
+ * Notifications aggregate the deals list plus investor rosters for up to 20 deals, so a
+ * rebuild is expensive. The provider refreshes on every window focus and each mount, which
+ * previously re-ran that whole fan-out; this serves a recent result instead and collapses
+ * concurrent callers onto one in-flight build.
+ */
+export async function fetchPortalNotifications(options?: {
+  force?: boolean
+}): Promise<NotificationDraft[]> {
+  /* Keyed by session user: a cached set must never survive into another account. */
+  const userId = getSessionUserId()
+  if (!options?.force && cachedNotifications?.userId === userId) {
+    if (Date.now() - cachedNotifications.at < NOTIFICATIONS_TTL_MS) {
+      return cachedNotifications.data
+    }
+  }
+  if (notificationsInFlight) return notificationsInFlight
+
+  notificationsInFlight = buildPortalNotifications()
+    .then((data) => {
+      cachedNotifications = { at: Date.now(), userId, data }
+      return data
+    })
+    .finally(() => {
+      notificationsInFlight = null
+    })
+
+  return notificationsInFlight
 }

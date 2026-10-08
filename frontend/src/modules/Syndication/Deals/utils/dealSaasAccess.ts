@@ -3,6 +3,7 @@ import { getSessionOrganizationCompanyId } from "../../../../common/auth/session
 import { fetchCompanyBillingDeals } from "../../company/companyBillingApi"
 import { CREATE_DEAL_DRAFT_ROW_ID } from "../createDealDraftListRow"
 import type { DealListRow } from "../types/deals.types"
+import { dealSaasBillingHasStarted } from "./saasBillingStartDate"
 
 export const DEAL_SAAS_PAYMENT_REQUIRED = "DEAL_SAAS_PAYMENT_REQUIRED"
 
@@ -50,7 +51,9 @@ export async function resolveUnpaidLeadSponsorPricingPath(): Promise<
   if (!result.ok || !result.canPay) return null
   const unpaid = result.deals.filter(
     (row) =>
-      (row.billable === true || row.payable === true) && !row.billed,
+      (row.billable === true || row.payable === true) &&
+      !row.billed &&
+      dealSaasBillingHasStarted(row.saasBillingStartsAt),
   )
   const upgrades = result.deals.filter((row) => row.needsPlanUpgrade === true)
   const queue = unpaid.length > 0 ? unpaid : upgrades
@@ -90,6 +93,7 @@ function periodEndHasPassed(iso: string | null | undefined): boolean {
 
 /** True when the syndicating workspace must pay MRR before view/edit. */
 export function isDealListRowSaasLocked(row: DealListRow): boolean {
+  if (!dealSaasBillingHasStarted(row.saasBillingStartsAt)) return false
   if (!row?.id || row.id === CREATE_DEAL_DRAFT_ROW_ID) return false
   if (isPlatformAdmin() && row.viewerIsLeadSponsor !== true) return false
   const status = String(row.billingSubscriptionStatus ?? "").trim().toLowerCase()

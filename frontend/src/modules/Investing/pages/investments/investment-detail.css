@@ -293,9 +293,27 @@
   border-bottom: none;
 }
 
-.investment_detail_offering_docs_table {
+.investment_detail_offering_docs_panel
+  .investment_detail_offering_docs_table.deal_docs_ui_table {
   min-width: 0;
   width: 100%;
+  table-layout: fixed;
+}
+
+.investment_detail_offering_docs_panel .deal_docs_ui_th_doc,
+.investment_detail_offering_docs_panel .deal_docs_ui_td_doc {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  vertical-align: middle;
+}
+
+.investment_detail_offering_docs_panel .deal_docs_ui_th_date,
+.investment_detail_offering_docs_panel .deal_docs_ui_td_date {
+  width: 7.75rem;
+  text-align: right;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .investment_detail_offering_doc_unavailable {

@@ -117,8 +117,8 @@ export interface DealInvestorRow {
    * When true, the kebab action is “Re-send invitation mail”.
    */
   invitationMailSent?: boolean
-  /** `lp_roster` = row from `deal_lp_investor` only (no `deal_investment`). */
-  investorKind?: "investment" | "lp_roster"
+  /** Roster-only rows have no backing `deal_investment` id. */
+  investorKind?: "investment" | "lp_roster" | "member_roster"
 }
 
 export interface DealInvestorEsignDocumentRef {

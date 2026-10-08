@@ -663,6 +663,25 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
     }
   }, [dealId])
 
+  const openAddInvestmentForLine = useCallback(
+    (line: InvestmentBreakdownLine) => {
+      const id = dealId?.trim()
+      const profileId = line.userInvestorProfileId?.trim()
+      if (!id || !profileId) return
+      switchToInvesting()
+      navigate(dealInvestNowPath(id), {
+        state: {
+          returnTo: `/investing/investments/${encodeURIComponent(d.id)}?tab=profile`,
+          mode: "fresh",
+          addCommitment: true,
+          userInvestorProfileId: profileId,
+          profileId: line.commitmentProfileId,
+        } satisfies InvestNowLocationState,
+      })
+    },
+    [dealId, d.id, navigate, switchToInvesting],
+  )
+
   const openResumeForLine = useCallback(
     (line: InvestmentBreakdownLine) => {
       const id = dealId?.trim()
@@ -713,12 +732,18 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
                     profileId: line.commitmentProfileId,
                   })
                 : undefined)
+            const canAddInvestment = Boolean(line.userInvestorProfileId?.trim())
             const canResume =
               Boolean(row && em && isInvestNowDraftInvestorRow(row, em))
             return (
               <InvestmentProfileBreakdownRowActions
                 profileLabel={line.profileName?.trim() || "Profile"}
-                disabled={!canResume}
+                disabled={!canAddInvestment && !canResume}
+                onAddInvestment={
+                  canAddInvestment
+                    ? () => openAddInvestmentForLine(line)
+                    : undefined
+                }
                 onResumeInvesting={
                   canResume ? () => openResumeForLine(line) : undefined
                 }
@@ -727,7 +752,7 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
           },
         },
       ]
-    }, [profileBreakdownColumns, dealInvestorRows, openResumeForLine])
+    }, [profileBreakdownColumns, dealInvestorRows, openAddInvestmentForLine, openResumeForLine])
 
   return (
     <>
@@ -1046,7 +1071,9 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
                     membersTableClassName="um_table_members deal_inv_table"
                     columns={profileBreakdownColumnsWithActions}
                     rows={filteredProfileBreakdown}
-                    getRowKey={(_r, i) => `inv-breakdown-${i}`}
+                    getRowKey={(r, i) =>
+                      r.investmentRowId?.trim() || `inv-breakdown-${i}`
+                    }
                     emptyLabel={
                       profileBreakdownQuery.trim()
                         ? "No lines match this filter."
@@ -1135,31 +1162,43 @@ export default function InvestmentDetailPage() {
       return
     }
     // Always load server deal + investors for this investment so the Profile and investment
-    // table can list every book profile and amount (not only a single "Invested as" line
-    // from local/runtime storage when both exist).
+    // table can list every commitment (not only a single "Invested as" line from local storage).
     let cancelled = false
-    setLoadPending(true)
-    setSaasPaywallDeal(null)
-    void (async () => {
-      try {
-        const d = await loadInvestmentDetailFromDeal(decodedId)
-        if (!cancelled) setFromApi(d ?? null)
-      } catch (err) {
-        if (!cancelled) {
-          if (isDealSaasPaymentRequiredError(err)) {
-            setSaasPaywallDeal({
-              ...err.payload,
-              id: err.payload.id || decodedId,
-            })
-          }
-          setFromApi(null)
-        }
-      } finally {
-        if (!cancelled) setLoadPending(false)
+    const load = (background: boolean) => {
+      if (!background) {
+        setLoadPending(true)
+        setSaasPaywallDeal(null)
       }
-    })()
+      void (async () => {
+        try {
+          const d = await loadInvestmentDetailFromDeal(decodedId)
+          if (!cancelled) setFromApi(d ?? null)
+        } catch (err) {
+          if (!cancelled) {
+            if (isDealSaasPaymentRequiredError(err)) {
+              setSaasPaywallDeal({
+                ...err.payload,
+                id: err.payload.id || decodedId,
+              })
+            }
+            if (!background) setFromApi(null)
+          }
+        } finally {
+          if (!cancelled && !background) setLoadPending(false)
+        }
+      })()
+    }
+    load(false)
+    const onVisible = () => {
+      if (document.visibilityState === "visible") load(true)
+    }
+    const onFocus = () => load(true)
+    window.addEventListener("focus", onFocus)
+    document.addEventListener("visibilitychange", onVisible)
     return () => {
       cancelled = true
+      window.removeEventListener("focus", onFocus)
+      document.removeEventListener("visibilitychange", onVisible)
     }
   }, [decodedId])
 

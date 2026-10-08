@@ -12,6 +12,7 @@ export type ExtraCompanyUserPaymentRequired = {
   extraUsersToPay: number
   extraUserFeeCents: number
   amountDueCents: number
+  comment?: string
 }
 
 export class ExtraCompanyUserPaymentRequiredError extends Error {
@@ -65,5 +66,9 @@ export function parseExtraCompanyUserPaymentBody(
     extraUsersToPay: Number.isFinite(extraUsersToPay) ? extraUsersToPay : 1,
     extraUserFeeCents: Number(rec.extraUserFeeCents ?? rec.extra_user_fee_cents ?? 1000) || 1000,
     amountDueCents: Number.isFinite(amountDueCents) ? amountDueCents : 1000,
+    comment:
+      typeof rec.comment === "string" && rec.comment.trim()
+        ? rec.comment.trim()
+        : undefined,
   }
 }

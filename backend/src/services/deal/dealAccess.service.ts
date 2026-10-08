@@ -11,6 +11,7 @@ import {
   ORG_DIRECTORY_MEMBER_ROLES,
   PLATFORM_USER,
 } from "../../constants/roles.js";
+import { mapWithConcurrency } from "../../common/mapWithConcurrency.js";
 import { db } from "../../database/db.js";
 import type { AddDealFormRow } from "../../schema/deal.schema/add-deal-form.schema.js";
 import { users } from "../../schema/schema.js";
@@ -205,11 +206,10 @@ export async function filterDealsVisibleToInvestorParticipants(
   rows: AddDealFormRow[],
   scope: DealViewerScope,
 ): Promise<AddDealFormRow[]> {
-  const out: AddDealFormRow[] = [];
-  for (const row of rows) {
-    if (await investorParticipantMayReadDeal(row, scope)) out.push(row);
-  }
-  return out;
+  const visible = await mapWithConcurrency(rows, 8, (row) =>
+    investorParticipantMayReadDeal(row, scope),
+  );
+  return rows.filter((_, i) => visible[i] === true);
 }
 
 export async function dealAccessibleToViewerScope(
@@ -269,6 +269,25 @@ export async function dealAccessibleToViewerScope(
       dealRow,
       scope.organizationId,
     );
+  }
+
+  /**
+   * Investing: offerings from the sponsors linked to this contact, already
+   * limited by Offering visibility (Show / Hide / 506(b) / 506(c)). A sponsor
+   * roster seat must not replace that list or block deals the contact is not
+   * personally on.
+   */
+  if (!baseOk && isInvestingPortalRequest() && !scope.isPlatformAdmin) {
+    const emailNorm = await viewerEmailNormForScope(scope);
+    if (
+      emailNorm &&
+      (await isDealInInvestingParticipantListForUser(dealId, {
+        userId: scope.userId,
+        emailNorm,
+      }))
+    ) {
+      baseOk = true;
+    }
   }
 
   if (!baseOk) return false;

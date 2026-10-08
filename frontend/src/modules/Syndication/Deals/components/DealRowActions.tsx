@@ -34,6 +34,11 @@ interface DealRowActionsProps {
    * after confirmation with a required reason.
    */
   draftRow?: boolean
+  /**
+   * Saved deal whose required fields are still incomplete: “Edit deal” becomes
+   * “Continue editing” since the deal cannot leave Draft yet.
+   */
+  requiredFieldsIncomplete?: boolean
   /** Deal lifecycle stage (e.g. `draft`) — used for delete confirmation copy. */
   dealStage?: string
   /** Opens read-only deal preview (e.g. modal). */
@@ -61,6 +66,7 @@ export function DealRowActions({
   archived = false,
   readOnlyActions = false,
   draftRow = false,
+  requiredFieldsIncomplete = false,
   dealStage = "",
   onPreviewDeal,
   onInvestNow,
@@ -357,7 +363,9 @@ export function DealRowActions({
                       onClick={handleEditDeal}
                     >
                       <Pencil className="um_kebab_menuitem_icon" size={16} strokeWidth={2} aria-hidden />
-                      {draftRow ? "Continue editing" : "Edit Deal"}
+                      {draftRow || requiredFieldsIncomplete
+                        ? "Continue editing"
+                        : "Edit deal"}
                     </button>
                   </li>
                   ) : null}

@@ -21,7 +21,8 @@ export async function listDealIdsFromDealMemberRosterForUser(
     `SELECT DISTINCT dm.deal_id::text AS deal_id
      FROM deal_member dm
      INNER JOIN users u ON u.id = $1::uuid
-     WHERE trim(dm.deal_member_role) <> ''
+     WHERE dm.is_draft = false
+       AND trim(dm.deal_member_role) <> ''
        AND (
          trim(dm.contact_member_id) = u.id::text
          OR EXISTS (
@@ -54,6 +55,7 @@ export async function isPortalUserOnDealMemberRoster(
      FROM deal_member dm
      INNER JOIN users u ON u.id = $2::uuid
      WHERE dm.deal_id = $1::uuid
+       AND dm.is_draft = false
        AND trim(dm.deal_member_role) <> ''
        AND (
          trim(dm.contact_member_id) = u.id::text
@@ -164,12 +166,14 @@ export async function listCoSponsorPortalUserIdsOnDeal(
        SELECT DISTINCT trim(both from dm.contact_member_id) AS member_key
        FROM deal_member dm
        WHERE dm.deal_id = $1::uuid
+         AND dm.is_draft = false
          AND lower(trim(dm.deal_member_role)) IN ('co-sponsor', 'co sponsor')
          AND trim(coalesce(dm.contact_member_id, '')) <> ''
        UNION
        SELECT DISTINCT trim(both from di.contact_id) AS member_key
        FROM deal_investment di
        WHERE di.deal_id = $1::uuid
+         AND di.is_draft = false
          AND lower(trim(di.investor_role)) IN ('co-sponsor', 'co sponsor')
          AND trim(di.contact_id) <> $2
          AND trim(coalesce(di.contact_id, '')) <> ''
@@ -238,6 +242,7 @@ export async function resolveViewerDealMemberRoleOnDeal(
      FROM deal_member dm
      INNER JOIN users u ON u.id = $2::uuid
      WHERE dm.deal_id = $1::uuid
+       AND dm.is_draft = false
        AND trim(dm.deal_member_role) <> ''
        AND (
          trim(dm.contact_member_id) = u.id::text
@@ -252,6 +257,7 @@ export async function resolveViewerDealMemberRoleOnDeal(
      FROM deal_investment di
      INNER JOIN users u ON u.id = $2::uuid
      WHERE di.deal_id = $1::uuid
+       AND di.is_draft = false
        AND trim(di.investor_role) <> ''
        AND trim(di.contact_id) <> '__portal_investment_autosave__'
        AND (
@@ -294,7 +300,8 @@ export async function listDealIdsWhereViewerIsCoSponsor(
     `SELECT DISTINCT dm.deal_id::text AS deal_id
      FROM deal_member dm
      INNER JOIN users u ON u.id = $1::uuid
-     WHERE lower(trim(dm.deal_member_role)) IN ('co-sponsor', 'co sponsor')
+     WHERE dm.is_draft = false
+       AND lower(trim(dm.deal_member_role)) IN ('co-sponsor', 'co sponsor')
        AND (
          trim(dm.contact_member_id) = u.id::text
          OR EXISTS (
@@ -307,7 +314,8 @@ export async function listDealIdsWhereViewerIsCoSponsor(
      SELECT DISTINCT di.deal_id::text AS deal_id
      FROM deal_investment di
      INNER JOIN users u ON u.id = $1::uuid
-     WHERE lower(trim(di.investor_role)) IN ('co-sponsor', 'co sponsor')
+     WHERE di.is_draft = false
+       AND lower(trim(di.investor_role)) IN ('co-sponsor', 'co sponsor')
        AND trim(di.contact_id) <> $2
        AND (
          trim(di.contact_id) = u.id::text
@@ -359,7 +367,8 @@ export async function viewerHasNonCoSponsorDealMemberRole(
     `SELECT 1 AS ok
      FROM deal_member dm
      INNER JOIN users u ON u.id = $1::uuid
-     WHERE trim(dm.deal_member_role) <> ''
+     WHERE dm.is_draft = false
+       AND trim(dm.deal_member_role) <> ''
        AND lower(trim(dm.deal_member_role)) NOT IN ('co-sponsor', 'co sponsor')
        AND (
          trim(dm.contact_member_id) = u.id::text
@@ -418,7 +427,8 @@ export async function listDealIdsWhereViewerIsLeadOrAdminSponsor(
     `SELECT DISTINCT dm.deal_id::text AS deal_id
      FROM deal_member dm
      INNER JOIN users u ON u.id = $1::uuid
-     WHERE ${sqlRoleIsLeadOrAdmin("dm.deal_member_role")}
+     WHERE dm.is_draft = false
+       AND ${sqlRoleIsLeadOrAdmin("dm.deal_member_role")}
        AND (
          trim(dm.contact_member_id) = u.id::text
          OR EXISTS (
@@ -431,7 +441,8 @@ export async function listDealIdsWhereViewerIsLeadOrAdminSponsor(
      SELECT DISTINCT di.deal_id::text AS deal_id
      FROM deal_investment di
      INNER JOIN users u ON u.id = $1::uuid
-     WHERE ${sqlRoleIsLeadOrAdmin("di.investor_role")}
+     WHERE di.is_draft = false
+       AND ${sqlRoleIsLeadOrAdmin("di.investor_role")}
        AND trim(di.contact_id) <> $2
        AND (
          trim(di.contact_id) = u.id::text
@@ -465,7 +476,8 @@ export async function listDealIdsWhereViewerIsLeadSponsor(
     `SELECT DISTINCT dm.deal_id::text AS deal_id
      FROM deal_member dm
      INNER JOIN users u ON u.id = $1::uuid
-     WHERE ${sqlRoleIsLead("dm.deal_member_role")}
+     WHERE dm.is_draft = false
+       AND ${sqlRoleIsLead("dm.deal_member_role")}
        AND (
          trim(dm.contact_member_id) = u.id::text
          OR EXISTS (
@@ -478,7 +490,8 @@ export async function listDealIdsWhereViewerIsLeadSponsor(
      SELECT DISTINCT di.deal_id::text AS deal_id
      FROM deal_investment di
      INNER JOIN users u ON u.id = $1::uuid
-     WHERE ${sqlRoleIsLead("di.investor_role")}
+     WHERE di.is_draft = false
+       AND ${sqlRoleIsLead("di.investor_role")}
        AND trim(di.contact_id) <> $2
        AND (
          trim(di.contact_id) = u.id::text
@@ -626,6 +639,7 @@ export async function isPortalUserSponsorOnDeal(
      FROM deal_member dm
      INNER JOIN users u ON u.id = $2::uuid
      WHERE dm.deal_id = $1::uuid
+       AND dm.is_draft = false
        AND lower(trim(dm.deal_member_role)) IN ${SPONSOR_ROLES_IN}
        AND (
          trim(dm.contact_member_id) = u.id::text
@@ -640,6 +654,7 @@ export async function isPortalUserSponsorOnDeal(
      FROM deal_investment di
      INNER JOIN users u ON u.id = $2::uuid
      WHERE di.deal_id = $1::uuid
+       AND di.is_draft = false
        AND lower(trim(di.investor_role)) IN ${SPONSOR_ROLES_IN}
        AND trim(di.contact_id) <> '__portal_investment_autosave__'
        AND (

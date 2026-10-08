@@ -1,6 +1,6 @@
 import React from "react";
 import FooterForm from "../../../common/components/FooterForm";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   CheckCircle,
@@ -11,12 +11,13 @@ import {
   LockKeyhole,
   Mail,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Input from "../../../common/components/Input";
 import {
   AUTH_RETURN_NEXT_KEY,
   SESSION_ACTIVITY_SESSION_ID_KEY,
   SESSION_BEARER_KEY,
+  SESSION_PORTAL_MODE_KEY,
   SESSION_REFRESH_KEY,
   SESSION_USER_DETAILS_KEY,
 } from "../../../common/auth/sessionKeys";
@@ -24,33 +25,72 @@ import { storeAuthTokens } from "../../../common/auth/authTokensApi";
 import {
   touchSessionActivity,
 } from "../../../common/auth/idleSession";
-import { isPlatformAdmin } from "../../../common/auth/roleUtils";
+import { INVESTOR, isPlatformAdmin } from "../../../common/auth/roleUtils";
 import { getApiV1Base } from "../../../common/utils/apiBaseUrl";
 import { dealInvestNowPath } from "../../Syndication/Deals/utils/dealInvestNowPath";
 import { resolveUnpaidLeadSponsorPricingPath } from "../../Syndication/Deals/utils/dealSaasAccess";
 import { consumeInvestNowIntent } from "../../Syndication/Deals/utils/investNowIntent";
 import {
   applyOfferingPortfolioPostAuth,
+  claimOfferingPortfolioAccess,
   consumeOfferingPortfolioAuthIntent,
+  isPublicOfferingPortfolioReturnPath,
+  readOfferingPortfolioAuthIntent,
 } from "../../Syndication/Deals/utils/offeringPortfolioAuthIntent";
 import { parseSafeNextPath } from "../../../common/auth/parseSafeNextPath";
 import { toast } from "../../../common/components/Toast";
 import { ensureActiveCompanyInitialized } from "../../../common/auth/setActiveCompany";
 import "./signin_form.css";
 
+/** Investor accounts stay `investor` after a sponsor roster add; open Syndicating on sign-in. */
+function openSyndicatingForInvestorSponsor(userDetails: unknown): void {
+  const first = Array.isArray(userDetails) ? userDetails[0] : null;
+  if (!first || typeof first !== "object") return;
+  const row = first as Record<string, unknown>;
+  if (String(row.role ?? "").trim() !== INVESTOR) return;
+  if (row.is_deal_sponsor !== true) return;
+  try {
+    sessionStorage.setItem(SESSION_PORTAL_MODE_KEY, "syndicating");
+  } catch {
+    /* sessionStorage unavailable */
+  }
+}
+
 const SigninForm = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const resetSuccess = location.state?.resetSuccess;
   const apiV1 = getApiV1Base();
+  const inviteRef = searchParams.get("ref")?.trim() || "";
+  const routeState = location.state as
+    | {
+        from?: string;
+        investNow?: boolean;
+        email?: string;
+        resetSuccess?: boolean;
+      }
+    | undefined;
+  const emailPrefill = (
+    searchParams.get("email") ??
+    routeState?.email ??
+    ""
+  )
+    .trim()
+    .toLowerCase();
 
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(emailPrefill);
   const [password, setPassword] = useState("");
   const [isVisible, setIsVisible] = useState(false);
   const [isError, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
   const passwordVisible = () => setIsVisible((prev) => !prev);
+
+  useEffect(() => {
+    if (!emailPrefill) return;
+    setEmail((prev) => (prev.trim() ? prev : emailPrefill));
+  }, [emailPrefill]);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -67,6 +107,7 @@ const SigninForm = () => {
         body: JSON.stringify({
           email: email.trim().toLowerCase(),
           password,
+          ...(inviteRef ? { inviteRef } : {}),
         }),
       });
       const rawBody = await response.text().catch(() => "");
@@ -145,13 +186,40 @@ const SigninForm = () => {
       } else {
         sessionStorage.removeItem(SESSION_ACTIVITY_SESSION_ID_KEY);
       }
-      const state = location.state as
-        | { from?: string; investNow?: boolean }
-        | undefined;
+      const pendingPortfolioIntent = readOfferingPortfolioAuthIntent();
+      if (pendingPortfolioIntent?.dealId) {
+        try {
+          sessionStorage.setItem(SESSION_PORTAL_MODE_KEY, "investing");
+        } catch {
+          /* sessionStorage unavailable */
+        }
+      } else if (data.userDetails != null) {
+        openSyndicatingForInvestorSponsor(data.userDetails);
+      }
+      if (pendingPortfolioIntent?.previewToken) {
+        try {
+          const claimed = await claimOfferingPortfolioAccess(
+            pendingPortfolioIntent,
+          );
+          if (claimed?.userDetails != null) {
+            sessionStorage.setItem(
+              SESSION_USER_DETAILS_KEY,
+              JSON.stringify(claimed.userDetails),
+            );
+          }
+        } catch (claimError) {
+          toast.error(
+            "Offering access not added",
+            claimError instanceof Error
+              ? claimError.message
+              : "You can still view the public offering.",
+          );
+        }
+      }
       const portfolioIntent = consumeOfferingPortfolioAuthIntent();
       const storedIntent = consumeInvestNowIntent();
       const from =
-        parseSafeNextPath(state?.from) ??
+        parseSafeNextPath(routeState?.from) ??
         parseSafeNextPath(new URLSearchParams(location.search).get("next")) ??
         parseSafeNextPath(sessionStorage.getItem(AUTH_RETURN_NEXT_KEY));
       sessionStorage.removeItem(AUTH_RETURN_NEXT_KEY);
@@ -166,12 +234,15 @@ const SigninForm = () => {
         | undefined;
       if (portfolioIntent?.dealId) {
         const applied = applyOfferingPortfolioPostAuth(portfolioIntent.dealId);
-        redirectTo = from ?? applied.redirectTo;
+        redirectTo =
+          from && !isPublicOfferingPortfolioReturnPath(from)
+            ? from
+            : applied.redirectTo;
         postSignInState = applied.postAuthState;
       } else if (!from && storedIntent?.dealId) {
         redirectTo = dealInvestNowPath(storedIntent.dealId);
         postSignInState = { investNow: true as const };
-      } else if (state?.investNow === true) {
+      } else if (routeState?.investNow === true) {
         postSignInState = { investNow: true as const };
       }
       if (redirectTo === "/") {
@@ -180,7 +251,7 @@ const SigninForm = () => {
       const keepExistingRedirect =
         Boolean(portfolioIntent?.dealId) ||
         Boolean(storedIntent?.dealId) ||
-        state?.investNow === true ||
+        routeState?.investNow === true ||
         (typeof from === "string" && /\/esign(?:\/|$|\?)/i.test(from));
       if (!keepExistingRedirect) {
         const billingPath = await resolveUnpaidLeadSponsorPricingPath();
@@ -334,7 +405,21 @@ const SigninForm = () => {
 
         <p className="auth_footer_links">
           Don&apos;t have an account?{" "}
-          <Link to="/signup">Sign up</Link>
+          <Link
+            to={
+              inviteRef || searchParams.get("next")
+                ? `/signup?${new URLSearchParams({
+                    ...(inviteRef ? { ref: inviteRef } : {}),
+                    ...(searchParams.get("next")?.trim()
+                      ? { next: searchParams.get("next")!.trim() }
+                      : {}),
+                  }).toString()}`
+                : "/signup"
+            }
+            state={location.state}
+          >
+            Sign up
+          </Link>
         </p>
 
         <div className="auth_help companyContent">

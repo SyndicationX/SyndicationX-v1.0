@@ -67,6 +67,10 @@ import {
   type DealSaasPaywallDeal,
 } from "../utils/dealSaasAccess"
 import {
+  platformSaasBillingHasStarted,
+  platformSaasBillingStartDisplay,
+} from "../utils/saasBillingStartDate"
+import {
   emptyAssetStepDraft,
   emptyDealStepDraft,
   type AssetStepDraft,
@@ -99,15 +103,36 @@ function isDealStepRequiredDataFilled(deal: DealStepDraft): boolean {
 }
 
 function DealStepBillingNote() {
+  const complimentary = !platformSaasBillingHasStarted()
   return (
     <div className="deals_create_billing_wrap">
       <p className="deals_create_billing_info" role="note">
-        When this deal is raising capital or asset managing, the lead sponsor
-        pays monthly SaaS (MRR). Choose a plan or pay from{" "}
-        <Link className="deals_create_billing_info_link" to="/settings?billing=pay">
-          Billing
-        </Link>
-        .
+        {complimentary ? (
+          <>
+            The platform is complimentary until {platformSaasBillingStartDisplay()}
+            , including Capital Raising and Asset Managing. After that date the
+            lead sponsor pays monthly SaaS (MRR) from{" "}
+            <Link
+              className="deals_create_billing_info_link"
+              to="/settings?billing=pay"
+            >
+              Billing
+            </Link>
+            .
+          </>
+        ) : (
+          <>
+            When this deal is raising capital or asset managing, the lead
+            sponsor pays monthly SaaS (MRR). Choose a plan or pay from{" "}
+            <Link
+              className="deals_create_billing_info_link"
+              to="/settings?billing=pay"
+            >
+              Billing
+            </Link>
+            .
+          </>
+        )}
       </p>
     </div>
   )
@@ -726,13 +751,19 @@ export function CreateDealPage() {
     })
   }
 
-  function openBillableStageNotice(next: DealStageOption | "") {
-    persistableDealStageRef.current = next
-    setBillableStageNoticeStage(next)
+  function saasStageRequiresPayment(): boolean {
+    return platformSaasBillingHasStarted() && !saasPaidRef.current
+  }
+
+  function maybeOpenBillableStageNotice(next: DealStageOption | "") {
+    if (!isDealStageSaasBillable(next)) return
     const complete = isDealStepRequiredDataFilled({
       ...dealDraft,
       dealStage: next,
     })
+    if (complete && !saasStageRequiresPayment()) return
+    persistableDealStageRef.current = next
+    setBillableStageNoticeStage(next)
     setBillableStageNoticeMode(complete ? "billing" : "complete_deal")
     setBillableStageNoticeOpen(true)
   }
@@ -740,9 +771,7 @@ export function CreateDealPage() {
   function handleDealStageSelect(next: DealStageOption | "") {
     if (!editDealId || !initialDealStageCanonical) {
       patchDeal({ dealStage: next })
-      if (isDealStageSaasBillable(next)) {
-        openBillableStageNotice(next)
-      }
+      maybeOpenBillableStageNotice(next)
       return
     }
     const nextCanon = formDealStageToCanonical(next)
@@ -753,16 +782,12 @@ export function CreateDealPage() {
     if (nextCanon === initialDealStageCanonical) {
       patchDeal({ dealStage: next })
       setStageConfirmedInSession(null)
-      if (isDealStageSaasBillable(next)) {
-        openBillableStageNotice(next)
-      }
+      maybeOpenBillableStageNotice(next)
       return
     }
     if (stageConfirmedInSession === nextCanon) {
       patchDeal({ dealStage: next })
-      if (isDealStageSaasBillable(next)) {
-        openBillableStageNotice(next)
-      }
+      maybeOpenBillableStageNotice(next)
       return
     }
     setPendingStageFormValue(next)
@@ -789,9 +814,7 @@ export function CreateDealPage() {
       patchDeal({ dealStage: pendingStageFormValue })
       const canon = formDealStageToCanonical(pendingStageFormValue)
       if (canon) setStageConfirmedInSession(canon)
-      if (isDealStageSaasBillable(pendingStageFormValue)) {
-        openBillableStageNotice(pendingStageFormValue)
-      }
+      maybeOpenBillableStageNotice(pendingStageFormValue)
     }
     setStageChangeModalOpen(false)
     setPendingStageFormValue("")
@@ -799,7 +822,7 @@ export function CreateDealPage() {
 
   const closeBillableStageNotice = useCallback(() => {
     if (billableStageNoticeBusy) return
-    if (billableStageNoticeMode === "complete_deal" || !saasPaidRef.current) {
+    if (billableStageNoticeMode === "complete_deal" || saasStageRequiresPayment()) {
       const formStage = initialDealStageCanonical
         ? canonicalDealStageToFormValue(initialDealStageCanonical)
         : "Draft"
@@ -855,7 +878,8 @@ export function CreateDealPage() {
 
     const canon = formDealStageToCanonical(nextStage)
     const rememberPersistedStage = (dealId: string) => {
-      if (saasPaidRef.current && canon) {
+      const keepBillableStage = !saasStageRequiresPayment()
+      if (keepBillableStage && canon) {
         setInitialDealStageCanonical(canon)
         setStageConfirmedInSession(canon)
       } else {
@@ -863,7 +887,7 @@ export function CreateDealPage() {
         setStageConfirmedInSession(null)
       }
       const storedStage =
-        saasPaidRef.current && nextStage ? nextStage : "Draft"
+        keepBillableStage && nextStage ? nextStage : "Draft"
       saveCreateDealDraft({
         deal: { ...deal, dealStage: storedStage },
         asset,
@@ -924,7 +948,7 @@ export function CreateDealPage() {
         setInitialDealStageCanonical(canon)
         saasPaidRef.current = dealSaasPaymentCompleteFromDetail(detail)
       } catch {
-        if (!saasPaidRef.current) {
+        if (saasStageRequiresPayment()) {
           patchDeal({ dealStage: "Draft" })
           persistableDealStageRef.current = "Draft"
         }
@@ -1053,7 +1077,7 @@ export function CreateDealPage() {
       }
       const nextCanon = formDealStageToCanonical(dealDraft.dealStage)
       if (nextCanon) {
-        if (isDealStageSaasBillable(nextCanon) && !saasPaidRef.current) {
+        if (isDealStageSaasBillable(nextCanon) && saasStageRequiresPayment()) {
           setInitialDealStageCanonical("draft")
         } else {
           setInitialDealStageCanonical(nextCanon)

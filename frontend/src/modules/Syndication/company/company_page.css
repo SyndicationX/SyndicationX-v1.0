@@ -322,9 +322,41 @@ a.cp_company_deal_name_link:focus-visible {
   #cp-company-panel-deals
   .cp_company_tab_table_wrap
   .um_table.deal_inv_table {
-  table-layout: auto;
+  table-layout: fixed;
   width: max-content;
   min-width: 100%;
+  max-width: none;
+}
+
+/* Deals toolbar: Add deal, export, and search share one aligned row. */
+.company_page #cp-company-panel-deals .cp_company_deals_toolbar {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.company_page #cp-company-panel-deals .cp_company_deals_toolbar .um_toolbar_actions {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.company_page #cp-company-panel-deals .cp_company_deals_toolbar .um_search_wrap {
+  margin-left: auto;
+}
+
+@media (max-width: 800px) {
+  .company_page #cp-company-panel-deals .cp_company_deals_toolbar {
+    flex-wrap: wrap;
+  }
+
+  .company_page #cp-company-panel-deals .cp_company_deals_toolbar .um_toolbar_actions {
+    flex-wrap: wrap;
+  }
+
+  .company_page #cp-company-panel-deals .cp_company_deals_toolbar .um_search_wrap {
+    margin-left: 0;
+    flex: 1 1 100%;
+    max-width: none;
+  }
 }
 
 .company_page
@@ -431,10 +463,77 @@ a.cp_company_deal_name_link:focus-visible {
   font-size: inherit;
 }
 
+.cp_company_member_contacts_toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.cp_company_member_contacts_toggle .um_user_meta_username {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cp_company_member_contacts_toggle svg {
+  flex-shrink: 0;
+  color: var(--portal-text-muted, #64748b);
+  transition: transform 0.15s ease;
+}
+
+.cp_company_member_contacts_toggle--open svg {
+  transform: rotate(180deg);
+}
+
+.cp_company_member_contacts_count {
+  flex-shrink: 0;
+  min-width: 1.25rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--portal-primary-soft, #e8eef8);
+  color: #334155;
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.35rem;
+  text-align: center;
+}
+
+#cp-company-panel-members .data_table_scroll_region {
+  overflow-y: visible;
+}
+
+#cp-company-panel-members tr.data_table_expanded_row > td.data_table_expanded_cell {
+  overflow: visible;
+  white-space: normal;
+}
+
+.cp_company_member_contacts {
+  padding: 0;
+  background: var(--portal-surface, #fff);
+}
+
+.cp_company_member_contacts .data_table_scroll_region {
+  overflow: visible;
+}
+
+.cp_company_member_contacts .um_table.deal_inv_table {
+  min-width: 52rem;
+}
+
 /* Company detail → Deals tab: first column is deal name (not a row-select checkbox). */
 #cp-company-panel-deals
   .cp_company_deals_table.um_table.deal_inv_table.data_table_sticky_first {
-  --data-table-sticky-col-0-width: var(--cp-table-name-col-min, 16rem);
+  --data-table-sticky-col-0-width: 15rem;
 }
 
 #cp-company-panel-deals
@@ -451,8 +550,7 @@ a.cp_company_deal_name_link:focus-visible {
 
 .cp_company_deals_table .cp_company_deal_name_th,
 .cp_company_deals_table .cp_company_deal_name_td {
-  min-width: var(--cp-table-name-col-min, 16rem);
-  width: 18rem;
+  min-width: 0;
   vertical-align: middle;
 }
 
@@ -464,6 +562,7 @@ a.cp_company_deal_name_link:focus-visible {
   text-decoration: none;
   font-weight: 600;
   color: black;
+  max-width: 100%;
 }
 
 .cp_company_deals_table .cp_company_deal_name_link:hover {
@@ -472,19 +571,18 @@ a.cp_company_deal_name_link:focus-visible {
 
 .cp_company_deals_table .cp_company_deal_meta_td {
   vertical-align: middle;
-  min-width: 7.5rem;
+  min-width: 0;
 }
 
 .cp_company_deals_table .cp_company_deal_date_th,
 .cp_company_deals_table .cp_company_deal_date_td {
   white-space: nowrap;
-  min-width: 6.5rem;
+  min-width: 0;
 }
 
 .cp_company_deals_table .cp_company_deal_num_th,
 .cp_company_deals_table .cp_company_deal_num_td {
-  min-width: 6rem;
-  width: 6.5rem;
+  min-width: 0;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2818,10 +2916,213 @@ select.cp_settings_input_pill.um_field_select {
   border-radius: 6px;
 }
 
-.cp_billing_org_deals .um_table.deal_inv_table {
-  width: max-content;
-  min-width: 100%;
+/*
+ * Expanded org row: the nested deal table fits the parent row width instead of
+ * growing to `max-content`, so opening a company never adds a horizontal
+ * scrollbar inside the dropdown.
+ */
+.deal_inv_table_panel .cp_billing_org_deals .um_table.deal_inv_table {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   table-layout: auto;
+}
+
+.deal_inv_table_panel .cp_billing_org_deals .um_table.deal_inv_table th,
+.deal_inv_table_panel .cp_billing_org_deals .um_table.deal_inv_table td {
+  min-width: 0;
+  padding-inline: 0.4em;
+  overflow-wrap: anywhere;
+}
+
+.deal_inv_table_panel
+  .cp_billing_org_deals
+  .um_table.deal_inv_table
+  .um_sort_header_ctl {
+  padding-inline: 0.15em;
+}
+
+.deal_inv_table_panel .cp_billing_org_deals .um_table.deal_inv_table .um_td_user {
+  min-width: 10rem;
+}
+
+.deal_inv_table_panel .cp_billing_org_deals thead th.deals_th_align_center {
+  min-width: 4.5rem;
+}
+
+.deal_inv_table_panel .cp_billing_org_deals thead th.deals_th_align_right {
+  min-width: 5.5rem;
+}
+
+.deal_inv_table_panel
+  .cp_billing_org_deals
+  .um_table.deal_inv_table
+  th.cp_billing_payment_status_col,
+.deal_inv_table_panel
+  .cp_billing_org_deals
+  .um_table.deal_inv_table
+  td.cp_billing_payment_status_col {
+  width: auto;
+  min-width: 6.5rem;
+  white-space: normal;
+}
+
+.deal_inv_table_panel .cp_billing_org_deals .cp_billing_invoice_status {
+  white-space: normal;
+  text-align: center;
+}
+
+.deal_inv_table_panel .cp_billing_org_deals .cp_billing_cycle_select {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  padding-inline: 0.45rem 1.6em;
+  background-position: right 0.4em center;
+}
+
+@supports (-webkit-appearance: none) {
+  .deal_inv_table_panel .cp_billing_org_deals {
+    max-width: 100%;
+    overflow-x: hidden !important;
+  }
+
+  .deal_inv_table_panel .cp_billing_org_deals .um_table_wrap {
+    max-width: 100%;
+    overflow-x: hidden !important;
+  }
+
+  .deal_inv_table_panel .cp_billing_org_deals .data_table_scroll_region,
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .data_table_scroll_region.data_table_scroll_region--overflow-x {
+    max-width: 100%;
+    overflow-x: hidden !important;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    th,
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    td {
+    box-sizing: border-box;
+    min-width: 0 !important;
+    max-width: 100%;
+    padding-inline: 0.15rem;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    overflow: hidden;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    :is(th, td):nth-child(1) {
+    width: 18%;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    :is(th, td):nth-child(2) {
+    width: 11%;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    :is(th, td):nth-child(3) {
+    width: 10%;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    :is(th, td):nth-child(4) {
+    width: 22%;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    :is(th, td):nth-child(5) {
+    width: 12%;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    :is(th, td):nth-child(6) {
+    width: 14%;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    :is(th, td):nth-child(7) {
+    width: 8%;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    :is(th, td):nth-child(8) {
+    width: 5%;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    .um_sort_header_ctl {
+    gap: 0.1rem;
+    max-width: 100%;
+    padding-inline: 0;
+    overflow: hidden;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    .um_sort_header_label {
+    min-width: 0;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: clip;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    .deals_list_name_cell {
+    gap: 0.35rem;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    .cp_billing_payment_status_col,
+  .deal_inv_table_panel
+    .cp_billing_org_deals
+    .um_table.cp_billing_org_deals_table
+    .cp_billing_payment_status_col
+    .cp_billing_invoice_status {
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
 }
 
 /* Org roster: stable columns so expand / name length does not shift widths. */
@@ -2841,6 +3142,175 @@ select.cp_settings_input_pill.um_field_select {
 .cp_billing_invoices_table_wrap .um_table.cp_billing_orgs_table th.deals_th_align_right,
 .cp_billing_invoices_table_wrap .um_table.cp_billing_orgs_table td.cp_billing_amount_td {
   width: 20%;
+}
+
+/* Detailed billing: fit the table to the tab instead of inheriting investor-table overflow sizing. */
+.cp_billing_detail_table_wrap .data_table_scroll_region,
+.cp_billing_detail_table_wrap
+  .data_table_scroll_region.data_table_scroll_region--overflow-x {
+  overflow-x: hidden !important;
+}
+
+.cp_billing_invoices_table_wrap
+  .data_table_scroll_region
+  .um_table.deal_inv_table.cp_billing_detail_table {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  table-layout: fixed;
+}
+
+.cp_billing_invoices_table_wrap
+  .um_table.cp_billing_detail_table
+  th.deals_col_deal_name,
+.cp_billing_invoices_table_wrap
+  .um_table.cp_billing_detail_table
+  td.deals_col_deal_name {
+  width: 26%;
+  min-width: 0;
+}
+
+@supports (-webkit-appearance: none) {
+  .cp_billing_detail_table_wrap,
+  .cp_billing_detail_table_wrap .um_table_wrap,
+  .cp_billing_detail_table_wrap .data_table_scroll_region,
+  .cp_billing_detail_table_wrap
+    .data_table_scroll_region.data_table_scroll_region--overflow-x {
+    max-width: 100%;
+    overflow-x: hidden !important;
+  }
+
+  .cp_billing_detail_table_wrap .um_table.cp_billing_detail_table {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+  }
+
+  .cp_billing_detail_table_wrap .um_table.cp_billing_detail_table th,
+  .cp_billing_detail_table_wrap .um_table.cp_billing_detail_table td {
+    min-width: 0 !important;
+    max-width: 100%;
+    padding-inline: 0.15rem;
+    overflow: hidden;
+  }
+
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    th.deals_col_deal_name,
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    td.deals_col_deal_name {
+    width: 18%;
+    max-width: 18%;
+  }
+
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    :is(th, td):nth-child(2) {
+    width: 11%;
+  }
+
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    :is(th, td):nth-child(3) {
+    width: 10%;
+  }
+
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    :is(th, td):nth-child(4) {
+    width: 22%;
+  }
+
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    :is(th, td):nth-child(5) {
+    width: 12%;
+  }
+
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    :is(th, td):nth-child(6) {
+    width: 14%;
+  }
+
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    :is(th, td):nth-child(7) {
+    width: 8%;
+  }
+
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    :is(th, td):nth-child(8) {
+    width: 5%;
+  }
+
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    .um_sort_header_ctl {
+    gap: 0.1rem;
+    padding-inline: 0;
+  }
+
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    .cp_billing_payment_status_col,
+  .cp_billing_detail_table_wrap
+    .um_table.cp_billing_detail_table
+    .cp_billing_payment_status_col
+    .cp_billing_invoice_status {
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+}
+
+.cp_billing_invoices_table_wrap
+  .um_table.cp_billing_detail_table
+  th.cp_billing_payment_status_col,
+.cp_billing_invoices_table_wrap
+  .um_table.cp_billing_detail_table
+  td.cp_billing_payment_status_col {
+  width: 15%;
+  min-width: 0;
+  white-space: normal;
+}
+
+.cp_billing_invoices_table_wrap .um_table.cp_billing_detail_table th,
+.cp_billing_invoices_table_wrap .um_table.cp_billing_detail_table td {
+  min-width: 0;
+}
+
+.cp_billing_invoices_table_wrap
+  .um_table.cp_billing_detail_table
+  .um_sort_header_ctl,
+.cp_billing_invoices_table_wrap
+  .um_table.cp_billing_detail_table
+  .um_sort_header_label {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.cp_billing_invoices_table_wrap
+  .um_table.cp_billing_detail_table
+  .cp_billing_invoice_number,
+.cp_billing_invoices_table_wrap
+  .um_table.cp_billing_detail_table
+  .cp_billing_invoice_status {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.cp_billing_invoices_table_wrap
+  .um_table.cp_billing_detail_table
+  .cp_billing_cycle_select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .cp_billing_payment_history--admin {
@@ -2989,17 +3459,56 @@ select.cp_settings_input_pill.um_field_select {
 }
 
 .cp_billing_amount_stack {
-  display: inline-flex;
+  display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 0.15rem;
-  line-height: 1.25;
+  gap: 0.2rem;
+  width: 100%;
+  max-width: 100%;
+  line-height: 1.3;
+  white-space: normal;
+  text-align: right;
+}
+
+.cp_billing_amount_total {
+  font-weight: 650;
+  white-space: nowrap;
 }
 
 .cp_billing_amount_extra {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.05rem;
+  max-width: 100%;
   font-size: 0.75rem;
   font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
   color: var(--portal-text-muted, #64748b);
+}
+
+.um_table_members td.um_td_numeric.cp_billing_amount_col,
+.cp_billing_detail_table_wrap .um_table.cp_billing_detail_table :is(th, td).cp_billing_amount_col,
+.deal_inv_table_panel
+  .cp_billing_org_deals
+  .um_table.cp_billing_org_deals_table
+  :is(th, td).cp_billing_amount_col {
+  width: 22%;
+  min-width: 9.5rem;
+  overflow: visible;
+  white-space: normal;
+  vertical-align: top;
+}
+
+.cp_billing_deal_mrr_table th:last-child,
+.cp_billing_deal_mrr_table td.cp_billing_mrr_amount {
+  width: 42%;
+  min-width: 11rem;
+  text-align: right;
+  white-space: normal;
+  overflow: visible;
+  vertical-align: top;
 }
 
 .cp_billing_deal_mrr_history_title {
@@ -3062,6 +3571,20 @@ select.cp_settings_input_pill.um_field_select {
   white-space: nowrap;
   min-width: 16.5rem;
   width: 16.5rem;
+}
+
+.cp_billing_invoices_table_wrap .um_table.deal_inv_table th.deals_th_align_center,
+.cp_billing_invoices_table_wrap .um_table.deal_inv_table td.deals_td_align_center {
+  text-align: center;
+}
+
+.cp_billing_invoices_table_wrap
+  .um_table.deal_inv_table
+  td.deals_td_align_center
+  .cp_billing_cycle_select {
+  display: inline-block;
+  margin-inline: auto;
+  vertical-align: middle;
 }
 
 .cp_billing_invoice_status--paid {
@@ -3624,6 +4147,28 @@ select.cp_settings_input_pill.um_field_select {
   border-color: #15803d;
   color: #ffffff;
 }
+.cp_billing_start_date_btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid var(--portal-border, #e2e8f0);
+  border-radius: var(--portal-card-radius, 4px);
+  background: var(--portal-surface, #fff);
+  color: var(--portal-text, #0f172a);
+  cursor: pointer;
+}
+.cp_billing_start_date_btn:hover {
+  background: var(--portal-surface-muted, #f8fafc);
+}
+.deal_stage_modal_body .cp_billing_start_field {
+  margin-top: 0.85rem;
+}
+.deal_stage_modal_body .cp_billing_start_field .cp_billing_filter_input {
+  width: 100%;
+}
 .cp_billing_plan_cta_pay:disabled {
   opacity: 0.6;
   cursor: no-drop;
@@ -3724,6 +4269,16 @@ select.cp_settings_input_pill.um_field_select {
   line-height: 1.4;
   color: var(--text-muted, #64748b);
 }
+.cp_billing_future_method_note {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+.cp_billing_future_method_note svg {
+  flex: 0 0 auto;
+  margin-top: 0.08rem;
+  color: var(--main-auth-button-color, #155abf);
+}
 .cp_billing_pe_form {
   display: flex;
   flex-direction: column;
@@ -3787,6 +4342,13 @@ select.cp_settings_input_pill.um_field_select {
   padding: 1.15rem 1.5rem 1.35rem;
   border-top: 1px solid var(--portal-border, #e2e8f0);
   background: color-mix(in srgb, var(--portal-surface, #fff) 92%, #f8fafc);
+}
+.cp_billing_pe_action_info {
+  flex: 1 1 100%;
+  margin: 0 0 0.25rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-muted, #64748b);
 }
 .cp_billing_pe_actions .um_btn_primary,
 .cp_billing_pe_actions .um_btn_secondary {

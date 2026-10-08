@@ -100,8 +100,15 @@
 
 :root[data-theme="dark"] .deals_export_modal_select_all_meta,
 :root[data-theme="dark"] .deals_export_modal_row_meta,
-:root[data-theme="dark"] .deals_export_modal_empty {
+:root[data-theme="dark"] .deals_export_modal_empty,
+:root[data-theme="dark"] .deals_export_modal_filter_label {
   color: var(--portal-text-muted);
+}
+
+:root[data-theme="dark"] .deals_export_modal_filter_select {
+  background: var(--portal-surface);
+  border-color: var(--portal-border);
+  color: var(--portal-text);
 }
 
 :root[data-theme="dark"] .deals_export_modal_row_label:hover {

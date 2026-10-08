@@ -1372,9 +1372,90 @@ a.deals_list_add_link.um_btn_primary {
   max-width: 100%;
 }
 
-.app_shell .deals_detail_page button.deals_detail_edit_deal_btn.um_btn_secondary {
+.deals_detail_header_actions {
   flex-shrink: 0;
   margin-left: auto;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.app_shell .deals_detail_page button.deals_detail_invite_link_btn.um_btn_secondary {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  white-space: nowrap;
+}
+
+.deals_detail_invite_link_wrap {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.deals_invite_link_tooltip p {
+  margin: 0;
+}
+
+.deals_invite_link_tooltip p + p {
+  margin-top: 0.5em;
+}
+
+.deals_invite_link_modal {
+  max-width: 36rem;
+}
+
+.deals_invite_link_help {
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--portal-muted, #5c5c66);
+}
+
+.deals_invite_link_copy_row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+.deals_invite_link_copy_row input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: var(--portal-button-height, var(--top-navbar-control-height, 2.25rem));
+  height: var(--portal-button-height, var(--top-navbar-control-height, 2.25rem));
+}
+
+.deals_invite_link_error {
+  margin: 0.45em 0 0;
+  font-size: 0.875em;
+  color: var(--portal-danger, #b91c1c);
+}
+
+@media (max-width: 520px) {
+  .deals_detail_page .deals_list_title_row .deals_detail_header_actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .deals_detail_page .deals_list_title_row .deals_detail_header_actions .um_btn_secondary {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .deals_detail_page .deals_list_title_row .deals_detail_invite_link_wrap {
+    width: 100%;
+  }
+}
+
+.app_shell .deals_detail_page button.deals_detail_edit_deal_btn.um_btn_secondary {
+  flex-shrink: 0;
+  margin-left: 0;
   display: inline-flex;
   align-items: center;
   gap: 0.35em;

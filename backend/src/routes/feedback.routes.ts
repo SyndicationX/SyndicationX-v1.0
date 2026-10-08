@@ -7,6 +7,8 @@ import {
   getMyFeedbackHandler,
   getPendingFeedbackCountHandler,
   patchFeedbackHandler,
+  patchFeedbackPriorityHandler,
+  patchFeedbackTypeHandler,
   postFeedbackHandler,
   postReviewFeedbackHandler,
   putFeedbackCatalogHandler,
@@ -22,6 +24,8 @@ router.get("/feedback/mine", getMyFeedbackHandler);
 router.get("/feedback/item/:id", getFeedbackItemHandler);
 router.get("/feedback", getFeedbackListHandler);
 router.post("/feedback", postFeedbackHandler);
+router.patch("/feedback/:id/priority", patchFeedbackPriorityHandler);
+router.patch("/feedback/:id/type", patchFeedbackTypeHandler);
 router.patch("/feedback/:id", patchFeedbackHandler);
 router.post("/feedback/:id/review", postReviewFeedbackHandler);
 

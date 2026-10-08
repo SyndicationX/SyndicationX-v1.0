@@ -21,6 +21,8 @@ import { syncFundingInstructionsPdfToDocumentsTab } from "./dealFundingDocuments
 import { sanitizeKeyHighlightsJson } from "../../utils/sanitizeKeyHighlightsJson.js";
 import { encryptOfferingPreviewDealId } from "../../utils/offeringPreviewCrypto.js";
 import {
+  DEFAULT_STATUS_BY_STAGE,
+  defaultStatusForStage,
   isDealStatus,
   isDealStageDraft,
   normalizeDealStageCanonical,
@@ -399,11 +401,8 @@ export async function insertAddDealForm(
   const initialStageCanon = normalizeDealStageCanonical(stageHold.persistStage);
   const initialOfferingStatus =
     initialStageCanon != null
-      ? resolveOfferingStatusForStageChange({
-          nextStage: initialStageCanon,
-          currentStatus: "draft_hidden",
-        })
-      : "draft_hidden";
+      ? defaultStatusForStage(initialStageCanon)
+      : DEFAULT_STATUS_BY_STAGE.draft;
 
   const candidates = dealStageCandidates(stageHold.persistStage);
   let lastErr: unknown = null;
@@ -635,6 +634,67 @@ export async function updateDealGalleryCoverById(
     .where(eq(addDealForm.id, id))
     .returning();
   return updated;
+}
+
+/**
+ * Manage-deal-stage flow: moves lifecycle stage without touching any other deal field.
+ * Applies the same SaaS payment hold and offering-status transition as the edit-deal PUT.
+ * Returns `"INVALID_STAGE"` when the requested stage is not a known lifecycle stage.
+ */
+export async function updateDealStageById(
+  id: string,
+  requestedStage: string,
+): Promise<AddDealFormRow | undefined | "INVALID_STAGE"> {
+  if (normalizeDealStageCanonical(requestedStage) == null) return "INVALID_STAGE";
+  const existing = await getAddDealFormById(id);
+  if (!existing) return undefined;
+
+  const stageHold = resolveDealStageForSaasPaymentHold({
+    requestedStage: normalizeDealStage(requestedStage),
+    existing,
+  });
+  const prevStageCanon = normalizeDealStageCanonical(existing.dealStage);
+  const nextStageCanon = normalizeDealStageCanonical(stageHold.persistStage);
+  const stageChanged =
+    prevStageCanon != null &&
+    nextStageCanon != null &&
+    prevStageCanon !== nextStageCanon;
+  const offeringStatusOnStageChange =
+    stageChanged && nextStageCanon != null
+      ? resolveOfferingStatusForStageChange({
+          nextStage: nextStageCanon,
+          currentStatus: existing.offeringStatus,
+        })
+      : undefined;
+
+  const baseSet = {
+    ...(offeringStatusOnStageChange != null
+      ? { offeringStatus: offeringStatusOnStageChange }
+      : {}),
+    pendingDealStage: stageHold.pendingDealStage,
+  };
+  const candidates = dealStageCandidates(stageHold.persistStage);
+  let lastErr: unknown = null;
+  for (const stage of candidates) {
+    try {
+      const [updated] = await db
+        .update(addDealForm)
+        .set({ ...baseSet, dealStage: stage })
+        .where(eq(addDealForm.id, id))
+        .returning();
+      if (updated) scheduleDealSaasBillingSync(String(updated.id));
+      return updated;
+    } catch (err) {
+      lastErr = err;
+      if (
+        !isDealStageCheckError(err) ||
+        stage === candidates[candidates.length - 1]
+      ) {
+        throw err;
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("Update failed");
 }
 
 export async function updateDealArchivedById(

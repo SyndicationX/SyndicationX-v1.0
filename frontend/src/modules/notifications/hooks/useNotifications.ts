@@ -10,6 +10,7 @@ const EMPTY_NOTIFICATIONS: NotificationsContextValue = {
   isLoading: false,
   loadError: null,
   refresh: async () => {},
+  refreshIfStale: async () => {},
   markRead: () => {},
   markAllRead: () => {},
 }

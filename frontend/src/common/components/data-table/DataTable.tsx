@@ -57,6 +57,20 @@ type DataTableProps<T> = {
     onPageChange: (nextPage: number) => void;
     onPageSizeChange?: (nextSize: number) => void;
     ariaLabel?: string;
+    /**
+     * `rows` is already the requested page from the server, so render it as-is
+     * and let `totalItems` describe the full result set rather than `rows.length`.
+     */
+    serverSide?: boolean;
+  };
+  /**
+   * Hand sorting to the caller (server-sorted tables). Header clicks call
+   * `onChange` instead of reordering `rows` locally. Mutually exclusive with
+   * `initialSort`.
+   */
+  controlledSort?: {
+    value: { columnId: string; direction: "asc" | "desc" } | null;
+    onChange: (next: { columnId: string; direction: "asc" | "desc" }) => void;
   };
   /**
    * Optional extra `class` on each body row (e.g. suspended state).
@@ -256,6 +270,7 @@ export function DataTable<T>({
   pagination,
   getRowClassName,
   initialSort,
+  controlledSort,
   onBodyRowClick,
   stickyFirstColumn: stickyFirstColumnProp,
   stickyColumnCount: stickyColumnCountProp,
@@ -283,26 +298,34 @@ export function DataTable<T>({
     !String(membersTableClassName ?? "").trim()
       ? "um_table_members deal_inv_table"
       : (membersTableClassName ?? "");
-  const [sortCol, setSortCol] = useState<string | null>(
+  const [localSortCol, setLocalSortCol] = useState<string | null>(
     () => initialSort?.columnId ?? null,
   );
-  const [sortDir, setSortDir] = useState<"asc" | "desc">(
+  const [localSortDir, setLocalSortDir] = useState<"asc" | "desc">(
     () => initialSort?.direction ?? "asc",
   );
+  const sortCol = controlledSort
+    ? (controlledSort.value?.columnId ?? null)
+    : localSortCol;
+  const sortDir = controlledSort
+    ? (controlledSort.value?.direction ?? "asc")
+    : localSortDir;
 
   function onSortColumn(id: string) {
     const col = columns.find((c) => c.id === id);
     if (!col?.sortValue) return;
-    if (sortCol === id) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortCol(id);
-      setSortDir("asc");
+    const nextDir: "asc" | "desc" =
+      sortCol === id ? (sortDir === "asc" ? "desc" : "asc") : "asc";
+    if (controlledSort) {
+      controlledSort.onChange({ columnId: id, direction: nextDir });
+      return;
     }
+    setLocalSortCol(id);
+    setLocalSortDir(nextDir);
   }
 
   const sortedRows = useMemo(() => {
-    if (!sortCol) return rows;
+    if (controlledSort || !sortCol) return rows;
     const col = columns.find((c) => c.id === sortCol);
     if (!col?.sortValue) return rows;
     const copy = [...rows];
@@ -313,10 +336,10 @@ export function DataTable<T>({
       return sortDir === "asc" ? cmp : -cmp;
     });
     return copy;
-  }, [rows, columns, sortCol, sortDir]);
+  }, [rows, columns, sortCol, sortDir, controlledSort]);
 
   const displayRows = useMemo(() => {
-    if (!pagination) return sortedRows;
+    if (!pagination || pagination.serverSide) return sortedRows;
     const start = (pagination.page - 1) * pagination.pageSize;
     return sortedRows.slice(start, start + pagination.pageSize);
   }, [sortedRows, pagination]);

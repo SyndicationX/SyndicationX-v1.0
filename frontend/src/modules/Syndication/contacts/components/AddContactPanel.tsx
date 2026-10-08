@@ -43,9 +43,12 @@ import { fetchMyProfile } from "../../../myaccount/accountApi"
 import { getSessionUserDisplayName } from "../../../../common/auth/sessionUserDisplayName"
 import { fetchContactOwnerSponsors } from "../api/contactsApi"
 import type {
+  AddContactSavePayload,
   ContactOwnerSponsorOption,
   ContactRow,
 } from "../types/contact.types"
+import { YesNoCardRadioGroup } from "../../../../common/components/YesNoCardRadioGroup/YesNoCardRadioGroup"
+import type { YesNoValue } from "../../../../common/components/YesNoCardRadioGroup/YesNoCardRadioGroup"
 import "../../Deals/tabs/deal_members/add-investment/add_deal_modal.css"
 import "../../usermanagement/user_management.css"
 import "../contacts.css"
@@ -53,7 +56,7 @@ import "../contacts.css"
 type AddContactPanelProps = {
   open: boolean
   onClose: () => void
-  onSave: (contact: Omit<ContactRow, "id" | "createdByDisplayName">) => void | Promise<void>
+  onSave: (contact: AddContactSavePayload) => void | Promise<void>
   /** When set, panel edits this contact and calls `onUpdate` on save. */
   contactToEdit?: ContactRow | null
   onUpdate?: (
@@ -504,6 +507,8 @@ export function AddContactPanel({
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [step, setStep] = useState<1 | 2>(1)
+  const [sendInvitationMail, setSendInvitationMail] =
+    useState<YesNoValue>("yes")
 
   const reset = useCallback(() => {
     setFirstName("")
@@ -525,6 +530,7 @@ export function AddContactPanel({
     setSubmitError(null)
     setSubmitting(false)
     setStep(1)
+    setSendInvitationMail("yes")
   }, [])
 
   const handleCancel = useCallback(() => {
@@ -780,7 +786,7 @@ export function AddContactPanel({
     }
     setSubmitting(true)
     try {
-      const payload = {
+      const payload: AddContactSavePayload = {
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         email: email.trim(),
@@ -796,6 +802,12 @@ export function AddContactPanel({
           : owners.length > 0
             ? [...owners]
             : defaultOwnerChips(),
+        sendInvitationMail:
+          contactToEdit
+            ? undefined
+            : sendInvitationMail === "no"
+              ? "no"
+              : "yes",
       }
       if (contactToEdit) {
         if (!onUpdate) throw new Error("Update handler is not configured.")
@@ -1079,6 +1091,34 @@ export function AddContactPanel({
                       />
                     </div>
                   </div>
+
+                  {!contactToEdit ? (
+                    <div className="um_field">
+                      <div
+                        className="um_field_label_row"
+                        id="add-contact-send-invite-label"
+                      >
+                        <Mail
+                          className="um_field_label_icon"
+                          size={17}
+                          aria-hidden
+                        />
+                        <span className="mail_text_label">
+                          Would you like to send an invitation email?
+                        </span>
+                      </div>
+                      <div className="portal_yesno_field_block">
+                        <YesNoCardRadioGroup
+                          name="add-contact-send-invitation"
+                          value={sendInvitationMail === "no" ? "no" : "yes"}
+                          onChange={setSendInvitationMail}
+                          yesIsCommon
+                          variant="mail"
+                          ariaLabelledBy="add-contact-send-invite-label"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 <hr className="add_contact_section_rule" />

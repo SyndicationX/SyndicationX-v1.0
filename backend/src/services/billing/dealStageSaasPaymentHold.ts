@@ -1,6 +1,7 @@
 import { getStripeConfig } from "../../config/stripe.config.js";
 import { normalizeDealStageCanonical } from "../../constants/deal-lifecycle/deal-stage.js";
 import type { AddDealFormRow } from "../../schema/deal.schema/add-deal-form.schema.js";
+import { dealSaasBillingHasStarted } from "./saasBillingStartDate.js";
 
 const PAID_SAAS_STATUSES = new Set(["active", "trialing"]);
 
@@ -27,21 +28,29 @@ export function dealSaasPaymentIsComplete(
 }
 
 /**
- * Unpaid deals stay Draft until Stripe SaaS payment succeeds.
+ * After a deal’s SaaS start date, unpaid deals stay Draft until Stripe
+ * payment succeeds. Until that date the requested stage is stored as-is.
  * When Stripe is not configured (local/dev), the requested stage is stored.
  */
 export function resolveDealStageForSaasPaymentHold(params: {
   requestedStage: string;
   existing?: Pick<
     AddDealFormRow,
-    "dealStage" | "stripeSubscriptionId" | "stripeSubscriptionStatus"
+    | "dealStage"
+    | "stripeSubscriptionId"
+    | "stripeSubscriptionStatus"
+    | "saasBillingStartsAt"
   > | null;
 }): { persistStage: string; pendingDealStage: string | null } {
   const requestedCanon = normalizeDealStageCanonical(params.requestedStage);
   const existingCanon = normalizeDealStageCanonical(params.existing?.dealStage);
   const paid = dealSaasPaymentIsComplete(params.existing);
 
-  if (!getStripeConfig() || paid) {
+  if (
+    !getStripeConfig() ||
+    paid ||
+    !dealSaasBillingHasStarted(params.existing)
+  ) {
     return { persistStage: params.requestedStage, pendingDealStage: null };
   }
 

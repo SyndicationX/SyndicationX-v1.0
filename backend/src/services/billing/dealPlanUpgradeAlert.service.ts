@@ -3,10 +3,15 @@ import emailConfig, {
   smtpEnvelopeForSendMail,
 } from "../../functions/emailconfig.js";
 import {
+  buildDealBillingStartAlertEmailHtml,
+  buildDealBillingStartAlertEmailText,
+} from "../../functions/dealBillingStartAlertEmail.template.js";
+import {
   buildDealPlanUpgradeAlertEmailHtml,
   buildDealPlanUpgradeAlertEmailText,
 } from "../../functions/dealPlanUpgradeAlertEmail.template.js";
 import { pool } from "../../database/db.js";
+import { formatSaasBillingStartDisplay } from "./saasBillingStartDate.js";
 
 const SENDER_DISPLAY_NAME =
   process.env.SENDER_DISPLAY_NAME?.trim() || "SyndicationX";
@@ -41,13 +46,21 @@ function frontendOrigin(): string {
   return "";
 }
 
-function upgradeBillingUrl(dealId: string, dealName: string): string {
+function dealBillingSettingsUrl(
+  dealId: string,
+  dealName: string,
+  extra?: Record<string, string>,
+): string {
   const origin = frontendOrigin();
-  const params = new URLSearchParams({ billing: "upgrade", dealId });
+  const params = new URLSearchParams({ dealId, ...(extra ?? {}) });
   const name = dealName.trim();
   if (name) params.set("dealName", name);
   const path = `/settings?${params.toString()}`;
   return origin ? `${origin}${path}` : path;
+}
+
+function upgradeBillingUrl(dealId: string, dealName: string): string {
+  return dealBillingSettingsUrl(dealId, dealName, { billing: "upgrade" });
 }
 
 /** dealId -> last suggested plan we emailed (skip repeats on every class save). */
@@ -190,4 +203,69 @@ export async function notifyLeadSponsorsOfDealPlanUpgrade(params: {
     }
   }
   if (emailed > 0) lastEmailedSuggestedPlan.set(dealId, suggested);
+}
+
+/**
+ * Email lead sponsors when a platform admin sets this deal's complimentary
+ * SaaS billing start date.
+ */
+export async function notifyLeadSponsorsOfDealBillingStartDate(params: {
+  dealId: string;
+  dealName: string;
+  saasBillingStartsAt: Date;
+}): Promise<void> {
+  const dealId = String(params.dealId ?? "").trim().toLowerCase();
+  if (!dealId || !Number.isFinite(params.saasBillingStartsAt.getTime())) return;
+
+  const recipients = await listLeadSponsorEmailsForDeal(dealId);
+  if (recipients.length === 0) {
+    console.warn(
+      "notifyLeadSponsorsOfDealBillingStartDate: no lead sponsor emails",
+      dealId,
+    );
+    return;
+  }
+
+  const dealName = params.dealName.trim() || "this deal";
+  const billingStartDisplay = formatSaasBillingStartDisplay(
+    params.saasBillingStartsAt,
+  );
+  const portalBillingUrl = dealBillingSettingsUrl(dealId, dealName);
+  const fromAddress = process.env.SENDER_EMAIL_ID?.trim() || "";
+  if (!fromAddress) {
+    console.warn(
+      "notifyLeadSponsorsOfDealBillingStartDate: SENDER_EMAIL_ID missing",
+    );
+    return;
+  }
+
+  const transporter = emailConfig();
+  const ccBcc = outgoingMailCcBcc();
+  const vars = {
+    dealName,
+    billingStartDisplay,
+    portalBillingUrl,
+    senderBrand: SENDER_DISPLAY_NAME,
+  };
+
+  for (const to of recipients) {
+    try {
+      await transporter.sendMail({
+        from: { name: SENDER_DISPLAY_NAME, address: fromAddress },
+        to,
+        ...ccBcc,
+        envelope: smtpEnvelopeForSendMail({
+          fromAddress,
+          to,
+          cc: ccBcc.cc,
+          bcc: ccBcc.bcc,
+        }),
+        subject: `Billing starts ${billingStartDisplay} for ${dealName}`,
+        text: buildDealBillingStartAlertEmailText(vars),
+        html: buildDealBillingStartAlertEmailHtml(vars),
+      });
+    } catch (err) {
+      console.warn("notifyLeadSponsorsOfDealBillingStartDate:", to, err);
+    }
+  }
 }

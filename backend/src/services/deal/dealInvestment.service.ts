@@ -41,6 +41,11 @@ import {
 import { formatDdMmmYyyy } from "../../utils/formatDdMmmYyyy.js";
 import { formatPortalUserDisplayLabel } from "../../utils/portalUsernameDisplay.js";
 import { userInvestorProfiles } from "../../schema/investing.schema/userProfileBook.schema.js";
+import {
+  applyContactOverlaysById,
+  canonicalRosterPersonKey,
+  type RosterResolvedPerson,
+} from "./dealRosterPersonIdentity.js";
 
 const UPLOAD_SUBDIR = DEAL_ASSETS_UPLOAD_SUBDIR;
 
@@ -354,6 +359,11 @@ export type CreateDealInvestmentInput = {
   extraContributionAmounts: string[];
   documentStoragePath: string | null;
   fundingMethod?: string;
+  /**
+   * Autosaved (not yet saved by the user). Omit on update to leave the stored flag
+   * untouched; pass `false` on an explicit Save to promote a draft row.
+   */
+  isDraft?: boolean;
 };
 
 /** Matches PostgreSQL uuid text (any variant) — used for users.id lookups */
@@ -398,25 +408,10 @@ function emailFromContactIdLiteral(contactId: string): string | null {
   return t.includes("@") ? t : null;
 }
 
-function isUsableInvestorEmail(raw: string | null | undefined): boolean {
-  const em = String(raw ?? "").trim();
-  if (!em || !em.includes("@")) return false;
-  if (/redacted/i.test(em)) return false;
-  return true;
-}
-
-function personNameKey(first: string, last: string, full?: string): string {
-  const fromParts = `${String(first ?? "").trim()} ${String(last ?? "").trim()}`
-    .trim()
-    .toLowerCase();
-  if (fromParts) return fromParts;
-  return String(full ?? "").trim().toLowerCase();
-}
-
 export async function resolveUsersByContactIds(
   rows: DealInvestmentRow[],
 ): Promise<Map<string, ResolvedPortalUser>> {
-  const m = new Map<string, ResolvedPortalUser>();
+  const m = new Map<string, RosterResolvedPerson>();
   const need = new Set<string>();
   for (const r of rows) {
     const id = r.contactId?.trim();
@@ -460,15 +455,6 @@ export async function resolveUsersByContactIds(
       lastName: String(u.lastName ?? "").trim(),
     });
   }
-  const nameKeys = new Set<string>();
-  for (const r of rows) {
-    const fromRow = personNameKey("", "", r.contactDisplayName ?? "");
-    if (fromRow) nameKeys.add(fromRow);
-  }
-  for (const resolved of m.values()) {
-    const fromUser = personNameKey(resolved.firstName, resolved.lastName);
-    if (fromUser) nameKeys.add(fromUser);
-  }
 
   const contactRows = await db
     .select({
@@ -479,55 +465,14 @@ export async function resolveUsersByContactIds(
       fullName: contact.fullName,
     })
     .from(contact)
-    .where(
-      nameKeys.size > 0
-        ? sql`${inArray(contact.id, ids)} OR lower(trim(${contact.fullName})) in (${sql.join(
-            [...nameKeys].map((k) => sql`${k}`),
-            sql`, `,
-          )}) OR lower(trim(concat_ws(' ', ${contact.firstName}, ${contact.lastName}))) in (${sql.join(
-            [...nameKeys].map((k) => sql`${k}`),
-            sql`, `,
-          )})`
-        : inArray(contact.id, ids),
-    );
+    .where(inArray(contact.id, ids));
 
   const contactById = new Map<string, (typeof contactRows)[number]>();
-  const contactByName = new Map<string, (typeof contactRows)[number]>();
   for (const c of contactRows) {
     contactById.set(String(c.id).toLowerCase(), c);
-    const name = personNameKey(c.firstName, c.lastName, c.fullName);
-    if (name && isUsableInvestorEmail(c.email)) contactByName.set(name, c);
   }
 
-  for (const id of ids) {
-    const key = id.toLowerCase();
-    const existing = m.get(key);
-    const c = contactById.get(key);
-    const byName = existing
-      ? contactByName.get(personNameKey(existing.firstName, existing.lastName))
-      : undefined;
-    const source = c ?? byName;
-    if (!source) continue;
-    const firstName = String(source.firstName ?? "").trim();
-    const lastName = String(source.lastName ?? "").trim();
-    const displayName =
-      [firstName, lastName].filter(Boolean).join(" ").trim() ||
-      existing?.displayName ||
-      "—";
-    const email = isUsableInvestorEmail(source.email)
-      ? String(source.email).trim()
-      : isUsableInvestorEmail(existing?.userEmail)
-        ? String(existing?.userEmail).trim()
-        : String(source.email ?? "").trim() || "—";
-    m.set(key, {
-      displayName,
-      userDisplayName: existing?.userDisplayName ?? "—",
-      userEmail: email,
-      firstName: firstName || existing?.firstName || "",
-      lastName: lastName || existing?.lastName || "",
-    });
-  }
-
+  applyContactOverlaysById(ids, m, contactById);
   return m;
 }
 
@@ -1149,8 +1094,7 @@ export async function mapContactIdsToCanonicalCommitmentKeys(
 
   for (const raw of cleaned) {
     const rk = rosterContactKey(raw);
-    const em = looksLikeUuid(raw) ? idToEmail.get(rk) : undefined;
-    out.set(rk, em ? `em:${em}` : `id:${rk}`);
+    out.set(rk, canonicalRosterPersonKey(rk, idToEmail));
   }
   return out;
 }
@@ -1223,7 +1167,7 @@ async function loadDealMemberRolesByContactForDeal(
       dealMemberRole: dealMember.dealMemberRole,
     })
     .from(dealMember)
-    .where(eq(dealMember.dealId, dealId));
+    .where(and(eq(dealMember.dealId, dealId), eq(dealMember.isDraft, false)));
   const map = new Map<string, string>();
   for (const r of rows) {
     const k = rosterContactKey(r.contactMemberId);
@@ -1239,7 +1183,9 @@ async function loadLpRosterContactKeysForDeal(dealId: string): Promise<Set<strin
   const rows = await db
     .select({ contactMemberId: dealLpInvestor.contactMemberId })
     .from(dealLpInvestor)
-    .where(eq(dealLpInvestor.dealId, dealId));
+    .where(
+      and(eq(dealLpInvestor.dealId, dealId), eq(dealLpInvestor.isDraft, false)),
+    );
   const set = new Set<string>();
   for (const r of rows) {
     const k = rosterContactKey(r.contactMemberId);
@@ -1459,13 +1405,20 @@ async function resolvePortalUserIdLowerByContactMemberIds(
     ),
   ];
   const emailToUserLower = new Map<string, string>();
-  for (const em of emails) {
-    const [u] = await db
-      .select({ id: users.id })
+  if (emails.length > 0) {
+    const emailUserRows = await db
+      .select({ id: users.id, email: users.email })
       .from(users)
-      .where(sql`lower(trim(${users.email})) = ${em}`)
-      .limit(1);
-    if (u) emailToUserLower.set(em, String(u.id).toLowerCase());
+      .where(
+        sql`lower(trim(${users.email})) in (${sql.join(
+          emails.map((e) => sql`${e}`),
+          sql`, `,
+        )})`,
+      );
+    for (const u of emailUserRows) {
+      const em = String(u.email ?? "").trim().toLowerCase();
+      if (em) emailToUserLower.set(em, String(u.id).toLowerCase());
+    }
   }
   for (const c of contactRows) {
     const k = rosterContactKey(c.id);
@@ -1664,6 +1617,7 @@ export async function sumCommittedFromInvestorsAddedByMemberContacts(
            ) AS inv_sum
          FROM deal_investment di
          WHERE di.deal_id = $1::uuid
+           AND di.is_draft = false
            AND trim(coalesce(di.contact_id, '')) <> ''
            AND trim(di.contact_id) <> '__portal_investment_autosave__'
          GROUP BY 1
@@ -1678,6 +1632,7 @@ export async function sumCommittedFromInvestorsAddedByMemberContacts(
            )::double precision AS lp_amt
          FROM deal_lp_investor lp
          WHERE lp.deal_id = $1::uuid
+           AND lp.is_draft = false
            AND lp.added_by IS NOT NULL
            AND lower(lp.added_by::text) = ANY($2::text[])
        ),
@@ -1759,11 +1714,13 @@ export async function sumCommittedFromInvestorsAddedByMemberContacts(
          )::text AS amount
        FROM deal_investment di
        WHERE di.deal_id = $1::uuid
+         AND di.is_draft = false
          AND trim(coalesce(di.contact_id, '')) <> ''
          AND trim(di.contact_id) <> '__portal_investment_autosave__'
          AND NOT EXISTS (
            SELECT 1 FROM deal_lp_investor lp
            WHERE lp.deal_id = di.deal_id
+             AND lp.is_draft = false
              AND lower(trim(lp.contact_member_id)) = lower(trim(di.contact_id))
          )
        GROUP BY 1`,
@@ -1882,7 +1839,7 @@ async function resolveDealLeadSponsorFallback(dealId: string): Promise<{
       dealMemberRole: dealMember.dealMemberRole,
     })
     .from(dealMember)
-    .where(eq(dealMember.dealId, d));
+    .where(and(eq(dealMember.dealId, d), eq(dealMember.isDraft, false)));
 
   const lead = memberRows.find((m) =>
     isLeadSponsorRoleLabel(m.dealMemberRole),
@@ -2195,17 +2152,23 @@ export async function assertDealExists(dealId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+/** Autosaved draft rows are hidden unless `includeDrafts` is set (modal resume only). */
 export async function listDealInvestmentsByDealId(
   dealId: string,
-  options?: { lpInvestorsOnly?: boolean },
+  options?: { lpInvestorsOnly?: boolean; includeDrafts?: boolean },
 ): Promise<DealInvestmentRow[]> {
+  const draftExpr =
+    options?.includeDrafts === true
+      ? undefined
+      : eq(dealInvestment.isDraft, false);
   const whereExpr =
     options?.lpInvestorsOnly === true
       ? and(
           eq(dealInvestment.dealId, dealId),
           inArray(dealInvestment.investor_role, [...LP_INVESTOR_ROLE_MATCH]),
+          draftExpr,
         )
-      : eq(dealInvestment.dealId, dealId);
+      : and(eq(dealInvestment.dealId, dealId), draftExpr);
   return db
     .select()
     .from(dealInvestment)
@@ -2219,6 +2182,43 @@ export async function sumCommittedAmountForDeal(dealId: string): Promise<number>
   let s = 0;
   for (const r of rows) s += rowCommittedNumeric(r);
   return s;
+}
+
+/**
+ * `sumCommittedAmountForDeal` for many deals in one query. Deals absent from
+ * `deal_investment` still get a `0` entry so callers can read the map directly.
+ */
+export async function sumCommittedAmountByDealIds(
+  dealIds: readonly string[],
+): Promise<Map<string, number>> {
+  const totals = new Map<string, number>();
+  const ids = [
+    ...new Set(dealIds.map((d) => String(d ?? "").trim()).filter(Boolean)),
+  ];
+  if (ids.length === 0) return totals;
+  for (const id of ids) totals.set(id, 0);
+
+  const rows = await db
+    .select({
+      dealId: dealInvestment.dealId,
+      commitmentAmount: dealInvestment.commitmentAmount,
+      extraContributionAmounts: dealInvestment.extraContributionAmounts,
+    })
+    .from(dealInvestment)
+    .where(
+      and(inArray(dealInvestment.dealId, ids), eq(dealInvestment.isDraft, false)),
+    );
+
+  for (const row of rows) {
+    const parts = committedAmountParts(
+      row.commitmentAmount,
+      row.extraContributionAmounts as string[] | null,
+    );
+    const sum = parts.reduce((a, b) => a + b, 0);
+    const key = String(row.dealId);
+    totals.set(key, (totals.get(key) ?? 0) + sum);
+  }
+  return totals;
 }
 
 /**
@@ -2323,6 +2323,7 @@ export async function insertDealInvestment(params: {
     extraContributionAmounts: params.input.extraContributionAmounts ?? [],
     documentStoragePath: params.input.documentStoragePath ?? null,
     fundingMethod: String(params.input.fundingMethod ?? "").trim(),
+    isDraft: params.input.isDraft === true,
   };
   const [row] = await db.insert(dealInvestment).values(insertRow).returning();
   if (!row) throw new Error("INSERT_FAILED");
@@ -2409,6 +2410,9 @@ export async function updateDealInvestment(params: {
       commitmentAmount: params.input.commitmentAmount,
       extraContributionAmounts: params.input.extraContributionAmounts ?? [],
       documentStoragePath: params.input.documentStoragePath ?? null,
+      ...(params.input.isDraft === undefined
+        ? {}
+        : { isDraft: params.input.isDraft }),
     })
     .where(
       and(
@@ -2441,6 +2445,7 @@ export async function countInvestmentsByDealIds(
     `SELECT deal_id::text, COUNT(*)::int AS cnt
      FROM deal_investment
      WHERE deal_id = ANY($1::uuid[])
+       AND is_draft = false
      GROUP BY deal_id`,
     [ids],
   );

@@ -14,6 +14,7 @@ import { bindInvestmentOfferingDocumentsAutoRefresh } from "@/modules/Investing/
 import { OFFERING_PREVIEW_SECTIONS_CHANGED_EVENT } from "@/modules/Syndication/Deals/utils/offeringPreviewDocSections"
 import "@/modules/Syndication/usermanagement/user_management.css"
 import "@/modules/Syndication/Deals/deals-list.css"
+import "@/modules/Investing/pages/investments/investment-detail.css"
 import "../lp-deal-details.css"
 
 type LpDealOfferingDocumentsPanelProps = {

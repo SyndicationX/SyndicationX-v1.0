@@ -6,6 +6,7 @@ import {
   PORTAL_OMIT_ACTIVE_ORG_HEADER,
 } from "../../../../common/auth/portalAuthHeaders"
 import { getApiV1Base } from "../../../../common/utils/apiBaseUrl"
+import { PORTAL_TIMEOUT_HEADER } from "../../../../common/utils/requestTimeout"
 import {
   MAX_DEAL_IMAGE_FILE_BYTES,
   materializeImageFilesForUpload,
@@ -40,6 +41,7 @@ import {
   DEFAULT_ASSET_COUNTRY,
   type AssetStepDraft,
   type DealListRow,
+  type DealStageOption,
   type DealStepDraft,
 } from "../types/deals.types"
 import {
@@ -144,7 +146,7 @@ export async function fetchUsersForMemberSelect(): Promise<
   const base = getApiV1Base()
   if (!base) return []
   try {
-    const res = await fetch(`${base}/users`, {
+    const res = await fetch(`${base}/users?sort=name`, {
       headers: { ...authHeaders() },
       credentials: "include",
     })
@@ -476,6 +478,13 @@ function normalizeDealListRow(
   }
 }
 
+const DEALS_LIST_TTL_MS = 20_000
+const dealsListCache = new Map<string, { at: number; rows: DealListRow[] }>()
+
+export function invalidateDealsListCache(): void {
+  dealsListCache.clear()
+}
+
 /** Returns normalized rows, or [] if the API is unreachable, unauthorized, or has no deals. */
 export async function fetchDealsList(options?: {
   /** Syndication org deals plus deals where the user is on the roster (`assigning_deal_user`). */
@@ -485,6 +494,7 @@ export async function fetchDealsList(options?: {
    * so platform admins receive the full deal roster.
    */
   organizationId?: string
+  force?: boolean
 }): Promise<DealListRow[]> {
   const base = getApiV1Base()
   if (!base) return []
@@ -503,6 +513,15 @@ export async function fetchDealsList(options?: {
       }
     }
   }
+  const cacheKey = `${includeParticipantDeals ? "1" : "0"}|${params.toString()}`
+  const cached = dealsListCache.get(cacheKey)
+  if (
+    !options?.force &&
+    cached &&
+    Date.now() - cached.at < DEALS_LIST_TTL_MS
+  ) {
+    return cached.rows
+  }
   const q = params.toString() ? `?${params.toString()}` : ""
   try {
     const res = await fetch(`${base}/deals${q}`, {
@@ -518,7 +537,7 @@ export async function fetchDealsList(options?: {
     }
     if (!res.ok) return []
     if (!Array.isArray(data.deals)) return []
-    return data.deals.map((item, i) =>
+    const rows = data.deals.map((item, i) =>
       normalizeDealListRow(
         (item != null && typeof item === "object"
           ? item
@@ -526,6 +545,8 @@ export async function fetchDealsList(options?: {
         i,
       ),
     )
+    dealsListCache.set(cacheKey, { at: Date.now(), rows })
+    return rows
   } catch {
     return []
   }
@@ -882,6 +903,37 @@ export async function fetchOfferingPreviewToken(
         ? data.sponsorRef.trim()
         : null,
   }
+}
+
+/** Unique investor signup/signin link for this deal, attributed to the current sponsor. */
+export async function fetchDealInvestorInviteLink(
+  dealId: string,
+): Promise<string> {
+  const id = dealId.trim()
+  if (!id) throw new Error("Missing deal id.")
+  const base = getApiV1Base()
+  if (!base) throw new Error("VITE_BASE_URL is not configured.")
+  const res = await fetch(
+    `${base}/deals/${encodeURIComponent(id)}/investor-invite-link`,
+    {
+      headers: { ...authHeaders() },
+      credentials: "include",
+    },
+  )
+  const data = (await res.json().catch(() => ({}))) as {
+    inviteUrl?: unknown
+    message?: unknown
+  }
+  if (!res.ok) {
+    throw new Error(
+      data?.message != null
+        ? String(data.message)
+        : `Could not get invite link (${res.status})`,
+    )
+  }
+  const url = String(data.inviteUrl ?? "").trim()
+  if (!url) throw new Error("Invalid invite link response.")
+  return url
 }
 
 export type OfferingPreviewShareEmailFailure = {
@@ -2177,7 +2229,8 @@ export function dealDetailFieldForCreateWizard(
 /**
  * True when required deal fields still hold autosave placeholders (see
  * {@link buildCreateDealFormDataForAutosave}). Ignores lifecycle stage — sponsors may
- * invite investors while the deal is still in Draft.
+ * invite investors while the deal is still in Draft. City is excluded: the wizard never
+ * requires it to save, so its autosave placeholder can outlive a completed deal.
  */
 export function areRequiredDealDetailFieldsIncomplete(
   d: DealDetailApi,
@@ -2185,7 +2238,6 @@ export function areRequiredDealDetailFieldsIncomplete(
   if (isAutosavePlaceholderStored(String(d.secType ?? ""))) return true
   if (isAutosavePlaceholderStored(String(d.owningEntityName ?? ""))) return true
   if (isAutosavePlaceholderStored(String(d.propertyName ?? ""))) return true
-  if (isAutosavePlaceholderStored(String(d.city ?? ""))) return true
   return false
 }
 
@@ -2201,17 +2253,20 @@ export function isDealDetailFormIncomplete(d: DealDetailApi): boolean {
 }
 
 /**
- * Same rules as {@link isDealDetailFormIncomplete} for list rows (requires
- * `secType`, `owningEntityName`, `propertyName`, `city` on the row when the API sends them).
+ * Same rules as {@link isDealDetailFormIncomplete} for list rows (checks
+ * `secType`, `owningEntityName`, `propertyName` on the row when the API sends them).
  */
-export function isDealListRowIncomplete(row: DealListRow): boolean {
-  const stage = String(row.dealStage ?? "").trim().toLowerCase()
-  if (stage === "draft") return true
+export function areRequiredDealListRowFieldsIncomplete(row: DealListRow): boolean {
   if (isAutosavePlaceholderStored(String(row.secType ?? ""))) return true
   if (isAutosavePlaceholderStored(String(row.owningEntityName ?? ""))) return true
   if (isAutosavePlaceholderStored(String(row.propertyName ?? ""))) return true
-  if (isAutosavePlaceholderStored(String(row.city ?? ""))) return true
   return false
+}
+
+export function isDealListRowIncomplete(row: DealListRow): boolean {
+  const stage = String(row.dealStage ?? "").trim().toLowerCase()
+  if (stage === "draft") return true
+  return areRequiredDealListRowFieldsIncomplete(row)
 }
 
 /** Optional image fields for {@link buildCreateDealFormData} / autosave (edit deal PUT). */
@@ -2332,6 +2387,7 @@ export async function createDealMultipart(
   const base = getApiV1Base()
   if (!base)
     return { ok: false, message: "VITE_BASE_URL is not configured." }
+  invalidateDealsListCache()
   const res = await fetch(`${base}/deals`, {
     method: "POST",
     headers: { ...authHeaders() },
@@ -2372,6 +2428,7 @@ export async function updateDealMultipart(
   const base = getApiV1Base()
   if (!base)
     return { ok: false, message: "VITE_BASE_URL is not configured." }
+  invalidateDealsListCache()
   const res = await fetch(`${base}/deals/${encodeURIComponent(dealId)}`, {
     method: "PUT",
     headers: { ...authHeaders() },
@@ -2403,6 +2460,7 @@ export async function deleteDeal(
   const base = getApiV1Base()
   if (!base)
     return { ok: false, message: "VITE_BASE_URL is not configured." }
+  invalidateDealsListCache()
   const res = await fetch(`${base}/deals/${encodeURIComponent(dealId)}`, {
     method: "DELETE",
     headers: { ...authHeaders() },
@@ -2426,6 +2484,7 @@ export async function patchDealArchived(
   const base = getApiV1Base()
   if (!base)
     return { ok: false, message: "VITE_BASE_URL is not configured." }
+  invalidateDealsListCache()
   const res = await fetch(
     `${base}/deals/${encodeURIComponent(dealId)}/archived`,
     {
@@ -2458,6 +2517,51 @@ export async function patchDealArchived(
       raw as Partial<DealListRow> & Record<string, unknown>,
       0,
     ),
+  }
+}
+
+/**
+ * Manage deal stage: changes lifecycle stage only (no other deal field is sent).
+ * `pendingDealStage` is set when SaaS payment is still required, in which case the deal
+ * stays in Draft until Stripe payment succeeds.
+ */
+export async function patchDealStage(
+  dealId: string,
+  dealStage: DealStageOption,
+): Promise<
+  | { ok: true; deal: DealDetailApi; pendingDealStage: string | null }
+  | { ok: false; message: string }
+> {
+  const base = getApiV1Base()
+  if (!base)
+    return { ok: false, message: "VITE_BASE_URL is not configured." }
+  const res = await fetch(
+    `${base}/deals/${encodeURIComponent(dealId)}/deal-stage`,
+    {
+      method: "PATCH",
+      headers: {
+        ...authHeaders(),
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ deal_stage: dealStage }),
+    },
+  )
+  const data = (await res.json().catch(() => ({}))) as {
+    message?: string
+    pendingDealStage?: string | null
+    deal?: DealDetailApi & Record<string, unknown>
+  }
+  if (!res.ok || !data.deal) {
+    return {
+      ok: false,
+      message: data.message || `Could not update deal stage (${res.status})`,
+    }
+  }
+  return {
+    ok: true,
+    deal: data.deal,
+    pendingDealStage: data.pendingDealStage ?? null,
   }
 }
 
@@ -2757,7 +2861,8 @@ function normalizeInvestorRowApi(
     ),
     investorKind: (() => {
       const ik = firstDefined(raw, ["investorKind", "investor_kind"])
-      if (ik === "lp_roster" || ik === "investment") return ik
+      if (ik === "lp_roster" || ik === "member_roster" || ik === "investment")
+        return ik
       if (ik === "lp_investor") return "lp_roster"
       return undefined
     })(),
@@ -2953,7 +3058,7 @@ function normalizeDealMembersResponse(data: unknown): DealMembersPayload {
  */
 export async function fetchDealInvestors(
   dealId: string,
-  options?: { lpInvestorsOnly?: boolean },
+  options?: { lpInvestorsOnly?: boolean; timeoutMs?: number },
 ): Promise<DealInvestorsPayload> {
   const base = getApiV1Base()
   if (!base) {
@@ -2968,7 +3073,13 @@ export async function fetchDealInvestors(
     const res = await fetch(
       `${base}/deals/${encodeURIComponent(dealId)}/investors${q}`,
       {
-        headers: { ...authHeaders({ omitActiveOrganization: true }) },
+        headers: {
+          ...authHeaders({ omitActiveOrganization: true }),
+          /** Reads have no budget by default; callers can still impose one. */
+          ...(options?.timeoutMs != null
+            ? { [PORTAL_TIMEOUT_HEADER]: String(options.timeoutMs) }
+            : {}),
+        },
         credentials: "include",
       },
     )
@@ -3500,6 +3611,7 @@ export async function postDealEsignAddInvestorDataField(
   fileId: string,
   fieldKey: string,
   profileIds?: string[],
+  page?: number,
 ): Promise<PostDealEsignAddInvestorDataFieldResult> {
   const base = getApiV1Base()
   if (!base) {
@@ -3518,6 +3630,9 @@ export async function postDealEsignAddInvestorDataField(
         body: JSON.stringify({
           fieldKey,
           profileIds: profileIds ?? [],
+          ...(Number.isFinite(page) && page && page >= 1
+            ? { page: Math.floor(page) }
+            : {}),
         }),
       },
     )
@@ -4703,6 +4818,50 @@ export async function deleteDealMemberRoster(
   }
 }
 
+/**
+ * PUT `/deals/:dealId/members/:rowId` — updates a roster-only `deal_member` row.
+ */
+export async function putDealMemberRoster(
+  dealId: string,
+  rowId: string,
+  values: AddInvestmentFormValues,
+): Promise<PostDealInvestmentResult> {
+  const base = getApiV1Base()
+  if (!base) return { ok: true, mode: "client" }
+  const body: Record<string, unknown> = {
+    contact_id: values.contactId,
+    contact_display_name: values.contactDisplayName?.trim() ?? "",
+    contact_email: values.contactEmail?.trim() ?? "",
+    investor_role: values.investorRole?.trim() ?? "",
+    send_invitation_mail: values.sendInvitationMail ?? "no",
+    replacement_lead_sponsor_contact_id:
+      values.replacementLeadSponsorContactId?.trim() ?? "",
+  }
+  try {
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(dealId)}/members/${encodeURIComponent(rowId)}`,
+      {
+        method: "PUT",
+        headers: {
+          ...authHeaders(),
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify(body),
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as { message?: unknown }
+    if (!res.ok) {
+      const msg =
+        data.message != null ? String(data.message) : res.statusText
+      return { ok: false, message: msg || "Could not update member" }
+    }
+    return { ok: true, mode: "api" }
+  } catch {
+    return { ok: false, message: "Network error" }
+  }
+}
+
 export type PatchMyLpDealCommitmentResult =
   | { ok: true; investorsPayload: DealInvestorsPayload }
   | { ok: false; message: string }
@@ -4978,6 +5137,14 @@ function appendDealInvestmentMultipartFields(
     "fund_approved",
     values.fundApproved === true ? "true" : "false",
   )
+  const replacementLeadSponsorContactId =
+    values.replacementLeadSponsorContactId?.trim()
+  if (replacementLeadSponsorContactId) {
+    fd.append(
+      "replacement_lead_sponsor_contact_id",
+      replacementLeadSponsorContactId,
+    )
+  }
   if (options?.autosave) fd.append("autosave", "true")
 }
 

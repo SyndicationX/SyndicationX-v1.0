@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import { FEEDBACK_PENDING_CHANGED_EVENT } from "@/modules/feedback/api/feedbackApi"
 import { fetchPortalNotifications } from "../api/fetchPortalNotifications"
 import type { PortalNotification } from "../types/notification.types"
@@ -24,13 +31,20 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
 
-  const refresh = useCallback(async () => {
-    setIsLoading(true)
+  const hasLoadedRef = useRef(false)
+
+  /**
+   * `force` rebuilds; otherwise a cached set is reused (see fetchPortalNotifications).
+   * Only the first load shows the spinner — background refreshes keep the list on screen.
+   */
+  const load = useCallback(async (options?: { force?: boolean }) => {
+    if (!hasLoadedRef.current) setIsLoading(true)
     try {
-      const fetched = await fetchPortalNotifications()
+      const fetched = await fetchPortalNotifications({ force: options?.force })
       const readIds = getReadNotificationIds()
       setNotifications(applyReadState(fetched, readIds))
       setLoadError(null)
+      hasLoadedRef.current = true
     } catch {
       setNotifications([])
       setLoadError("Could not load notifications. Try again in a moment.")
@@ -39,16 +53,24 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const refresh = useCallback(async () => {
+    await load({ force: true })
+  }, [load])
+
+  const refreshIfStale = useCallback(async () => {
+    await load()
+  }, [load])
+
   useEffect(() => {
-    void refresh()
-  }, [refresh])
+    void load()
+  }, [load])
 
   useEffect(() => {
     function onFocus() {
-      void refresh()
+      void load()
     }
     function onFeedbackChanged() {
-      void refresh()
+      void load({ force: true })
     }
     window.addEventListener("focus", onFocus)
     window.addEventListener(FEEDBACK_PENDING_CHANGED_EVENT, onFeedbackChanged)
@@ -59,7 +81,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
         onFeedbackChanged,
       )
     }
-  }, [refresh])
+  }, [load])
 
   const unreadCount = useMemo(
     () => notifications.filter((n) => !n.read).length,
@@ -90,6 +112,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       isLoading,
       loadError,
       refresh,
+      refreshIfStale,
       markRead,
       markAllRead,
     }),
@@ -99,6 +122,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       isLoading,
       loadError,
       refresh,
+      refreshIfStale,
       markRead,
       markAllRead,
     ],

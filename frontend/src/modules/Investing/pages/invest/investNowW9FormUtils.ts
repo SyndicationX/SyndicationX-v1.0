@@ -48,9 +48,34 @@ export function investNowW9ValuesFromAddress(addr: SavedAddress): InvestNowW9For
 function readWizardState(
   profile: InvestorProfileListRow,
 ): Record<string, unknown> | null {
-  const raw = profile.profileWizardState
+  let raw: unknown = profile.profileWizardState
+  if (typeof raw === "string") {
+    const text = raw.trim()
+    if (!text) return null
+    try {
+      raw = JSON.parse(text) as unknown
+    } catch {
+      return null
+    }
+  }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
-  return raw as Record<string, unknown>
+  let src = raw as Record<string, unknown>
+  const inner = src.form
+  if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+    const form = inner as Record<string, unknown>
+    if (
+      "firstName" in form ||
+      "first_name" in form ||
+      "lastName" in form ||
+      "last_name" in form ||
+      "entityLegalName" in form ||
+      "legalIraName" in form ||
+      "profileType" in form
+    ) {
+      src = form
+    }
+  }
+  return src
 }
 
 /** SSN / ITIN from the saved investing profile wizard (`formSnapshot.ssn`). */
@@ -89,19 +114,76 @@ function joinNameParts(parts: string[]): string {
   return parts.map((p) => p.trim()).filter(Boolean).join(" ")
 }
 
+function wizardStr(wizard: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const v = String(wizard[key] ?? "").trim()
+    if (v) return v
+  }
+  return ""
+}
+
+/** Profile wizard first + last name (no middle name). */
+function firstLastFromWizard(
+  wizard: Record<string, unknown> | null,
+): string {
+  if (!wizard) return ""
+  return joinNameParts([
+    wizardStr(wizard, "firstName", "first_name"),
+    wizardStr(wizard, "lastName", "last_name"),
+  ])
+}
+
+function personNameFromWizard(
+  wizard: Record<string, unknown>,
+  suffix: "" | "2",
+): string {
+  return joinNameParts([
+    String(wizard[`firstName${suffix}`] ?? ""),
+    String(wizard[`middleName${suffix}`] ?? ""),
+    String(wizard[`lastName${suffix}`] ?? ""),
+  ])
+}
+
+/** Legal name for the W-9, based on the investing profile type. */
 function taxNameFromWizard(wizard: Record<string, unknown>): string {
+  const profileType = String(wizard.profileType ?? "").trim().toLowerCase()
+  const isEntity =
+    profileType.includes("entity") ||
+    profileType.includes("llc") ||
+    profileType.includes("corp") ||
+    profileType.includes("trust") ||
+    profileType.includes("ira") ||
+    profileType.includes("401")
+  const isJoint = profileType.includes("joint")
+  const custodianIra =
+    String(wizard.custodianIra ?? "").trim().toLowerCase() === "yes"
+  const iraName = String(wizard.legalIraName ?? "").trim()
   const entityLegal = String(wizard.entityLegalName ?? "").trim()
+
+  if (custodianIra && iraName) return iraName
+  if (isEntity && entityLegal) return entityLegal
+
+  const primary = personNameFromWizard(wizard, "")
+  const secondary = personNameFromWizard(wizard, "2")
+  if (isJoint && primary && secondary) return `${primary} & ${secondary}`
+  if (primary) return primary
+  if (secondary) return secondary
+  if (iraName) return iraName
   if (entityLegal) return entityLegal
-  const first = String(wizard.firstName ?? "").trim()
-  const middle = String(wizard.middleName ?? "").trim()
-  const last = String(wizard.lastName ?? "").trim()
-  const single = joinNameParts([first, middle, last])
-  if (single) return single
-  const first2 = String(wizard.firstName2 ?? "").trim()
-  const middle2 = String(wizard.middleName2 ?? "").trim()
-  const last2 = String(wizard.lastName2 ?? "").trim()
-  const spouse = joinNameParts([first2, middle2, last2])
-  if (spouse) return `${single || ""} & ${spouse}`.replace(/^ & /, "").trim()
+  return ""
+}
+
+/** Name shown on the W-9 for the selected investing profile. */
+export function w9NameFromInvestorProfile(
+  profile: InvestorProfileListRow,
+): string {
+  const wizard = readWizardState(profile)
+  const firstLast = firstLastFromWizard(wizard)
+  if (firstLast) return firstLast
+  const fromWizard = wizard ? taxNameFromWizard(wizard) : ""
+  if (fromWizard) return fromWizard
+  const display = profile.profileName.trim()
+  if (display && display !== "—") return display
   return ""
 }
 
@@ -212,11 +294,7 @@ export function buildInvestNowW9Prefill({
 
   if (profile) {
     const wizard = readWizardState(profile)
-    const name =
-      (wizard ? taxNameFromWizard(wizard) : "") ||
-      sessionDisplayName() ||
-      profile.profileName.trim() ||
-      ""
+    const name = w9NameFromInvestorProfile(profile) || sessionDisplayName()
 
     next = {
       ...next,
@@ -228,7 +306,16 @@ export function buildInvestNowW9Prefill({
       ? addresses.find((a) => a.id === taxAddressId)
       : addresses[0]
     if (addr) {
-      next = { ...next, ...investNowW9ValuesFromAddress(addr) }
+      const fromAddr = investNowW9ValuesFromAddress(addr)
+      next = {
+        ...next,
+        street1: fromAddr.street1,
+        street2: fromAddr.street2,
+        city: fromAddr.city,
+        state: fromAddr.state,
+        zip: fromAddr.zip,
+        addressLine: fromAddr.addressLine,
+      }
     }
 
   } else {

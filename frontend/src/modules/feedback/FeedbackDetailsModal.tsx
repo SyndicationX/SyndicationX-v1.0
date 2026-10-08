@@ -6,11 +6,13 @@ import {
   CheckCircle2,
   ClipboardList,
   FileText,
+  Flag,
   LayoutGrid,
   List,
   Loader2,
   Mail,
   MessageSquareText,
+  Shield,
   User,
   UserCheck,
   X,
@@ -18,7 +20,12 @@ import {
 import { useEffect, useId, useState, type FormEvent } from "react"
 import { createPortal } from "react-dom"
 import "../Syndication/usermanagement/user_management.css"
-import type { FeedbackItem, FeedbackReviewAction, FeedbackStatus } from "./types"
+import type {
+  FeedbackItem,
+  FeedbackReviewAction,
+  FeedbackStatus,
+} from "./types"
+import { feedbackPriorityLabel, feedbackUserRoleLabel } from "./types"
 import "./feedback.css"
 
 function formatDateTime(raw: string | null | undefined): string {
@@ -163,6 +170,11 @@ export function FeedbackDetailsModal({
                 value={displayEmail(item.userEmail)}
               />
               <ViewReadonlyField
+                Icon={Shield}
+                label="Role"
+                value={feedbackUserRoleLabel(item.userRole)}
+              />
+              <ViewReadonlyField
                 Icon={LayoutGrid}
                 label="Page"
                 value={item.pageLabel || "—"}
@@ -172,6 +184,20 @@ export function FeedbackDetailsModal({
                 label="Sub page / Tab"
                 value={item.subPageLabel || "—"}
               />
+              {item.priority ? (
+                <ViewReadonlyField
+                  Icon={Flag}
+                  label="Priority"
+                  value={feedbackPriorityLabel(item.priority)}
+                />
+              ) : null}
+              {item.feedbackType ? (
+                <ViewReadonlyField
+                  Icon={ClipboardList}
+                  label="Feedback Type"
+                  value={item.feedbackType}
+                />
+              ) : null}
               <ViewReadonlyField
                 Icon={CalendarClock}
                 label="Submitted"

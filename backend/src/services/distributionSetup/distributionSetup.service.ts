@@ -5,6 +5,7 @@
  */
 
 import { and, eq, inArray } from "drizzle-orm";
+import { mapWithConcurrency } from "../../common/mapWithConcurrency.js";
 import { db } from "../../database/db.js";
 import { addDealForm } from "../../schema/deal.schema/add-deal-form.schema.js";
 import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema.js";
@@ -1219,13 +1220,15 @@ export async function listMyDistributionsForViewer(params: {
   distributions: MyDistributionPaymentRow[];
   totalPayment: string;
 }> {
-  const all: MyDistributionPaymentRow[] = [];
-  for (const dealId of params.dealIds) {
-    const pack = await getMyDistributionsForDeal({
+  const packs = await mapWithConcurrency(params.dealIds, 6, (dealId) =>
+    getMyDistributionsForDeal({
       dealId,
       scope: params.scope,
       emailNorm: params.emailNorm,
-    });
+    }),
+  );
+  const all: MyDistributionPaymentRow[] = [];
+  for (const pack of packs) {
     if (pack?.distributions.length) all.push(...pack.distributions);
   }
   all.sort((a, b) => b.date.localeCompare(a.date) || a.dealName.localeCompare(b.dealName));

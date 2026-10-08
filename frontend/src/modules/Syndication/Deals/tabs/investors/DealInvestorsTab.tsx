@@ -97,6 +97,7 @@ import {
   fetchDealInvestors,
   postDealInvestment,
   postDealLpInvestor,
+  putDealMemberRoster,
   putDealInvestment,
   putDealLpInvestor,
   type DealDetailApi,
@@ -104,7 +105,6 @@ import {
 import {
   ExtraCompanyUserPaymentRequiredError,
 } from "../../utils/extraCompanyUserBilling";
-import { isDealStageDraft } from "../../constants/deal-lifecycle";
 import type { DealInvestorClass } from "../../types/deal-investor-class.types";
 import {
   formatInvestorClassTableLabel,
@@ -130,6 +130,7 @@ import {
 } from "../../utils/dealInvestorExportCsv";
 import { buildInvestorDistributionHistory } from "./investorDistributionHistory";
 import { buildTableExportFilename } from "@/common/utils/tableExportFilename";
+import { formatCount } from "@/common/utils/formatCount";
 import {
   dealInvestorStatusDisplayLabel,
   investorFundedColumnLabel,
@@ -343,6 +344,7 @@ function dealInvestorRowToFormValues(
 function investorRowSupportsApproveFund(row: DealInvestorRow): boolean {
   if (row.id === ADD_MEMBER_DRAFT_ROW_ID) return false;
   if (row.investorKind === "lp_roster") return false;
+  if (row.investorKind === "member_roster") return false;
   return true;
 }
 
@@ -653,7 +655,7 @@ function DealInvestorsPopulated({
       committed: formatUsdKpiDisplay(sum),
       totalApproved: formatUsdKpiDisplay(sum),
       /** Headcount of fund-approved investors (matches Funded column / investorRowIsFundApproved). */
-      approvedCount: String(approvedInvestorCount),
+      approvedCount: formatCount(approvedInvestorCount),
       averageApproved: count > 0 && sum > 0 ? formatUsdKpiDisplay(avg) : "—",
       /** Sum of funded $: fund-approved or funds received (fully/partially); pending re-approval uses snapshot. */
       totalFunded: formatUsdKpiTotalFunded(fundedSum),
@@ -682,7 +684,9 @@ function DealInvestorsPopulated({
       const inProgress = new Set(["sent", "pending", "viewed", "signed"]);
       return s && s !== "—" && !inProgress.has(s);
     }).length;
-    return dataRows.length > 0 ? `${signedCount} of ${dataRows.length}` : "—";
+    return dataRows.length > 0
+      ? `${formatCount(signedCount)} of ${formatCount(dataRows.length)}`
+      : "—";
   }, [rows]);
 
   useEffect(() => {
@@ -2293,6 +2297,8 @@ export const DealInvestorsTab = forwardRef<
       const result =
         editRow.investorKind === "lp_roster"
           ? await putDealLpInvestor(dealId, editRow.id, values)
+          : editRow.investorKind === "member_roster"
+            ? await putDealMemberRoster(dealId, editRow.id, values)
           : await putDealInvestment(
               dealId,
               editRow.id,
@@ -2363,10 +2369,7 @@ export const DealInvestorsTab = forwardRef<
     dealDetail != null && areRequiredDealDetailFieldsIncomplete(dealDetail);
 
   const addModalBlocksInvites =
-    requiredDealDetailsIncomplete ||
-    (addEntryForModal !== "investor" &&
-      dealDetail != null &&
-      isDealStageDraft(dealDetail.dealStage));
+    addEntryForModal === "investor" && requiredDealDetailsIncomplete;
 
   const lpBlocksInvites = requiredDealDetailsIncomplete;
 

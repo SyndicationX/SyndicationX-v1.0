@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   Elements,
   PaymentElement,
@@ -23,7 +23,8 @@ type BillingPaymentElementModalProps = {
   publishableKeyHint?: string | null;
   subscriptionId?: string | null;
   title: string;
-  subtitle?: string;
+  subtitle?: ReactNode;
+  footerInfo?: ReactNode;
   submitLabel?: string;
   onClose: () => void;
   onSuccess: () => void;
@@ -47,6 +48,7 @@ function PaymentForm({
   mode,
   companyId,
   subscriptionId,
+  footerInfo,
   submitLabel,
   onClose,
   onSuccess,
@@ -54,6 +56,7 @@ function PaymentForm({
   mode: BillingPaymentModalMode;
   companyId: string;
   subscriptionId?: string | null;
+  footerInfo?: ReactNode;
   submitLabel: string;
   onClose: () => void;
   onSuccess: () => void;
@@ -183,12 +186,16 @@ function PaymentForm({
         </span>
       </div>
       <div className="um_modal_actions cp_billing_pe_actions">
+        {footerInfo ? (
+          <p className="cp_billing_pe_action_info">{footerInfo}</p>
+        ) : null}
         <button
           type="button"
           className="um_btn_secondary"
           onClick={onClose}
           disabled={submitting}
         >
+          <X size={15} aria-hidden="true" />
           Cancel
         </button>
         <button
@@ -217,6 +224,7 @@ export function BillingPaymentElementModal({
   subscriptionId,
   title,
   subtitle,
+  footerInfo,
   submitLabel,
   onClose,
   onSuccess,
@@ -365,6 +373,7 @@ export function BillingPaymentElementModal({
                 submitLabel ??
                 (mode === "setup" ? "Save payment method" : "Pay now")
               }
+              footerInfo={footerInfo}
               onClose={onClose}
               onSuccess={onSuccess}
             />

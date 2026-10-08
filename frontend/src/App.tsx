@@ -53,6 +53,7 @@ import { ReportingPage } from "./modules/Syndication/Reporting/ReportingPage";
 import CompanyPage from "./modules/Syndication/company/CompanyPage";
 import CompanyMembersPage from "./modules/Syndication/company/CompanyMembersPage";
 import CompanyDealsPage from "./modules/Syndication/company/CompanyDealsPage";
+import CompanyContactsPage from "./modules/Syndication/company/CompanyContactsPage";
 import CustomerCompanyLayout from "./modules/Syndication/company/CustomerCompanyLayout";
 import MembersLayout from "./modules/Syndication/usermanagement/MembersLayout";
 import { UserManagementPage } from "./modules/Syndication/usermanagement/UserManagementPage";
@@ -63,11 +64,13 @@ import EmailTemplateNewPage from "./modules/Syndication/contacts/EmailTemplateNe
 import CrmPage from "./modules/Syndication/contacts/CrmPage";
 import CrmOverviewPage from "./modules/Syndication/contacts/CrmOverviewPage";
 import CrmSectionPlaceholderPage from "./modules/Syndication/contacts/CrmSectionPlaceholderPage";
+import ContactImportPage from "./modules/Syndication/contacts/ContactImportPage";
 import CreateReusableTemplatePage from "./modules/Syndication/Templates/CreateReusableTemplatePage";
 import { usePortalMode } from "./modules/Investing/context/PortalModeContext";
 import { MyAccountLayout } from "./modules/myaccount/MyAccountLayout";
 import { MyAccountCompanyPage } from "./modules/myaccount/MyAccountCompanyPage";
 import { MyAccountPersonalPage } from "./modules/myaccount/MyAccountPersonalPage";
+import { MyAccountIndexRedirect } from "./modules/myaccount/MyAccountIndexRedirect";
 import { MyAccountPasswordPage } from "./modules/myaccount/MyAccountPasswordPage";
 import { CompanyOverview } from "./modules/Investing/pages/company_overview/CompanyOverview";
 import Landing_Page from "./modules/Landing_Page/Landing_Page";
@@ -284,7 +287,7 @@ function App() {
               element={<InvestorCashflowsPage />}
             />
             <Route path="account" element={<MyAccountLayout />}>
-              <Route index element={<Navigate to="/account/company" replace />} />
+              <Route index element={<MyAccountIndexRedirect />} />
               <Route path="company" element={<MyAccountCompanyPage />} />
               <Route path="personal" element={<MyAccountPersonalPage />} />
               <Route path="password" element={<MyAccountPasswordPage />} />
@@ -306,6 +309,11 @@ function App() {
                 element={<Navigate to="members" replace />}
               />
               <Route path="members" element={<CompanyMembersPage />} />
+              <Route path="contacts" element={<CompanyContactsPage />} />
+              <Route
+                path="platform-contacts"
+                element={<Navigate to="../contacts" replace />}
+              />
               <Route path="deals" element={<CompanyDealsPage />} />
             </Route>
             <Route path="customers" element={<CustomersRoute />} />
@@ -370,12 +378,7 @@ function App() {
             />
             <Route
               path="contacts/import"
-              element={
-                <CrmSectionPlaceholderPage
-                  title="Import"
-                  description="Bring contacts from spreadsheets, forms, or connected CRMs."
-                />
-              }
+              element={<ContactImportPage />}
             />
             <Route
               path="contacts/investor-view"

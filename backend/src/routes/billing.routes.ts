@@ -10,6 +10,7 @@ import {
   getCompanyBillingPaymentMethods,
   postCompanyBillingCheckout,
   postCompanyBillingDealCycle,
+  postCompanyBillingDealStartDate,
   postCompanyBillingReleasePayment,
   postCompanyBillingPaySaved,
   postCompanyBillingPaymentElement,
@@ -48,6 +49,10 @@ router.get("/companies/:companyId/billing/deals", getCompanyBillingDeals);
 router.post(
   "/companies/:companyId/billing/deals/:dealId/cycle",
   postCompanyBillingDealCycle,
+);
+router.post(
+  "/companies/:companyId/billing/deals/:dealId/start-date",
+  postCompanyBillingDealStartDate,
 );
 router.get("/companies/:companyId/billing/invoices", getCompanyBillingInvoices);
 router.get(

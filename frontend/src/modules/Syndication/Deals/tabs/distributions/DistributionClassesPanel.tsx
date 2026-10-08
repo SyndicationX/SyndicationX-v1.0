@@ -17,6 +17,7 @@ import type {
   PriorDistributionRecord,
 } from "../../distribution-setup/types/distribution-setup.types"
 import { DistributionNameClassMenu } from "./DistributionNameClassMenu"
+import { formatCount } from "@/common/utils/formatCount"
 import { DistributionClassInvestorsPanel } from "./DistributionClassInvestorsPanel"
 import { CLASS_TYPE_TONE } from "../../distribution-setup/types/distribution-setup.types"
 import {
@@ -216,7 +217,7 @@ export function DistributionClassesPanel({
             <span
               className={`deal_dist_investor_count deal_dist_investor_count--${tone}`}
             >
-              {row.investorCount}
+              {formatCount(row.investorCount)}
             </span>
           )
         },

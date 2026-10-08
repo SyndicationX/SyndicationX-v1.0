@@ -57,6 +57,7 @@ export type CompanyBillingInvoice = {
   dealId?: string | null
   dealName?: string | null
   billingScope?: "deal" | "extra_company_user" | null
+  comment?: string | null
 }
 
 export type CompanyBillingPaymentMethod = {
@@ -431,7 +432,11 @@ export type CompanyDealBillingRow = {
   currentCompanyUsers?: number
   extraCompanyUsersPaid?: number
   extraCompanyUsersDue?: number
+  coGpCount?: number
+  seatBand?: "5" | "10" | "10plus" | string | null
+  includedCoGps?: number | null
   extraUserFeeCents?: number
+  extraUserComment?: string | null
 }
 
 export type BillingOrganizationOption = {
@@ -749,6 +754,69 @@ export async function updateCompanyDealBillingCycle(
     return {
       ok: false,
       message: "Network error updating payment cycle.",
+      statusCode: 0,
+    }
+  }
+}
+
+export async function updateCompanyDealBillingStartDate(
+  companyId: string,
+  dealId: string,
+  saasBillingStartsAt: string,
+): Promise<
+  | { ok: true; deal: CompanyDealBillingRow }
+  | { ok: false; message: string; statusCode: number }
+> {
+  const base = getApiV1Base()
+  if (!base) {
+    return {
+      ok: false,
+      message: "API is not configured (VITE_BASE_URL).",
+      statusCode: 0,
+    }
+  }
+  try {
+    const res = await fetch(
+      `${base}/companies/${encodeURIComponent(companyId)}/billing/deals/${encodeURIComponent(dealId)}/start-date`,
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(),
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({ saasBillingStartsAt }),
+      },
+    )
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return {
+        ok: false,
+        message: messageFromBody(
+          data,
+          `Could not update billing start date (${res.status}).`,
+        ),
+        statusCode: res.status,
+      }
+    }
+    const deal =
+      data &&
+      typeof data === "object" &&
+      (data as { deal?: CompanyDealBillingRow }).deal
+        ? (data as { deal: CompanyDealBillingRow }).deal
+        : null
+    if (!deal) {
+      return {
+        ok: false,
+        message: "Could not update billing start date.",
+        statusCode: res.status,
+      }
+    }
+    return { ok: true, deal }
+  } catch {
+    return {
+      ok: false,
+      message: "Network error updating billing start date.",
       statusCode: 0,
     }
   }

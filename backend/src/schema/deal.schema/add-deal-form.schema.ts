@@ -48,7 +48,7 @@ export const addDealForm = pgTable("add_deal_form", {
   dealAnnouncementTitle: text("deal_announcement_title"),
   dealAnnouncementMessage: text("deal_announcement_message"),
   /** Investor-facing offering workflow status (Offering details → Overview). */
-  offeringStatus: text("offering_status").notNull().default("draft_hidden"),
+  offeringStatus: text("offering_status").notNull().default("coming_soon"),
   offeringVisibility: text("offering_visibility")
     .notNull()
     .default("show_on_dashboard"),
@@ -122,9 +122,11 @@ export const addDealForm = pgTable("add_deal_form", {
     { withTimezone: true },
   ),
   /**
-   * Per-deal SaaS subscription (company still owns the Stripe Customer).
+   * Per-deal SaaS subscription. Checkout uses `stripePayerCustomerId`
+   * (the lead sponsor). The company customer stays for saved company cards.
    * Draft / archived / liquidated deals are not billed.
    */
+  stripePayerCustomerId: varchar("stripe_payer_customer_id", { length: 255 }),
   stripeSubscriptionId: varchar("stripe_subscription_id", { length: 255 }),
   stripePlanId: varchar("stripe_plan_id", { length: 64 }),
   stripeBillingCycle: varchar("stripe_billing_cycle", { length: 32 }),
@@ -138,8 +140,8 @@ export const addDealForm = pgTable("add_deal_form", {
     withTimezone: true,
   }),
   /**
-   * First charge / paywall date (00:00 UTC). Defaults to the 1st of next
-   * month; platform admin may set another date.
+   * First charge / paywall date (00:00 UTC). Defaults to the platform SaaS
+   * start date; a platform admin can set another date per deal.
    */
   saasBillingStartsAt: timestamp("saas_billing_starts_at", {
     withTimezone: true,

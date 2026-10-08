@@ -16,19 +16,19 @@ export function isDealFormAutosavePlaceholder(
 
 /**
  * True when the deal wizard is unfinished: lifecycle Draft and/or required fields
- * still hold autosave placeholders.
+ * still hold autosave placeholders. City is excluded — the wizard never requires it to
+ * save, so its placeholder survives on completed deals.
  */
 export function isAddDealFormIncomplete(
   row: Pick<
     AddDealFormRow,
-    "dealStage" | "secType" | "owningEntityName" | "propertyName" | "city"
+    "dealStage" | "secType" | "owningEntityName" | "propertyName"
   >,
 ): boolean {
   if (isDealStageDraft(row.dealStage)) return true;
   if (isDealFormAutosavePlaceholder(row.secType)) return true;
   if (isDealFormAutosavePlaceholder(row.owningEntityName)) return true;
   if (isDealFormAutosavePlaceholder(row.propertyName)) return true;
-  if (isDealFormAutosavePlaceholder(row.city)) return true;
   return false;
 }
 

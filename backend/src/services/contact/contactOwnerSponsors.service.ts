@@ -69,6 +69,7 @@ async function listOrgLeadAndAdminSponsors(
        FROM deal_member dm
        INNER JOIN add_deal_form d ON d.id = dm.deal_id
        WHERE d.organization_id = $1::uuid
+         AND dm.is_draft = false
          AND lower(trim(dm.deal_member_role)) IN (
            'lead sponsor',
            'admin sponsor'
@@ -87,6 +88,7 @@ async function listOrgLeadAndAdminSponsors(
        FROM deal_investment di
        INNER JOIN add_deal_form d ON d.id = di.deal_id
        WHERE d.organization_id = $1::uuid
+         AND di.is_draft = false
          AND trim(di.contact_id) <> '__portal_investment_autosave__'
          AND lower(trim(di.investor_role)) IN (
            'lead sponsor',
@@ -146,11 +148,13 @@ async function listCoSponsorOwnersForContact(
        SELECT lp.deal_id, lp.contact_member_id, lp.email, lp.added_by
        FROM deal_lp_investor lp
        WHERE lp.added_by IS NOT NULL
+         AND lp.is_draft = false
          AND trim(coalesce(lp.contact_member_id, '')) <> ''
        UNION ALL
        SELECT dm.deal_id, dm.contact_member_id, NULL::text AS email, dm.added_by
        FROM deal_member dm
        WHERE dm.added_by IS NOT NULL
+         AND dm.is_draft = false
          AND trim(coalesce(dm.contact_member_id, '')) <> ''
          AND lower(trim(dm.deal_member_role)) IN (
            'lp investor', 'lp investors', 'lp_investor', 'lp_investors'
@@ -186,6 +190,7 @@ async function listCoSponsorOwnersForContact(
        FROM deal_member dm
        INNER JOIN users su ON su.id = u.id
        WHERE dm.deal_id = m.deal_id
+         AND dm.is_draft = false
          AND lower(trim(dm.deal_member_role)) IN ('co-sponsor', 'co sponsor')
          AND (
            trim(dm.contact_member_id) = su.id::text
@@ -201,6 +206,7 @@ async function listCoSponsorOwnersForContact(
        FROM deal_member dm
        INNER JOIN users su ON su.id = u.id
        WHERE dm.deal_id = m.deal_id
+         AND dm.is_draft = false
          AND lower(trim(dm.deal_member_role)) IN (
            'lead sponsor',
            'admin sponsor'

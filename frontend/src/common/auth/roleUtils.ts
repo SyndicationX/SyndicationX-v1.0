@@ -138,10 +138,12 @@ export function isDealParticipantUser(): boolean {
 
 /**
  * Investing-only shell when session has `lp_investor_nav` (LP-only users).
- * Dual investor + Lead/Admin/Co-sponsor users get `lp_investor_nav` false so they
- * can switch to syndicating.
+ * A self-serve `investor` who is later added as Lead / Admin / Co-sponsor
+ * keeps that portal role, but `is_deal_sponsor` opens the syndicating workspace.
  */
 export function isLpInvestorSessionUser(): boolean {
+  if (isDealSponsorSessionUser()) return false;
+  if (getStoredUserRole() === INVESTOR) return true;
   const u = getStoredSessionUserRecord();
   if (!u) return false;
   return u.lp_investor_nav === true;

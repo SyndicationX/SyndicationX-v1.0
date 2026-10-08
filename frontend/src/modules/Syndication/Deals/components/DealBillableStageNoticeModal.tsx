@@ -2,6 +2,10 @@ import { BadgeDollarSign, CircleCheck, ClipboardList, Loader2, X } from "lucide-
 import { useEffect, useId } from "react"
 import { createPortal } from "react-dom"
 import { normalizeDealStageCanonical } from "../constants/deal-lifecycle/deal-stage"
+import {
+  platformSaasBillingHasStarted,
+  platformSaasBillingStartDisplay,
+} from "../utils/saasBillingStartDate"
 import "./deal-stage-change-modal.css"
 
 function stageLabel(raw: string | null | undefined): string {
@@ -107,11 +111,22 @@ export function DealBillableStageNoticeModal({
           ) : (
             <>
               <p className="deal_stage_modal_desc">
-                Billing starts when you start raising capital or asset managing.
-                This deal stays in Draft until payment is complete. After you
-                pay, the stage changes to {label}. You can keep working at no
-                charge until 10 September 2026. After that date, the lead
-                sponsor needs to pay so the deal stays open to view and edit.
+                {platformSaasBillingHasStarted() ? (
+                  <>
+                    Monthly SaaS (MRR) is due for Capital Raising and Asset
+                    Managing. This deal stays in Draft until payment is
+                    complete. After you pay, the stage changes to {label}.
+                  </>
+                ) : (
+                  <>
+                    After {platformSaasBillingStartDisplay()}, billing starts
+                    when you start raising capital or asset managing. This deal
+                    stays in Draft until payment is complete. After you pay,
+                    the stage changes to {label}. Until that date the platform
+                    is complimentary — including Capital Raising and Asset
+                    Managing.
+                  </>
+                )}
               </p>
               <p
                 className="deal_stage_modal_desc"

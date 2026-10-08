@@ -246,7 +246,6 @@ function InvestmentsTablePanel({
                 ? "No investments match your search."
                 : emptyMessage
             }
-            initialSort={{ columnId: "dealName", direction: "asc" }}
             pagination={filtered.length > 0 ? pagination : undefined}
           />
         </>

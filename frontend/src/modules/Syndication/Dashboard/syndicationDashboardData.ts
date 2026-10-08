@@ -28,7 +28,7 @@ async function loadDashboardSummaryForDealList(
 ): Promise<SyndicationDashboardSummary> {
   const [list, contacts] = await Promise.all([
     fetchDealsList(listOptions),
-    fetchContacts(),
+    fetchContacts({ lean: true }),
   ])
 
   const contactsCount = contacts.length

@@ -1,4 +1,13 @@
-import { Loader2, MessageSquareText, Send, X } from "lucide-react"
+import {
+  FileText,
+  LayoutGrid,
+  List,
+  Loader2,
+  MessageSquareText,
+  Pencil,
+  Send,
+  X,
+} from "lucide-react"
 import {
   useEffect,
   useId,
@@ -15,7 +24,10 @@ import {
   submitFeedback,
   updateFeedback,
 } from "./api/feedbackApi"
-import type { FeedbackItem, FeedbackPageOption } from "./types"
+import {
+  type FeedbackItem,
+  type FeedbackPageOption,
+} from "./types"
 import "./feedback.css"
 
 const OTHER_SUB_PAGE_KEY = "other"
@@ -197,7 +209,15 @@ export function FeedbackFormModal({
         <form className="feedback_form" onSubmit={(e) => void handleSubmit(e)}>
           {error ? <p className="feedback_form_error">{error}</p> : null}
           <label className="feedback_field">
-            <span>Page</span>
+            <span className="feedback_field_label">
+              <LayoutGrid
+                className="um_field_label_icon"
+                size={17}
+                strokeWidth={2}
+                aria-hidden
+              />
+              <span>Page</span>
+            </span>
             <DropdownSelect
               ariaLabel="Page"
               value={pageKey}
@@ -212,7 +232,15 @@ export function FeedbackFormModal({
             />
           </label>
           <label className="feedback_field">
-            <span>Sub Page / Tab</span>
+            <span className="feedback_field_label">
+              <List
+                className="um_field_label_icon"
+                size={17}
+                strokeWidth={2}
+                aria-hidden
+              />
+              <span>Sub Page / Tab</span>
+            </span>
             <DropdownSelect
               ariaLabel="Sub Page / Tab"
               value={subPageKey}
@@ -233,7 +261,15 @@ export function FeedbackFormModal({
           </label>
           {subPageKey === OTHER_SUB_PAGE_KEY ? (
             <label className="feedback_field">
-              <span>Other sub page / tab</span>
+              <span className="feedback_field_label">
+                <Pencil
+                  className="um_field_label_icon"
+                  size={17}
+                  strokeWidth={2}
+                  aria-hidden
+                />
+                <span>Other sub page / tab</span>
+              </span>
               <input
                 className="feedback_other_input"
                 type="text"
@@ -246,7 +282,15 @@ export function FeedbackFormModal({
             </label>
           ) : null}
           <label className="feedback_field">
-            <span>Description</span>
+            <span className="feedback_field_label">
+              <FileText
+                className="um_field_label_icon"
+                size={17}
+                strokeWidth={2}
+                aria-hidden
+              />
+              <span>Description</span>
+            </span>
             <textarea
               className="feedback_textarea"
               value={description}

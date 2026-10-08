@@ -18,6 +18,7 @@ import {
   type FeedbackStatus,
 } from "../../schema/feedback.schema.js";
 import {
+  countFeedbackByStatus,
   countPendingFeedback,
   countPendingFeedbackForUser,
   createUserFeedback,
@@ -27,12 +28,17 @@ import {
   getUserById,
   listFeedbackAlertsForUser,
   listFeedbackForAdmin,
+  listFeedbackPageForAdmin,
   listMyFeedback,
+  listMyFeedbackPage,
   replaceFeedbackPageCatalog,
   reviewUserFeedback,
+  setUserFeedbackPriority,
+  setUserFeedbackType,
   updateUserFeedback,
   type FeedbackPageCatalogItem,
 } from "../../services/feedback/feedback.service.js";
+import { pageEnvelope, parsePageQuery } from "../../common/pagination.js";
 
 function actorRole(
   actor: { role: string | null },
@@ -270,6 +276,92 @@ export async function patchFeedbackHandler(
 }
 
 /**
+ * PATCH /feedback/:id/priority — platform admin sets P0–P3.
+ */
+export async function patchFeedbackPriorityHandler(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const ctx = await requireActor(req, res);
+  if (!ctx) return;
+  if (!isPlatformAdminRole(actorRole(ctx.actor, ctx.jwtUser))) {
+    res.status(403).json({ message: "Not allowed" });
+    return;
+  }
+
+  const feedbackId = String(req.params.id ?? "").trim();
+  if (!feedbackId) {
+    res.status(400).json({ message: "Feedback id is required" });
+    return;
+  }
+
+  const body = req.body as Record<string, unknown>;
+  try {
+    const feedback = await setUserFeedbackPriority({
+      feedbackId,
+      priority: body.priority,
+    });
+    res.status(200).json({ feedback });
+  } catch (err) {
+    const message =
+      err instanceof Error && err.message.trim()
+        ? err.message
+        : "Could not update priority";
+    const status =
+      message === "Feedback not found"
+        ? 404
+        : message.startsWith("Select")
+          ? 400
+          : 500;
+    if (status === 500) console.error("patchFeedbackPriorityHandler:", err);
+    res.status(status).json({ message });
+  }
+}
+
+/**
+ * PATCH /feedback/:id/type — platform admin sets Feature Request / Bug Report / Change Request.
+ */
+export async function patchFeedbackTypeHandler(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const ctx = await requireActor(req, res);
+  if (!ctx) return;
+  if (!isPlatformAdminRole(actorRole(ctx.actor, ctx.jwtUser))) {
+    res.status(403).json({ message: "Not allowed" });
+    return;
+  }
+
+  const feedbackId = String(req.params.id ?? "").trim();
+  if (!feedbackId) {
+    res.status(400).json({ message: "Feedback id is required" });
+    return;
+  }
+
+  const body = req.body as Record<string, unknown>;
+  try {
+    const feedback = await setUserFeedbackType({
+      feedbackId,
+      feedbackType: body.feedbackType ?? body.type,
+    });
+    res.status(200).json({ feedback });
+  } catch (err) {
+    const message =
+      err instanceof Error && err.message.trim()
+        ? err.message
+        : "Could not update feedback type";
+    const status =
+      message === "Feedback not found"
+        ? 404
+        : message.startsWith("Select")
+          ? 400
+          : 500;
+    if (status === 500) console.error("patchFeedbackTypeHandler:", err);
+    res.status(status).json({ message });
+  }
+}
+
+/**
  * GET /feedback — platform admin lists all feedback.
  */
 export async function getFeedbackListHandler(
@@ -284,8 +376,27 @@ export async function getFeedbackListHandler(
   }
 
   try {
-    const items = await listFeedbackForAdmin(parseStatus(req.query.status));
-    res.status(200).json({ items });
+    const status = parseStatus(req.query.status);
+    const pageQuery = parsePageQuery(req, { defaultSortId: "createdAt" });
+    if (!pageQuery.paginated) {
+      const items = await listFeedbackForAdmin(status);
+      res.status(200).json({ items, ...pageEnvelope(pageQuery, items.length) });
+      return;
+    }
+    const [{ rows, total }, counts] = await Promise.all([
+      listFeedbackPageForAdmin({
+        status,
+        search: pageQuery.search,
+        sortId: pageQuery.sortId,
+        sortDir: pageQuery.sortDir,
+        limit: pageQuery.pageSize,
+        offset: pageQuery.offset,
+      }),
+      countFeedbackByStatus(pageQuery.search),
+    ]);
+    res
+      .status(200)
+      .json({ items: rows, counts, ...pageEnvelope(pageQuery, total) });
   } catch (err) {
     console.error("getFeedbackListHandler:", err);
     res.status(500).json({ message: "Could not load feedback" });
@@ -302,8 +413,21 @@ export async function getMyFeedbackHandler(
   const ctx = await requireFeedbackUser(req, res);
   if (!ctx) return;
   try {
-    const items = await listMyFeedback(ctx.actor.id);
-    res.status(200).json({ items });
+    const pageQuery = parsePageQuery(req, { defaultSortId: "createdAt" });
+    if (!pageQuery.paginated) {
+      const items = await listMyFeedback(ctx.actor.id);
+      res.status(200).json({ items, ...pageEnvelope(pageQuery, items.length) });
+      return;
+    }
+    const { rows, total } = await listMyFeedbackPage({
+      userId: ctx.actor.id,
+      search: pageQuery.search,
+      sortId: pageQuery.sortId,
+      sortDir: pageQuery.sortDir,
+      limit: pageQuery.pageSize,
+      offset: pageQuery.offset,
+    });
+    res.status(200).json({ items: rows, ...pageEnvelope(pageQuery, total) });
   } catch (err) {
     console.error("getMyFeedbackHandler:", err);
     res.status(500).json({ message: "Could not load feedback" });

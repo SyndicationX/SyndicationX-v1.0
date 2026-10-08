@@ -23,6 +23,7 @@ import {
   listDealBillingForCompany,
   listPlatformOrganizationBilling,
   updateDealBillingCycle,
+  updateDealSaasBillingStartsAt,
   getPlatformSaasBillingStartAlert,
 } from "../../services/billing/dealBilling.service.js";
 import { getStripePublicConfig } from "../../config/stripe.config.js";
@@ -695,6 +696,42 @@ export async function postCompanyBillingDealCycle(
     dealId,
     billingCycle,
     allowedDealIds: access.dealIds,
+  });
+  if (!result.ok) {
+    res.status(result.status).json({ message: result.message });
+    return;
+  }
+  res.status(200).json({ deal: result.deal });
+}
+
+/**
+ * POST /companies/:companyId/billing/deals/:dealId/start-date
+ * Platform admin: set when SaaS billing starts for this deal.
+ * Body: { saasBillingStartsAt: "YYYY-MM-DD" | ISO datetime }
+ */
+export async function postCompanyBillingDealStartDate(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  if (!(await jwtUserIsPlatformAdmin(user))) {
+    res.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  const companyId = paramStr(req.params.companyId);
+  const dealId = paramStr(req.params.dealId);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const saasBillingStartsAt = bodyString(
+    body.saasBillingStartsAt ?? body.saas_billing_starts_at ?? body.date,
+  );
+  const result = await updateDealSaasBillingStartsAt({
+    companyId,
+    dealId,
+    saasBillingStartsAt,
   });
   if (!result.ok) {
     res.status(result.status).json({ message: result.message });

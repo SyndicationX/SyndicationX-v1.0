@@ -312,7 +312,8 @@ export function visibleDealDetailTabIds(
   ])
   // Keep the restricted tab hidden until the deal-specific roster role is known.
   // Otherwise co-sponsors briefly see it while the members request is loading.
-  if (opts?.isRoleLoading) {
+  // Company / platform admins are known from the session, so they never wait.
+  if (opts?.isRoleLoading && !opts.isWorkspaceAdmin) {
     const s = new Set(all)
     s.delete("deal_members")
     return s

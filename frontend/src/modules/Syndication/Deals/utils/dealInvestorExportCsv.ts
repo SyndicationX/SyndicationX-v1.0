@@ -185,8 +185,9 @@ export function buildDealMembersTableExportMatrix(
       "User",
       "Role",
       "Class",
-      "Commitment",
-      "Investors added",
+      "Sponsor committed",
+      "Investors committed",
+      "Total",
       "Status",
       "Added by",
       "Username",
@@ -194,12 +195,22 @@ export function buildDealMembersTableExportMatrix(
     ],
   ]
   for (const row of rows) {
+    const sponsorCommitted = displayInvestorCommittedAmountExport(row)
+    const investorCommitted = displayAddedInvestorsCommittedAmountExport(row)
+    const sponsorN = Number(sponsorCommitted)
+    const investorN = Number(investorCommitted)
+    const total =
+      (Number.isFinite(sponsorN) ? sponsorN : 0) +
+      (Number.isFinite(investorN) ? investorN : 0)
     matrix.push([
       String(row.displayName ?? ""),
       investorRoleLabel(row.investorRole ?? ""),
       String(row.investorClass ?? ""),
-      displayInvestorCommittedAmountExport(row),
-      displayAddedInvestorsCommittedAmountExport(row),
+      sponsorCommitted,
+      investorCommitted,
+      sponsorCommitted === "" && investorCommitted === ""
+        ? ""
+        : formatAmountNumberExport(total),
       dealInvestorStatusForTable(row),
       String(row.addedByDisplayName ?? ""),
       formatMemberUsername(row.userDisplayName),
