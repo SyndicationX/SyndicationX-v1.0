@@ -790,7 +790,7 @@ export async function deleteDealMember(
       res.status(404).json({ message: "Deal not found" });
       return;
     }
-    const result = await deleteDealMemberRosterEntry(dealId, rowId);
+    const result = await deleteDealMemberRosterEntry(dealId, rowId, user.id);
     if (!result.ok) {
       res.status(404).json({ message: result.message });
       return;
@@ -803,6 +803,10 @@ export async function deleteDealMember(
     });
     res.status(200).json({ message: "Member removed" });
   } catch (err) {
+    if (err instanceof DealLeadSponsorValidationError) {
+      res.status(400).json({ message: err.message });
+      return;
+    }
     console.error("deleteDealMember:", err);
     res.status(500).json({ message: "Could not remove member" });
   }

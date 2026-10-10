@@ -3,6 +3,7 @@ import multer from "multer";
 import {
   deleteContactEmailTemplate,
   getContact,
+  getContactDeals,
   getContactEmailTemplates,
   getContactOwnerSponsors,
   getContacts,
@@ -52,6 +53,7 @@ router.post(
 );
 router.post("/contacts/import/:batchId/preview", postContactImportPreview);
 router.post("/contacts/import/:batchId/confirm", postContactImportConfirm);
+router.get("/contacts/:contactId/deals", getContactDeals);
 router.get("/contacts/:contactId", getContact);
 router.post("/contacts", postContact);
 router.post("/contacts/email-templates", postContactEmailTemplate);

@@ -5,6 +5,7 @@ import {
   dealMember,
   type DealMemberRow,
 } from "../../schema/deal.schema/deal-member.schema.js";
+import { dealMemberRemovalLogs } from "../../schema/deal.schema/deal-member-removal-log.schema.js";
 import {
   dealInvestment,
   type DealInvestmentRow,
@@ -21,6 +22,7 @@ import {
   enrichInvestorRolesForDealRows,
   formatCommittedUsdWhole,
   GENERAL_PARTNER_ROLE_STORED,
+  isGeneralPartnerStoredRole,
   groupDealInvestmentsByCanonicalKey,
   listDealInvestmentsByDealId,
   mapContactIdsToCanonicalCommitmentKeys,
@@ -52,6 +54,10 @@ export type UpsertDealMemberInput = {
 
 /** Stored `deal_member.deal_member_role` for the single Lead Sponsor slot per deal. */
 export const LEAD_SPONSOR_DEAL_MEMBER_ROLE = "Lead Sponsor";
+
+/** Shown when a delete would leave the deal with no Lead Sponsor. */
+export const LEAD_SPONSOR_REQUIRED_MESSAGE =
+  "At least one lead sponsor should be present in the deal";
 
 function normalizeContactKey(raw: string): string {
   return String(raw ?? "").trim().toLowerCase();
@@ -141,6 +147,51 @@ export async function markDealMemberInvitationMailSent(
       .set({ sendInvitationMail: "yes", updatedAt: now })
       .where(and(eq(dealLpInvestor.dealId, did), lpContactMatch));
   }
+}
+
+/** Higher wins when the same person was saved on the roster more than once. */
+function dealMemberRoleRank(role: string): number {
+  const s = role.trim().toLowerCase();
+  if (s === "lead sponsor") return 50;
+  if (s === "admin sponsor") return 40;
+  if (s === "co-sponsor" || s === "co sponsor") return 30;
+  if (s === "deal member") return 20;
+  if (isGeneralPartnerStoredRole(role)) return 10;
+  return 0;
+}
+
+/**
+ * One roster row per person. Portal user id and CRM contact id for the same
+ * email are the same person; keep the stronger role (Lead, then Admin sponsor).
+ */
+function collapseDealMembersByCanonicalPerson(
+  members: DealMemberRow[],
+  rawToCanonical: Map<string, string>,
+): DealMemberRow[] {
+  const best = new Map<string, DealMemberRow>();
+  const passthrough: DealMemberRow[] = [];
+  for (const m of members) {
+    const k = normalizeContactKey(m.contactMemberId);
+    const canonicalKey = k ? (rawToCanonical.get(k) ?? `id:${k}`) : "";
+    if (!canonicalKey || canonicalKey === "id:__empty__") {
+      passthrough.push(m);
+      continue;
+    }
+    const prev = best.get(canonicalKey);
+    if (!prev) {
+      best.set(canonicalKey, m);
+      continue;
+    }
+    const nextRank = dealMemberRoleRank(m.dealMemberRole ?? "");
+    const prevRank = dealMemberRoleRank(prev.dealMemberRole ?? "");
+    if (
+      nextRank > prevRank ||
+      (nextRank === prevRank && m.createdAt > prev.createdAt)
+    ) {
+      best.set(canonicalKey, m);
+    }
+  }
+  return [...passthrough, ...best.values()];
 }
 
 /** Canonical row for labels / ids when a contact has multiple investments (newest wins). */
@@ -1052,8 +1103,12 @@ export async function listDealMembersMappedToInvestorApi(
   const rowsForMap: DealInvestmentRow[] = [];
   const rowMeta: MemberListRowMeta[] = [];
   const coveredCanonical = new Set<string>();
+  const membersForList = collapseDealMembersByCanonicalPerson(
+    members,
+    rawToCanonical,
+  );
 
-  for (const m of members) {
+  for (const m of membersForList) {
     const k = normalizeContactKey(m.contactMemberId);
     const canonicalKey = k
       ? rawToCanonical.get(k) ?? `id:${k}`
@@ -1224,89 +1279,295 @@ export async function listDealMembersMappedToInvestorApi(
   return result;
 }
 
+function isPlaceholderRosterContact(raw: string): boolean {
+  const key = normalizeContactKey(raw);
+  return (
+    !key ||
+    key === DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER.toLowerCase()
+  );
+}
+
 /**
- * Removes a member from the deal roster. `rowId` is either `deal_investment.id`
- * (row merged with latest investment) or `deal_member.id` (member-only row).
- * When an investment id is passed, deletes all investments for that contact on
- * this deal, then the `deal_member` row.
+ * Contacts who currently fill the Lead Sponsor slot. A saved `deal_member` role
+ * wins over `deal_investment.investor_role` for the same person.
  */
-export async function deleteDealMemberRosterEntry(
+async function leadSponsorContactKeysForDeal(
+  dealId: string,
+): Promise<Set<string>> {
+  const keys = new Set<string>();
+  const memberRoleByContact = new Map<string, string>();
+  const members = await db
+    .select({
+      contactMemberId: dealMember.contactMemberId,
+      dealMemberRole: dealMember.dealMemberRole,
+    })
+    .from(dealMember)
+    .where(and(eq(dealMember.dealId, dealId), eq(dealMember.isDraft, false)));
+  for (const m of members) {
+    if (isPlaceholderRosterContact(m.contactMemberId)) continue;
+    const key = normalizeContactKey(m.contactMemberId);
+    memberRoleByContact.set(key, m.dealMemberRole ?? "");
+    if (roleIsLeadSponsor(m.dealMemberRole)) keys.add(key);
+  }
+
+  const investments = await db
+    .select({
+      contactId: dealInvestment.contactId,
+      investorRole: dealInvestment.investor_role,
+    })
+    .from(dealInvestment)
+    .where(eq(dealInvestment.dealId, dealId));
+  for (const inv of investments) {
+    if (isPlaceholderRosterContact(inv.contactId)) continue;
+    const key = normalizeContactKey(inv.contactId);
+    if (memberRoleByContact.has(key)) continue;
+    if (roleIsLeadSponsor(inv.investorRole)) keys.add(key);
+  }
+  return keys;
+}
+
+async function contactKeyForRosterDelete(
   dealId: string,
   rowId: string,
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<string> {
+  const [member] = await db
+    .select({ contactMemberId: dealMember.contactMemberId })
+    .from(dealMember)
+    .where(and(eq(dealMember.id, rowId), eq(dealMember.dealId, dealId)))
+    .limit(1);
+  if (member) return normalizeContactKey(member.contactMemberId);
+
+  const [inv] = await db
+    .select({ contactId: dealInvestment.contactId })
+    .from(dealInvestment)
+    .where(and(eq(dealInvestment.id, rowId), eq(dealInvestment.dealId, dealId)))
+    .limit(1);
+  if (inv) return normalizeContactKey(inv.contactId);
+
+  const [lp] = await db
+    .select({ contactMemberId: dealLpInvestor.contactMemberId })
+    .from(dealLpInvestor)
+    .where(and(eq(dealLpInvestor.id, rowId), eq(dealLpInvestor.dealId, dealId)))
+    .limit(1);
+  if (lp) return normalizeContactKey(lp.contactMemberId);
+  return "";
+}
+
+/**
+ * A deal must keep a Lead Sponsor. Deleting the only one is rejected.
+ */
+async function assertRosterDeleteKeepsLeadSponsor(
+  dealId: string,
+  rowId: string,
+): Promise<void> {
+  const targetKey = await contactKeyForRosterDelete(dealId, rowId);
+  if (!targetKey || isPlaceholderRosterContact(targetKey)) return;
+  const leads = await leadSponsorContactKeysForDeal(dealId);
+  if (!leads.has(targetKey)) return;
+  const remaining = [...leads].filter((key) => key !== targetKey);
+  if (remaining.length < 1) {
+    throw new DealLeadSponsorValidationError(LEAD_SPONSOR_REQUIRED_MESSAGE);
+  }
+}
+
+function joinedPersonName(
+  first: string | null | undefined,
+  last: string | null | undefined,
+): string {
+  return [first, last]
+    .map((part) => String(part ?? "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function preferLabel(...candidates: Array<string | null | undefined>): string {
+  for (const candidate of candidates) {
+    const text = String(candidate ?? "").trim();
+    if (text && text !== "—" && text !== "Draft") return text;
+  }
+  return "";
+}
+
+/** Contact or portal user display name for a roster contact id. */
+async function personLabelByRosterId(id: string): Promise<string> {
+  const key = id.trim();
+  if (!ROSTER_CONTACT_UUID_RE.test(key)) return "";
+
+  const contacts = await db
+    .select({
+      fullName: contact.fullName,
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+    })
+    .from(contact)
+    .where(eq(contact.id, key))
+    .limit(1);
+  const contactRow = contacts[0];
+  if (contactRow) {
+    const label = preferLabel(
+      contactRow.fullName,
+      joinedPersonName(contactRow.firstName, contactRow.lastName),
+    );
+    if (label) return label;
+  }
+
+  const userRows = await db
+    .select({
+      firstName: users.firstName,
+      lastName: users.lastName,
+      username: users.username,
+      email: users.email,
+    })
+    .from(users)
+    .where(eq(users.id, key))
+    .limit(1);
+  const userRow = userRows[0];
+  if (!userRow) return "";
+  return preferLabel(
+    joinedPersonName(userRow.firstName, userRow.lastName),
+    userRow.username,
+    userRow.email,
+  );
+}
+
+async function deletedByLabel(userId: string): Promise<string> {
+  const rows = await db
+    .select({
+      firstName: users.firstName,
+      lastName: users.lastName,
+      username: users.username,
+      email: users.email,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  const userRow = rows[0];
+  if (!userRow) return "";
+  return preferLabel(
+    joinedPersonName(userRow.firstName, userRow.lastName),
+    userRow.username,
+    userRow.email,
+  );
+}
+
+type RosterRemovalSnapshot = {
+  removedRowId: string;
+  removedContactId: string;
+  removedName: string;
+  removedRole: string;
+  mode: "investment" | "member" | "lp";
+};
+
+async function loadRosterRemovalSnapshot(
+  dealId: string,
+  rowId: string,
+): Promise<RosterRemovalSnapshot | null> {
   const invRows = await db
     .select()
     .from(dealInvestment)
-    .where(
-      and(eq(dealInvestment.id, rowId), eq(dealInvestment.dealId, dealId)),
-    )
+    .where(and(eq(dealInvestment.id, rowId), eq(dealInvestment.dealId, dealId)))
     .limit(1);
-
   if (invRows.length > 0) {
-    const contactId = invRows[0]!.contactId.trim();
-    if (!contactId) {
-      await db
-        .delete(dealInvestment)
-        .where(
-          and(eq(dealInvestment.id, rowId), eq(dealInvestment.dealId, dealId)),
-        );
-      return { ok: true };
-    }
-    await db
-      .delete(dealInvestment)
-      .where(
-        and(eq(dealInvestment.dealId, dealId), eq(dealInvestment.contactId, contactId)),
-      );
-    await db
-      .delete(dealMember)
-      .where(
-        and(eq(dealMember.dealId, dealId), eq(dealMember.contactMemberId, contactId)),
-      );
-    await db
-      .delete(dealLpInvestor)
-      .where(
-        and(
-          eq(dealLpInvestor.dealId, dealId),
-          eq(dealLpInvestor.contactMemberId, contactId),
-        ),
-      );
-    return { ok: true };
+    const investment = invRows[0]!;
+    const contactId = investment.contactId.trim();
+    const memberRows = contactId
+      ? await db
+          .select({
+            name: dealMember.dealMemberName,
+            role: dealMember.dealMemberRole,
+          })
+          .from(dealMember)
+          .where(
+            and(
+              eq(dealMember.dealId, dealId),
+              eq(dealMember.contactMemberId, contactId),
+            ),
+          )
+          .limit(1)
+      : [];
+    const member = memberRows[0];
+    return {
+      removedRowId: rowId,
+      removedContactId: contactId,
+      removedName: preferLabel(
+        investment.contactDisplayName,
+        member?.name,
+        await personLabelByRosterId(contactId),
+      ),
+      removedRole: preferLabel(investment.investor_role, member?.role),
+      mode: "investment",
+    };
   }
 
-  const deleted = await db
-    .delete(dealMember)
+  const memberRows = await db
+    .select()
+    .from(dealMember)
     .where(and(eq(dealMember.id, rowId), eq(dealMember.dealId, dealId)))
-    .returning({ id: dealMember.id });
-
-  if (deleted.length > 0) return { ok: true };
+    .limit(1);
+  if (memberRows.length > 0) {
+    const member = memberRows[0]!;
+    const contactId = member.contactMemberId.trim();
+    return {
+      removedRowId: rowId,
+      removedContactId: contactId,
+      removedName: preferLabel(
+        member.dealMemberName,
+        await personLabelByRosterId(contactId),
+      ),
+      removedRole: preferLabel(member.dealMemberRole),
+      mode: "member",
+    };
+  }
 
   const lpRows = await db
     .select()
     .from(dealLpInvestor)
     .where(and(eq(dealLpInvestor.id, rowId), eq(dealLpInvestor.dealId, dealId)))
     .limit(1);
-
   if (lpRows.length > 0) {
-    const contactId = String(lpRows[0]!.contactMemberId ?? "").trim();
+    const lp = lpRows[0]!;
+    const contactId = String(lp.contactMemberId ?? "").trim();
+    return {
+      removedRowId: rowId,
+      removedContactId: contactId,
+      removedName: preferLabel(
+        lp.investorName,
+        await personLabelByRosterId(contactId),
+      ),
+      removedRole: preferLabel(lp.role),
+      mode: "lp",
+    };
+  }
+
+  return null;
+}
+
+async function deleteSnapshottedRosterEntry(
+  tx: DealWriteTx,
+  dealId: string,
+  snapshot: RosterRemovalSnapshot,
+): Promise<void> {
+  const contactId = snapshot.removedContactId;
+  if (snapshot.mode === "investment") {
     if (!contactId) {
-      await db
-        .delete(dealLpInvestor)
+      await tx
+        .delete(dealInvestment)
         .where(
-          and(eq(dealLpInvestor.id, rowId), eq(dealLpInvestor.dealId, dealId)),
+          and(eq(dealInvestment.id, snapshot.removedRowId), eq(dealInvestment.dealId, dealId)),
         );
-      return { ok: true };
+      return;
     }
-    await db
+    await tx
       .delete(dealInvestment)
       .where(
         and(eq(dealInvestment.dealId, dealId), eq(dealInvestment.contactId, contactId)),
       );
-    await db
+    await tx
       .delete(dealMember)
       .where(
         and(eq(dealMember.dealId, dealId), eq(dealMember.contactMemberId, contactId)),
       );
-    await db
+    await tx
       .delete(dealLpInvestor)
       .where(
         and(
@@ -1314,10 +1575,79 @@ export async function deleteDealMemberRosterEntry(
           eq(dealLpInvestor.contactMemberId, contactId),
         ),
       );
-    return { ok: true };
+    return;
   }
 
-  return { ok: false, message: "Member or investment not found" };
+  if (snapshot.mode === "member") {
+    await tx
+      .delete(dealMember)
+      .where(
+        and(eq(dealMember.id, snapshot.removedRowId), eq(dealMember.dealId, dealId)),
+      );
+    return;
+  }
+
+  if (!contactId) {
+    await tx
+      .delete(dealLpInvestor)
+      .where(
+        and(eq(dealLpInvestor.id, snapshot.removedRowId), eq(dealLpInvestor.dealId, dealId)),
+      );
+    return;
+  }
+  await tx
+    .delete(dealInvestment)
+    .where(
+      and(eq(dealInvestment.dealId, dealId), eq(dealInvestment.contactId, contactId)),
+    );
+  await tx
+    .delete(dealMember)
+    .where(
+      and(eq(dealMember.dealId, dealId), eq(dealMember.contactMemberId, contactId)),
+    );
+  await tx
+    .delete(dealLpInvestor)
+    .where(
+      and(
+        eq(dealLpInvestor.dealId, dealId),
+        eq(dealLpInvestor.contactMemberId, contactId),
+      ),
+    );
+}
+
+/**
+ * Removes a member from the deal roster. `rowId` is either `deal_investment.id`
+ * (row merged with latest investment) or `deal_member.id` (member-only row).
+ * When an investment id is passed, deletes all investments for that contact on
+ * this deal, then the `deal_member` row.
+ * Writes `deal_member_removal_logs` with the user who deleted the row.
+ */
+export async function deleteDealMemberRosterEntry(
+  dealId: string,
+  rowId: string,
+  deletedByUserId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  await assertRosterDeleteKeepsLeadSponsor(dealId, rowId);
+  const snapshot = await loadRosterRemovalSnapshot(dealId, rowId);
+  if (!snapshot) return { ok: false, message: "Member or investment not found" };
+
+  const actorUserId = deletedByUserId.trim();
+  const deletedByName = await deletedByLabel(actorUserId);
+
+  await db.transaction(async (tx) => {
+    await deleteSnapshottedRosterEntry(tx, dealId, snapshot);
+    await tx.insert(dealMemberRemovalLogs).values({
+      dealId,
+      removedRowId: snapshot.removedRowId,
+      removedContactId: snapshot.removedContactId,
+      removedName: snapshot.removedName,
+      removedRole: snapshot.removedRole,
+      deletedByUserId: actorUserId,
+      deletedByName,
+    });
+  });
+
+  return { ok: true };
 }
 
 function isLeadSponsorStoredRole(role: string | null | undefined): boolean {

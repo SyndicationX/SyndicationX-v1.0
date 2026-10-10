@@ -88,6 +88,15 @@ function requestSignFlowEmbedPage(target: Window | null, page: number): void {
   target.postMessage({ ...payload, event: "set-current-page" }, "*")
 }
 
+/** Ask the open builder to reload fields without remounting the PDF viewer. */
+function requestSignFlowEmbedRefresh(target: Window | null): void {
+  if (!target) return
+  target.postMessage(
+    { source: "signflow-parent", event: "refresh-document" },
+    "*",
+  )
+}
+
 function buildSignFlowReloadSrc(
   url: string,
   nonce: number,
@@ -446,9 +455,12 @@ export function SignFlowEmbeddedEditor({
       const stayOnPage = Math.max(1, builderCurrentPage)
       embedOpenPageRef.current = stayOnPage
       reloadPageRef.current = stayOnPage
-      ignorePageOneUntilRef.current = stayOnPage > 1 ? Date.now() + 2_500 : 0
-      // Swap in a fresh embed in the background — keep the current PDF visible.
-      setPreloadNonce(viewNonce + 1)
+      ignorePageOneUntilRef.current = stayOnPage > 1 ? Date.now() + 8_000 : 0
+      const frame = iframeRef.current?.contentWindow ?? null
+      // Refresh fields in the open viewer. Reloading the iframe always
+      // starts the PDF on page 1.
+      requestSignFlowEmbedRefresh(frame)
+      requestSignFlowEmbedPage(frame, stayOnPage)
     } finally {
       setAddingField(false)
     }
@@ -461,7 +473,6 @@ export function SignFlowEmbeddedEditor({
     builderCurrentPage,
     selectedFieldKey,
     selectedProfileIds,
-    viewNonce,
   ])
 
   const saveDisabled =

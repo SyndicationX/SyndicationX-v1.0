@@ -2,6 +2,7 @@ import {
   Banknote,
   Eye,
   FileSignature,
+  Info,
   Link2,
   Loader2,
   Mail,
@@ -20,12 +21,17 @@ import {
   useState,
 } from "react"
 import { createPortal } from "react-dom"
+import { isLeadSponsorRole } from "../../../constants/investor-profile"
 import type { DealInvestorRow } from "../../../types/deal-investors.types"
+
+export const LEAD_SPONSOR_REQUIRED_MESSAGE =
+  "At least one lead sponsor should be present in the deal"
 import {
   investorEsignIsFullyCompletedForRow,
   investorEsignWasSent,
 } from "../../../utils/investorEsignStatus"
 import "../../../../usermanagement/user_management.css"
+import "../../../components/open-investment-esign-required-modal.css"
 import "./deal-member-row-actions.css"
 
 /** Menu-sized variant of the add/edit modal’s “notify the member” hint. */
@@ -103,10 +109,14 @@ export function DealMemberRowActions({
   const esignCompleted = investorEsignIsFullyCompletedForRow(row)
   const [menuOpen, setMenuOpen] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [leadSponsorBlockedOpen, setLeadSponsorBlockedOpen] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLUListElement>(null)
   const deleteTitleId = useId()
+  const leadSponsorBlockedTitleId = useId()
+  const deletingLeadSponsor =
+    !draftRow && isLeadSponsorRole(row.investorRole)
 
   const closeMenu = useCallback(() => setMenuOpen(false), [])
 
@@ -170,17 +180,22 @@ export function DealMemberRowActions({
   }, [menuOpen, closeMenu])
 
   useEffect(() => {
-    if (!deleteConfirmOpen) return
+    if (!deleteConfirmOpen && !leadSponsorBlockedOpen) return
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape" && !deleteBusy) {
-        setDeleteConfirmOpen(false)
-      }
+      if (e.key !== "Escape" || deleteBusy) return
+      setDeleteConfirmOpen(false)
+      setLeadSponsorBlockedOpen(false)
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [deleteConfirmOpen, deleteBusy])
+  }, [deleteConfirmOpen, leadSponsorBlockedOpen, deleteBusy])
 
   async function runDelete() {
+    if (deletingLeadSponsor) {
+      setLeadSponsorBlockedOpen(true)
+      closeMenu()
+      return
+    }
     if (confirmBeforeDelete) {
       setDeleteConfirmOpen(true)
       closeMenu()
@@ -215,6 +230,68 @@ export function DealMemberRowActions({
     closeMenu()
     await Promise.resolve(onView(row))
   }
+
+  const leadSponsorBlockedModal =
+    leadSponsorBlockedOpen && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            className="open_inv_esign_modal_overlay portal_modal_z_boost"
+            role="presentation"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setLeadSponsorBlockedOpen(false)
+            }}
+          >
+            <div
+              className="open_inv_esign_modal"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby={leadSponsorBlockedTitleId}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <header className="open_inv_esign_modal_head">
+                <span
+                  className="open_inv_esign_modal_icon open_inv_esign_modal_icon--info"
+                  aria-hidden
+                >
+                  <Info size={22} strokeWidth={2} />
+                </span>
+                <div className="open_inv_esign_modal_head_text">
+                  <h2
+                    id={leadSponsorBlockedTitleId}
+                    className="open_inv_esign_modal_title"
+                  >
+                    Cannot remove Lead Sponsor
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  className="open_inv_esign_modal_close"
+                  onClick={() => setLeadSponsorBlockedOpen(false)}
+                  aria-label="Close"
+                >
+                  <X size={20} strokeWidth={2} aria-hidden />
+                </button>
+              </header>
+              <div className="open_inv_esign_modal_body">
+                <p className="open_inv_esign_modal_message">
+                  {LEAD_SPONSOR_REQUIRED_MESSAGE}
+                </p>
+              </div>
+              <footer className="open_inv_esign_modal_actions">
+                <button
+                  type="button"
+                  className="open_inv_esign_modal_btn open_inv_esign_modal_btn--primary"
+                  onClick={() => setLeadSponsorBlockedOpen(false)}
+                >
+                  <X size={16} strokeWidth={2} aria-hidden />
+                  Close
+                </button>
+              </footer>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null
 
   const deleteModal =
     deleteConfirmOpen && typeof document !== "undefined"
@@ -298,6 +375,7 @@ export function DealMemberRowActions({
       role="group"
       aria-label={`Actions for ${memberLabel}`}
     >
+      {leadSponsorBlockedModal}
       {deleteModal}
       <div className="um_kebab_root" ref={wrapRef}>
         <button

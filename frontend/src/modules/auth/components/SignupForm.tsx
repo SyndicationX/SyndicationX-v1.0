@@ -49,6 +49,7 @@ import {
   consumeOfferingPortfolioAuthIntent,
   isPublicOfferingPortfolioReturnPath,
   readOfferingPortfolioAuthIntent,
+  resolveOfferingPortfolioClaimIntent,
 } from "../../Syndication/Deals/utils/offeringPortfolioAuthIntent";
 import "./signup_form.css";
 import { decodeJwtPayload } from "../utils/decode-jwt-payload";
@@ -473,8 +474,13 @@ export default function SignupForm() {
       return false;
     }
     persistSigninSession(data);
-    const pendingPortfolioIntent = readOfferingPortfolioAuthIntent();
-    if (pendingPortfolioIntent?.dealId) {
+    const returnPath =
+      parseSafeNextPath(sessionStorage.getItem(AUTH_RETURN_NEXT_KEY)) ??
+      parseSafeNextPath(
+        (location.state as { from?: string } | null)?.from,
+      );
+    const pendingPortfolioIntent = resolveOfferingPortfolioClaimIntent(returnPath);
+    if (pendingPortfolioIntent?.previewToken || pendingPortfolioIntent?.dealId) {
       try {
         sessionStorage.setItem(SESSION_PORTAL_MODE_KEY, "investing");
       } catch {

@@ -6,6 +6,7 @@ import { users } from "../../schema/auth.schema/signin.js";
 import { contact } from "../../schema/contact.schema.js";
 import { dealMember } from "../../schema/deal.schema/deal-member.schema.js";
 import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema.js";
+import { insertDealLpInvestorRosterRow } from "./dealLpInvestorRosterInsert.js";
 import {
   decryptOfferingPreviewSponsorRef,
   resolvePublicPreviewDealId,
@@ -340,24 +341,19 @@ export async function grantOfferingPreviewInvestorAccess(params: {
       String(user.username ?? "").trim() ||
       emailNorm;
 
-    await db
-      .insert(dealLpInvestor)
-      .values({
-        dealId,
-        investorName,
-        addedBy: sharingSponsorUserId || null,
-        contactMemberId,
-        email: emailNorm || null,
-        role: "LP Investor",
-        profileId: "",
-        investorClass: "",
-        sendInvitationMail: "no",
-        isDraft: false,
-        updatedAt: new Date(),
-      })
-      .onConflictDoNothing({
-        target: [dealLpInvestor.dealId, dealLpInvestor.contactMemberId],
-      });
+    await insertDealLpInvestorRosterRow({
+      dealId,
+      investorName,
+      addedBy: sharingSponsorUserId || null,
+      contactMemberId,
+      email: emailNorm || null,
+      role: "LP Investor",
+      profileId: "",
+      investorClass: "",
+      sendInvitationMail: "no",
+      isDraft: false,
+      updatedAt: new Date(),
+    });
   }
 
   await reconcileAssigningDealUsersForDeal(dealId, userId);

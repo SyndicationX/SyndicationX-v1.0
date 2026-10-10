@@ -2024,6 +2024,176 @@ export async function countDealInvestmentsByContactIdForViewer(params: {
   return result;
 }
 
+/** One deal this contact is on, scoped to deals the viewer can see. */
+export type ContactDealSummary = {
+  dealId: string;
+  dealName: string;
+  /** Stored roster role (`deal_member`, LP row, or investment). Empty when unset. */
+  contactRole: string;
+  /** Company that owns the deal (`companies.name`). Empty when unset. */
+  dealOrganization: string;
+  /**
+   * Last time the contact’s portal user opened a `/deals/:id` page.
+   * ISO timestamp, or null when they have never opened that deal.
+   */
+  lastWentAt: string | null;
+};
+
+/**
+ * Deals linked to one CRM contact: investment, deal member, or LP roster.
+ * Role prefers the deal-member role, then the LP role, then the investment role.
+ * Organization is the deal’s company name.
+ */
+export async function listDealsForContactForViewer(params: {
+  viewerUserId: string;
+  jwtUserRole: string | undefined;
+  contactId: string;
+  requestedOrganizationId?: string | null;
+}): Promise<ContactDealSummary[]> {
+  const key = params.contactId.trim().toLowerCase();
+  if (!key) return [];
+
+  const visibility = await listVisibleDealIdsForContactEnrichment(params);
+  if (!visibility.unrestricted && visibility.dealIds.length === 0) return [];
+
+  const dealFilter = visibility.unrestricted
+    ? sql``
+    : sql`AND d.id IN (${sql.join(
+        visibility.dealIds.map((id) => sql`${id}`),
+        sql`, `,
+      )})`;
+
+  const executed = await db.execute(sql`
+    WITH contact_keys AS (
+      SELECT
+        lower(trim(c.id::text)) AS contact_key,
+        lower(trim(c.email)) AS email_norm
+      FROM contact c
+      WHERE lower(trim(c.id::text)) = ${key}
+    ),
+    links AS (
+      SELECT di.deal_id::text AS deal_id,
+             NULLIF(trim(di.investor_role), '') AS role,
+             3 AS priority
+      FROM deal_investment di
+      INNER JOIN contact_keys ck
+        ON lower(trim(di.contact_id)) = ck.contact_key
+      WHERE di.is_draft = false
+      UNION ALL
+      SELECT di.deal_id::text,
+             NULLIF(trim(di.investor_role), ''),
+             3
+      FROM deal_investment di
+      INNER JOIN users u
+        ON u.id::text = trim(both from di.contact_id)
+      INNER JOIN contact_keys ck
+        ON lower(trim(u.email)) = ck.email_norm
+      WHERE di.is_draft = false
+        AND ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+      UNION ALL
+      SELECT dm.deal_id::text,
+             NULLIF(trim(dm.deal_member_role), ''),
+             1
+      FROM deal_member dm
+      INNER JOIN contact_keys ck
+        ON lower(trim(dm.contact_member_id)) = ck.contact_key
+      WHERE dm.is_draft = false
+      UNION ALL
+      SELECT dm.deal_id::text,
+             NULLIF(trim(dm.deal_member_role), ''),
+             1
+      FROM deal_member dm
+      INNER JOIN users u
+        ON u.id::text = trim(both from dm.contact_member_id)
+      INNER JOIN contact_keys ck
+        ON lower(trim(u.email)) = ck.email_norm
+      WHERE dm.is_draft = false
+        AND ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+      UNION ALL
+      SELECT lp.deal_id::text,
+             NULLIF(trim(lp.role), ''),
+             2
+      FROM deal_lp_investor lp
+      INNER JOIN contact_keys ck
+        ON lower(trim(lp.contact_member_id)) = ck.contact_key
+      WHERE lp.is_draft = false
+      UNION ALL
+      SELECT lp.deal_id::text,
+             NULLIF(trim(lp.role), ''),
+             2
+      FROM deal_lp_investor lp
+      INNER JOIN users u
+        ON u.id::text = trim(both from lp.contact_member_id)
+      INNER JOIN contact_keys ck
+        ON lower(trim(u.email)) = ck.email_norm
+      WHERE lp.is_draft = false
+        AND ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+    ),
+    ranked AS (
+      SELECT
+        deal_id,
+        (ARRAY_AGG(role ORDER BY priority ASC)
+          FILTER (WHERE role IS NOT NULL))[1] AS contact_role
+      FROM links
+      GROUP BY deal_id
+    )
+    SELECT
+      d.id::text AS deal_id,
+      d.deal_name AS deal_name,
+      COALESCE(ranked.contact_role, '') AS contact_role,
+      COALESCE(co.name, '') AS deal_organization,
+      visit.last_went_at AS last_went_at
+    FROM ranked
+    INNER JOIN add_deal_form d ON d.id::text = ranked.deal_id
+    LEFT JOIN companies co ON co.id = d.organization_id
+    LEFT JOIN LATERAL (
+      SELECT MAX(n.updated_at) AS last_went_at
+      FROM contact_keys ck
+      INNER JOIN users u
+        ON lower(trim(u.email)) = ck.email_norm
+      INNER JOIN user_page_navigations n
+        ON n.user_id = u.id
+      WHERE ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+        AND position(('/deals/' || d.id::text) in n.page_path) > 0
+    ) visit ON TRUE
+    WHERE TRUE
+      ${dealFilter}
+    ORDER BY lower(trim(d.deal_name)) ASC, d.id ASC
+  `);
+
+  const raw = executed as unknown as { rows?: unknown[] } | unknown[];
+  const list = Array.isArray(raw) ? raw : (raw.rows ?? []);
+  const out: ContactDealSummary[] = [];
+  for (const row of list) {
+    if (row == null || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    const dealId = String(r.deal_id ?? r.dealId ?? "").trim();
+    if (!dealId) continue;
+    const lastRaw = r.last_went_at ?? r.lastWentAt;
+    let lastWentAt: string | null = null;
+    if (lastRaw instanceof Date && !Number.isNaN(lastRaw.getTime())) {
+      lastWentAt = lastRaw.toISOString();
+    } else if (typeof lastRaw === "string" && lastRaw.trim()) {
+      const parsed = new Date(lastRaw);
+      lastWentAt = Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+    out.push({
+      dealId,
+      dealName: String(r.deal_name ?? r.dealName ?? "").trim(),
+      contactRole: String(r.contact_role ?? r.contactRole ?? "").trim(),
+      dealOrganization: String(
+        r.deal_organization ?? r.dealOrganization ?? "",
+      ).trim(),
+      lastWentAt,
+    });
+  }
+  return out;
+}
+
 /**
  * Portal user who first put each contact on a deal (`deal_member.added_by` /
  * `deal_lp_investor.added_by`), keyed by lowercased contact id. Roster keys may be

@@ -35,7 +35,7 @@ import {
   claimOfferingPortfolioAccess,
   consumeOfferingPortfolioAuthIntent,
   isPublicOfferingPortfolioReturnPath,
-  readOfferingPortfolioAuthIntent,
+  resolveOfferingPortfolioClaimIntent,
 } from "../../Syndication/Deals/utils/offeringPortfolioAuthIntent";
 import { parseSafeNextPath } from "../../../common/auth/parseSafeNextPath";
 import { toast } from "../../../common/components/Toast";
@@ -186,8 +186,12 @@ const SigninForm = () => {
       } else {
         sessionStorage.removeItem(SESSION_ACTIVITY_SESSION_ID_KEY);
       }
-      const pendingPortfolioIntent = readOfferingPortfolioAuthIntent();
-      if (pendingPortfolioIntent?.dealId) {
+      const from =
+        parseSafeNextPath(routeState?.from) ??
+        parseSafeNextPath(new URLSearchParams(location.search).get("next")) ??
+        parseSafeNextPath(sessionStorage.getItem(AUTH_RETURN_NEXT_KEY));
+      const pendingPortfolioIntent = resolveOfferingPortfolioClaimIntent(from);
+      if (pendingPortfolioIntent?.previewToken || pendingPortfolioIntent?.dealId) {
         try {
           sessionStorage.setItem(SESSION_PORTAL_MODE_KEY, "investing");
         } catch {
@@ -196,11 +200,13 @@ const SigninForm = () => {
       } else if (data.userDetails != null) {
         openSyndicatingForInvestorSponsor(data.userDetails);
       }
+      let claimedDealId = "";
       if (pendingPortfolioIntent?.previewToken) {
         try {
           const claimed = await claimOfferingPortfolioAccess(
             pendingPortfolioIntent,
           );
+          claimedDealId = String(claimed?.dealId ?? "").trim();
           if (claimed?.userDetails != null) {
             sessionStorage.setItem(
               SESSION_USER_DETAILS_KEY,
@@ -218,10 +224,6 @@ const SigninForm = () => {
       }
       const portfolioIntent = consumeOfferingPortfolioAuthIntent();
       const storedIntent = consumeInvestNowIntent();
-      const from =
-        parseSafeNextPath(routeState?.from) ??
-        parseSafeNextPath(new URLSearchParams(location.search).get("next")) ??
-        parseSafeNextPath(sessionStorage.getItem(AUTH_RETURN_NEXT_KEY));
       sessionStorage.removeItem(AUTH_RETURN_NEXT_KEY);
       let redirectTo = from
         ? from
@@ -232,8 +234,11 @@ const SigninForm = () => {
         | { investNow: true }
         | { returnTo: string }
         | undefined;
-      if (portfolioIntent?.dealId) {
-        const applied = applyOfferingPortfolioPostAuth(portfolioIntent.dealId);
+      const offeringDealId =
+        portfolioIntent?.dealId ||
+        (claimedDealId && claimedDealId !== "preview" ? claimedDealId : "");
+      if (offeringDealId) {
+        const applied = applyOfferingPortfolioPostAuth(offeringDealId);
         redirectTo =
           from && !isPublicOfferingPortfolioReturnPath(from)
             ? from
@@ -249,7 +254,7 @@ const SigninForm = () => {
         redirectTo = isPlatformAdmin() ? "/metrics" : "/dashboard";
       }
       const keepExistingRedirect =
-        Boolean(portfolioIntent?.dealId) ||
+        Boolean(offeringDealId) ||
         Boolean(storedIntent?.dealId) ||
         routeState?.investNow === true ||
         (typeof from === "string" && /\/esign(?:\/|$|\?)/i.test(from));

@@ -109,6 +109,8 @@ import type { DealInvestorClass } from "../../types/deal-investor-class.types";
 import {
   formatInvestorClassTableLabel,
   investorRowIsGeneralPartner,
+  isGpInvestorClass,
+  matchDealInvestorClass,
 } from "../../utils/investorClassOverviewFields";
 import {
   investorProfileIdFromLabel,
@@ -283,25 +285,31 @@ function formatUsdKpiTotalFunded(n: number): string {
   }).format(v);
 }
 
+function classLabelLooksLikeGeneralPartner(label: string): boolean {
+  return /\bgp\b|general partner/i.test(label);
+}
+
 /**
- * Same source order as the deals list Investor Class column: investor-classes API
- * first, then list-row snapshot from deal detail when the API has not loaded classes yet.
+ * Classes shown on the Investors tab when a row has no class of its own.
+ * GP classes stay on the Team Members tab.
  */
 function buildDealClassNamesLine(
   investorClasses: DealInvestorClass[],
   dealDetail: DealDetailApi | null | undefined,
 ): string {
-  const fromClasses = investorClasses
-    .map((c) => formatInvestorClassTableLabel(c.name, [c]))
-    .filter(Boolean)
-    .join(", ");
-  if (fromClasses) return fromClasses;
+  if (investorClasses.length > 0) {
+    return investorClasses
+      .filter((c) => !isGpInvestorClass(c))
+      .map((c) => formatInvestorClassTableLabel(c.name, [c]))
+      .filter(Boolean)
+      .join(", ");
+  }
   const raw = dealDetail?.listRow?.investorClass?.trim();
   if (!raw || raw === "—") return "";
   return raw
     .split(/[;,]/)
     .map((s) => s.trim())
-    .filter(Boolean)
+    .filter((s) => s && !classLabelLooksLikeGeneralPartner(s))
     .join(", ");
 }
 
@@ -1004,10 +1012,23 @@ function DealInvestorsPopulated({
   }, [filtered.length, pageSize, page]);
 
   const classFilterOptions = useMemo((): DropdownSelectOption[] => {
+    const gpKeys = new Set(
+      investorClasses
+        .filter((c) => isGpInvestorClass(c))
+        .flatMap((c) => [c.id.trim().toLowerCase(), c.name.trim().toLowerCase()])
+        .filter(Boolean),
+    );
+    const isGpLabel = (label: string) => {
+      const key = label.trim().toLowerCase();
+      return gpKeys.has(key) || classLabelLooksLikeGeneralPartner(label);
+    };
     const s = new Set(
-      rows.map((r) => r.investorClass).filter(Boolean) as string[],
+      rows
+        .map((r) => r.investorClass)
+        .filter((c): c is string => Boolean(c) && !isGpLabel(c)),
     );
     for (const c of investorClasses) {
+      if (isGpInvestorClass(c)) continue;
       const n = String(c.name ?? "").trim();
       if (n) s.add(n);
     }
@@ -1015,7 +1036,7 @@ function DealInvestorsPopulated({
     if (listRaw && listRaw !== "—") {
       for (const p of listRaw.split(/[;,]/)) {
         const t = p.trim();
-        if (t) s.add(t);
+        if (t && !isGpLabel(t)) s.add(t);
       }
     }
     return [
@@ -1184,10 +1205,16 @@ function DealInvestorsPopulated({
           return dealAllClassNamesLine.toLowerCase();
         },
         cell: (row) => {
-          const assignedRaw = formatInvestorClassTableLabel(
+          const assignedClass = matchDealInvestorClass(
             row.investorClass,
             investorClasses,
           );
+          const assignedIsGp =
+            (assignedClass != null && isGpInvestorClass(assignedClass)) ||
+            classLabelLooksLikeGeneralPartner(row.investorClass ?? "");
+          const assignedRaw = assignedIsGp
+            ? ""
+            : formatInvestorClassTableLabel(row.investorClass, investorClasses);
           const dealLine = dealAllClassNamesLine.trim();
           const pillSource = assignedRaw || dealLine;
           if (!pillSource.trim())

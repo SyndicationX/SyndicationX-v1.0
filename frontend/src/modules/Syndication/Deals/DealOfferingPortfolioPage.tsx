@@ -334,7 +334,18 @@ export function DealOfferingPortfolioPage() {
     const id = detail?.id?.trim()
     if (!id || isSessionAuthenticated || !isPublicOfferingRoute) return
     writePendingRecentlyViewedDeal(id)
-  }, [detail?.id, isPublicOfferingRoute, isSessionAuthenticated])
+    writeOfferingPortfolioAuthIntent(
+      id,
+      previewQueryValue,
+      sponsorRefQueryValue,
+    )
+  }, [
+    detail?.id,
+    isPublicOfferingRoute,
+    isSessionAuthenticated,
+    previewQueryValue,
+    sponsorRefQueryValue,
+  ])
 
   useEffect(() => {
     const id = detail?.id?.trim()

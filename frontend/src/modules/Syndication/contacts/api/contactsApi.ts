@@ -5,6 +5,7 @@ import {
 } from "@/common/auth/portalAuthHeaders"
 import { getApiV1Base } from "@/common/utils/apiBaseUrl"
 import type {
+  ContactDealRow,
   ContactOfferingVisibility,
   ContactOwnerSponsorOption,
   ContactRelationship506b,
@@ -690,6 +691,63 @@ export async function fetchDealContactPickerLists(options?: {
       dealEligiblePlatform,
     ),
   }
+}
+
+function parseContactDealLastWent(value: unknown): string | null {
+  if (value == null) return null
+  const raw = String(value).trim()
+  if (!raw) return null
+  const parsed = new Date(raw)
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString()
+}
+
+export async function fetchContactDeals(
+  id: string,
+): Promise<ContactDealRow[]> {
+  const base = getApiV1Base()
+  if (!base || !id.trim()) return []
+  const params = new URLSearchParams()
+  const oid = organizationIdQueryParam()
+  if (oid) params.set("organizationId", oid)
+  const q = params.toString()
+  const res = await fetch(
+    `${base}/contacts/${encodeURIComponent(id)}/deals${q ? `?${q}` : ""}`,
+    {
+      headers: { ...authHeaders() },
+      credentials: "include",
+    },
+  )
+  const data = (await res.json().catch(() => ({}))) as {
+    deals?: unknown
+    message?: unknown
+  }
+  if (!res.ok) {
+    throw new Error(
+      typeof data.message === "string" && data.message.trim()
+        ? data.message
+        : "Could not load deals",
+    )
+  }
+  if (!Array.isArray(data.deals)) return []
+  return data.deals
+    .map((row) => {
+      if (!row || typeof row !== "object") return null
+      const r = row as Record<string, unknown>
+      const dealId = String(r.dealId ?? r.deal_id ?? "").trim()
+      if (!dealId) return null
+      return {
+        dealId,
+        dealName: String(r.dealName ?? r.deal_name ?? "").trim(),
+        contactRole: String(r.contactRole ?? r.contact_role ?? "").trim(),
+        dealOrganization: String(
+          r.dealOrganization ?? r.deal_organization ?? "",
+        ).trim(),
+        lastWentAt: parseContactDealLastWent(
+          r.lastWentAt ?? r.last_went_at,
+        ),
+      } satisfies ContactDealRow
+    })
+    .filter((row): row is ContactDealRow => row != null)
 }
 
 export async function fetchContact(id: string): Promise<ContactRow | null> {

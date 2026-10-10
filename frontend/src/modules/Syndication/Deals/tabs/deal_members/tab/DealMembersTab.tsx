@@ -52,6 +52,7 @@ import {
   dealInvestorProfileDisplayName,
   investorRoleLabel,
   isDealMembersTabRole,
+  isGeneralPartnerRole,
   isLeadSponsorRole,
   type DealRosterKind,
 } from "../../../constants/investor-profile"
@@ -103,6 +104,50 @@ import "../../../../usermanagement/user_management.css"
 import "../../../../contacts/contacts.css"
 import "./deal-members.css"
 import "../../../../../../common/components/data-table/data-table.css"
+
+function rosterRoleRank(role: string | undefined): number {
+  const s = String(role ?? "").trim().toLowerCase()
+  if (s === "lead sponsor") return 50
+  if (s === "admin sponsor") return 40
+  if (s === "co-sponsor" || s === "co sponsor") return 30
+  if (s === "deal member") return 20
+  if (isGeneralPartnerRole(role)) return 10
+  return 0
+}
+
+/** Same email (portal user + CRM contact) is one person. Keep the stronger role. */
+function dedupeRosterRowsByPerson(rows: DealInvestorRow[]): DealInvestorRow[] {
+  const best = new Map<string, DealInvestorRow>()
+  const order: string[] = []
+  const leftovers: DealInvestorRow[] = []
+  for (const row of rows) {
+    if (row.id === ADD_MEMBER_DRAFT_ROW_ID) {
+      leftovers.push(row)
+      continue
+    }
+    const email = String(row.userEmail ?? "").trim().toLowerCase()
+    const contactId = String(row.contactId ?? "").trim().toLowerCase()
+    const key = email.includes("@")
+      ? `em:${email}`
+      : contactId
+        ? `id:${contactId}`
+        : ""
+    if (!key) {
+      leftovers.push(row)
+      continue
+    }
+    const prev = best.get(key)
+    if (!prev) {
+      best.set(key, row)
+      order.push(key)
+      continue
+    }
+    if (rosterRoleRank(row.investorRole) > rosterRoleRank(prev.investorRole)) {
+      best.set(key, row)
+    }
+  }
+  return [...order.map((key) => best.get(key)!), ...leftovers]
+}
 
 function includeInDealRosterTable(
   r: DealInvestorRow,
@@ -403,7 +448,7 @@ export function DealMembersTab({
   }, [dealId, investorClasses, addMemberDraftTick])
 
   const displayRows = useMemo(() => {
-    const filtered = rows.filter((r) =>
+    const filtered = dedupeRosterRowsByPerson(rows).filter((r) =>
       includeInDealRosterTable(r, rosterKind, investorClasses),
     )
     const draft =

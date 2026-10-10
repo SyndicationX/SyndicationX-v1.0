@@ -40,6 +40,16 @@ export const CONTACT_RELATIONSHIP_506B_OPTIONS: ReadonlyArray<{
   { value: "NO", label: "506(b) No" },
 ]
 
+/** One deal shown on a contact’s Deals tab. */
+export interface ContactDealRow {
+  dealId: string
+  dealName: string
+  contactRole: string
+  dealOrganization: string
+  /** ISO time the contact last opened this deal. Null when they never have. */
+  lastWentAt: string | null
+}
+
 export interface ContactRow {
   id: string
   firstName: string

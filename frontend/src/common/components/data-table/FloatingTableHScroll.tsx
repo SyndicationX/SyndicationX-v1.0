@@ -139,13 +139,25 @@ export function FloatingTableHScroll({
         hideSticky()
         return
       }
-      const tableBottomInView = rect.bottom <= port.bottom + 1
+      const pagination = node.parentElement?.querySelector(
+        ":scope > .um_table_pagination",
+      )
+      const paginationTop =
+        pagination instanceof HTMLElement
+          ? pagination.getBoundingClientRect().top
+          : null
+      const limitBottom =
+        paginationTop == null
+          ? port.bottom
+          : Math.min(port.bottom, paginationTop)
+      const tableBottomInView = rect.bottom <= limitBottom + 1
       const fitsBelowTable =
-        tableBottomInView && rect.bottom + BAR_HEIGHT_PX <= port.bottom + 1
+        tableBottomInView &&
+        rect.bottom + BAR_HEIGHT_PX <= limitBottom + 1
       const overlay = !fitsBelowTable
       const top = fitsBelowTable
         ? rect.bottom
-        : Math.min(rect.bottom, port.bottom) - BAR_HEIGHT_PX
+        : Math.min(rect.bottom, limitBottom) - BAR_HEIGHT_PX
       const next: StickyBarMetrics = {
         left,
         top,

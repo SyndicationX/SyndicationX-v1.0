@@ -7,7 +7,7 @@ import {
 import { db } from "../../database/db.js";
 import { users } from "../../schema/auth.schema/signin.js";
 import { contact } from "../../schema/contact.schema.js";
-import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema.js";
+import { insertDealLpInvestorRosterRow } from "../deal/dealLpInvestorRosterInsert.js";
 import {
   decryptInvestorInviteRef,
   encryptInvestorInviteRef,
@@ -231,24 +231,19 @@ async function ensureReferredInvestorOnDeal(params: {
       .filter(Boolean)
       .join(" ") || emailNorm;
 
-  await db
-    .insert(dealLpInvestor)
-    .values({
-      dealId,
-      investorName,
-      addedBy: params.sponsorUserId || null,
-      contactMemberId: contactId,
-      email: emailNorm.includes("@") ? emailNorm : null,
-      role: "LP Investor",
-      profileId: "",
-      investorClass: "",
-      sendInvitationMail: "no",
-      isDraft: false,
-      updatedAt: new Date(),
-    })
-    .onConflictDoNothing({
-      target: [dealLpInvestor.dealId, dealLpInvestor.contactMemberId],
-    });
+  await insertDealLpInvestorRosterRow({
+    dealId,
+    investorName,
+    addedBy: params.sponsorUserId || null,
+    contactMemberId: contactId,
+    email: emailNorm.includes("@") ? emailNorm : null,
+    role: "LP Investor",
+    profileId: "",
+    investorClass: "",
+    sendInvitationMail: "no",
+    isDraft: false,
+    updatedAt: new Date(),
+  });
 
   if (investorUserId) {
     await reconcileAssigningDealUsersForDeal(dealId, investorUserId);

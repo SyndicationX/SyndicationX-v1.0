@@ -57,6 +57,11 @@ export {
   type DealMemberRow,
 } from "./deal.schema/deal-member.schema.js";
 export {
+  dealMemberRemovalLogs,
+  type DealMemberRemovalLogInsert,
+  type DealMemberRemovalLogRow,
+} from "./deal.schema/deal-member-removal-log.schema.js";
+export {
   dealLpInvestor,
   type DealLpInvestorInsert,
   type DealLpInvestorRow,

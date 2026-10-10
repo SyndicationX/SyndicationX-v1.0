@@ -45,6 +45,47 @@ export function writeOfferingPortfolioAuthIntent(
   }
 }
 
+/** Preview token and sponsor ref carried on `/offering_portfolio?preview=&ref=`. */
+export function offeringPreviewParamsFromReturnPath(
+  path: string | null | undefined,
+): { previewToken?: string; sponsorRef?: string } {
+  const raw = String(path ?? "").trim()
+  if (!raw || !isPublicOfferingPortfolioReturnPath(raw)) return {}
+  try {
+    const url = new URL(raw, "http://localhost")
+    const previewToken = url.searchParams.get("preview")?.trim() ?? ""
+    const sponsorRef = url.searchParams.get("ref")?.trim() ?? ""
+    return {
+      ...(previewToken ? { previewToken } : {}),
+      ...(sponsorRef ? { sponsorRef } : {}),
+    }
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Claim target after sign-in or signup. Session intent wins; the return URL
+ * still supplies the preview token when the visitor opened the share link
+ * and then signed in.
+ */
+export function resolveOfferingPortfolioClaimIntent(
+  returnPath?: string | null,
+): OfferingPortfolioAuthIntent | null {
+  const stored = readOfferingPortfolioAuthIntent()
+  const fromUrl = offeringPreviewParamsFromReturnPath(returnPath)
+  const previewToken = stored?.previewToken || fromUrl.previewToken || ""
+  const sponsorRef = stored?.sponsorRef || fromUrl.sponsorRef || ""
+  const dealId = stored?.dealId || ""
+  if (!previewToken && !dealId) return null
+  return {
+    dealId: dealId || "preview",
+    ...(previewToken ? { previewToken } : {}),
+    ...(sponsorRef ? { sponsorRef } : {}),
+    createdAt: stored?.createdAt ?? Date.now(),
+  }
+}
+
 export function readOfferingPortfolioAuthIntent(): OfferingPortfolioAuthIntent | null {
   if (typeof sessionStorage === "undefined") return null
   try {

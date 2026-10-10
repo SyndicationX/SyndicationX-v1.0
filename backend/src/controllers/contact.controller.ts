@@ -10,6 +10,7 @@ import {
   ContactScopeConflictError,
   countDealInvestmentsByContactIdForViewer,
   getContactForViewer,
+  listDealsForContactForViewer,
   getUserDisplayNameById,
   insertContact,
   isSelfRegisteredInvestorContactRow,
@@ -946,6 +947,46 @@ export async function getContact(
   } catch (err) {
     console.error("getContact:", err);
     res.status(500).json({ message: "Could not load contact" });
+  }
+}
+
+/** GET /contacts/:contactId/deals — deal name, contact role, organization, last visit. */
+export async function getContactDeals(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const contactId = paramStr(req.params.contactId);
+  if (!contactId) {
+    res.status(400).json({ message: "Contact id required" });
+    return;
+  }
+  try {
+    const requestedOrg = requestedOrganizationIdFromRequest(req);
+    const row = await getContactForViewer(
+      user.id,
+      contactId,
+      user.userRole,
+      requestedOrg,
+    );
+    if (!row) {
+      res.status(404).json({ message: "Contact not found or access denied" });
+      return;
+    }
+    const deals = await listDealsForContactForViewer({
+      viewerUserId: user.id,
+      jwtUserRole: user.userRole,
+      contactId: String(row.id),
+      requestedOrganizationId: requestedOrg,
+    });
+    res.status(200).json({ deals });
+  } catch (err) {
+    console.error("getContactDeals:", err);
+    res.status(500).json({ message: "Could not load contact deals" });
   }
 }
 

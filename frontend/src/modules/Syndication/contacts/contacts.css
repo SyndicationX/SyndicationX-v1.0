@@ -466,8 +466,11 @@
   overflow: hidden;
 }
 
-.contacts_page .contacts_table_panel .um_table_wrap.data_table_shell .um_table_pagination {
+.contacts_page .contacts_table_panel .um_table_wrap.data_table_shell .um_table_pagination,
+.contacts_page .contacts_table_panel .um_table_wrap.data_table_shell .data_table_hscroll_spacer {
   flex: 0 0 auto;
+  position: relative;
+  z-index: 2;
 }
 
 .contacts_page.um_page .um_members_header_block .um_header_row {
@@ -1932,9 +1935,9 @@
   .contacts_table_panel
   .um_table_wrap.data_table_shell
   .data_table_scroll_region:not(.data_table_scroll_region--empty) {
-  flex: 1 1 auto;
-  min-height: 10rem;
-  max-height: max(10rem, calc(100dvh - 15.5rem));
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: none;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-y: contain;
