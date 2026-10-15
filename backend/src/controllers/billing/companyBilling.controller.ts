@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import Stripe from "stripe";
 import { getValidJwtUser } from "../../middleware/jwtUser.js";
 import {
   createCompanyBillingPortalSession,
@@ -25,9 +26,17 @@ import {
   updateDealBillingCycle,
   updateDealSaasBillingStartsAt,
   getPlatformSaasBillingStartAlert,
+  dealHasRedeemedSaasCoupon,
 } from "../../services/billing/dealBilling.service.js";
 import { getStripePublicConfig } from "../../config/stripe.config.js";
 import { releaseBillingPaymentHold } from "../../middleware/billingPaymentLock.js";
+import {
+  createPlatformCoupon,
+  deactivatePlatformCoupon,
+  listPlatformCoupons,
+  listPlatformCouponUsage,
+  lookupActivePromotionCode,
+} from "../../services/billing/platformCoupon.service.js";
 import { isPlatformAdminRole } from "../../constants/roles.js";
 import { db } from "../../database/db.js";
 import { users } from "../../schema/schema.js";
@@ -178,6 +187,7 @@ export async function postCompanyBillingCheckout(
   );
   const dealId = bodyString(body.dealId ?? body.deal_id);
   const extraCompanyUsers = extraCompanyUsersFromBody(body);
+  const promotionCode = bodyString(body.promotionCode ?? body.promotion_code);
 
   const result = await createCompanyCheckoutSession({
     companyId,
@@ -187,6 +197,7 @@ export async function postCompanyBillingCheckout(
     billingCycle,
     dealId,
     extraCompanyUsers,
+    promotionCode: promotionCode || undefined,
     allowedDealIds: access.dealIds,
   });
   if (!result.ok) {
@@ -264,6 +275,7 @@ export async function postCompanyBillingPaySaved(
       body.stripePaymentMethodId,
   );
   const extraCompanyUsers = extraCompanyUsersFromBody(body);
+  const promotionCode = bodyString(body.promotionCode ?? body.promotion_code);
 
   const result = await payCompanyDealWithSavedMethod({
     companyId,
@@ -274,6 +286,7 @@ export async function postCompanyBillingPaySaved(
     dealId,
     extraCompanyUsers,
     paymentMethodId,
+    promotionCode: promotionCode || undefined,
     allowedDealIds: access.dealIds,
   });
   if (!result.ok) {
@@ -928,4 +941,221 @@ export async function postExtraCompanyUserSyncCheckout(
     extraUsersPaid: result.extraUsersPaid,
     amountDueCents: result.amountDueCents,
   });
+}
+
+function optionalPositiveInt(raw: unknown): number | undefined {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    const n = Math.floor(raw);
+    return n > 0 ? n : undefined;
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    const n = Number.parseInt(raw.trim(), 10);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  }
+  return undefined;
+}
+
+function stripeErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Stripe.errors.StripeInvalidRequestError) {
+    return err.message || fallback;
+  }
+  return err instanceof Error ? err.message : fallback;
+}
+
+async function requirePlatformAdmin(
+  req: Request,
+  res: Response,
+): Promise<boolean> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return false;
+  }
+  if (!(await jwtUserIsPlatformAdmin(user))) {
+    res.status(403).json({ message: "Forbidden" });
+    return false;
+  }
+  return true;
+}
+
+/** POST /billing/coupons/preview — any signed-in user can check a code. */
+export async function postPreviewPlatformCoupon(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const code = bodyString(body.code ?? body.promotionCode ?? body.promotion_code);
+  const dealId = bodyString(body.dealId ?? body.deal_id);
+  try {
+    if (dealId && (await dealHasRedeemedSaasCoupon(dealId))) {
+      res.status(400).json({ message: "This deal has already used a coupon." });
+      return;
+    }
+    const looked = await lookupActivePromotionCode(code);
+    if (!looked.ok) {
+      res.status(400).json({ message: looked.message });
+      return;
+    }
+    res.status(200).json({ coupon: looked.preview });
+  } catch (err) {
+    console.error("[billing] preview coupon failed:", err);
+    res.status(502).json({
+      message: stripeErrorMessage(err, "Could not check that coupon."),
+    });
+  }
+}
+
+/** GET /billing/coupons — platform admin Stripe coupons and promotion codes. */
+export async function getPlatformCoupons(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  if (!(await requirePlatformAdmin(req, res))) return;
+  try {
+    const coupons = await listPlatformCoupons();
+    res.status(200).json({ coupons });
+  } catch (err) {
+    console.error("[billing] list coupons failed:", err);
+    res.status(500).json({
+      message: stripeErrorMessage(err, "Could not load coupons."),
+    });
+  }
+}
+
+/**
+ * POST /billing/coupons
+ * Body: name, code, discountType percent|amount, percentOff | amountOff,
+ * duration once|repeating|forever, durationInMonths, maxRedemptions, redeemBy (YYYY-MM-DD)
+ */
+export async function postPlatformCoupon(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  if (!(await requirePlatformAdmin(req, res))) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const name = bodyString(body.name);
+  const code = bodyString(body.code).toUpperCase();
+  const discountType = bodyString(body.discountType ?? body.discount_type);
+  const durationRaw = bodyString(body.duration) || "once";
+  const duration =
+    durationRaw === "forever" || durationRaw === "repeating" || durationRaw === "once"
+      ? durationRaw
+      : "";
+
+  if (!name) {
+    res.status(400).json({ message: "Enter a coupon name." });
+    return;
+  }
+  if (!/^[A-Z0-9-]{3,40}$/.test(code)) {
+    res.status(400).json({
+      message: "Code must be 3–40 letters, numbers, or dashes.",
+    });
+    return;
+  }
+  if (!duration) {
+    res.status(400).json({ message: "Choose how long the discount lasts." });
+    return;
+  }
+
+  const durationInMonths = optionalPositiveInt(
+    body.durationInMonths ?? body.duration_in_months,
+  );
+  if (duration === "repeating" && !durationInMonths) {
+    res.status(400).json({ message: "Enter how many months the discount repeats." });
+    return;
+  }
+
+  let percentOff: number | undefined;
+  let amountOffCents: number | undefined;
+  if (discountType === "amount") {
+    const dollars = Number(body.amountOff ?? body.amount_off);
+    if (!Number.isFinite(dollars) || dollars <= 0) {
+      res.status(400).json({ message: "Enter an amount off greater than zero." });
+      return;
+    }
+    amountOffCents = Math.round(dollars * 100);
+  } else {
+    const pct = Number(body.percentOff ?? body.percent_off);
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+      res.status(400).json({ message: "Percent off must be between 1 and 100." });
+      return;
+    }
+    percentOff = pct;
+  }
+
+  let redeemBy: number | undefined;
+  const redeemByRaw = bodyString(body.redeemBy ?? body.redeem_by);
+  if (redeemByRaw) {
+    const end = new Date(`${redeemByRaw}T23:59:59.000Z`);
+    if (Number.isNaN(end.getTime()) || end.getTime() <= Date.now()) {
+      res.status(400).json({ message: "Redeem-by date must be in the future." });
+      return;
+    }
+    redeemBy = Math.floor(end.getTime() / 1000);
+  }
+
+  try {
+    const coupon = await createPlatformCoupon({
+      name,
+      code,
+      percentOff,
+      amountOffCents,
+      duration,
+      durationInMonths,
+      maxRedemptions: optionalPositiveInt(
+        body.maxRedemptions ?? body.max_redemptions,
+      ),
+      redeemBy,
+    });
+    res.status(201).json({ coupon });
+  } catch (err) {
+    console.error("[billing] create coupon failed:", err);
+    res.status(502).json({
+      message: stripeErrorMessage(err, "Could not create the coupon."),
+    });
+  }
+}
+
+/** GET /billing/coupons/usage — orgs and the coupons applied on their invoices. */
+export async function getPlatformCouponUsage(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  if (!(await requirePlatformAdmin(req, res))) return;
+  try {
+    const usage = await listPlatformCouponUsage();
+    res.status(200).json(usage);
+  } catch (err) {
+    console.error("[billing] coupon usage failed:", err);
+    res.status(500).json({
+      message: stripeErrorMessage(err, "Could not load coupon usage."),
+    });
+  }
+}
+
+/** POST /billing/coupons/:couponId/deactivate */
+export async function postDeactivatePlatformCoupon(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  if (!(await requirePlatformAdmin(req, res))) return;
+  const couponId = paramStr(req.params.couponId);
+  if (!couponId) {
+    res.status(400).json({ message: "Coupon id is required." });
+    return;
+  }
+  try {
+    await deactivatePlatformCoupon(couponId);
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("[billing] deactivate coupon failed:", err);
+    res.status(502).json({
+      message: stripeErrorMessage(err, "Could not deactivate the coupon."),
+    });
+  }
 }

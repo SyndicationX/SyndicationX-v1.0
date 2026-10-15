@@ -26,6 +26,11 @@ import { upsertDealLpInvestor } from "./dealLpInvestor.service.js";
 import {
   resolveOfferingPreviewSponsorAttribution,
 } from "./offeringPreviewSponsorRef.service.js";
+import { resolveInvestNowAddedByUserId } from "./crossOrgColleagueDeal.service.js";
+import {
+  loadStoredInvestorInviteSponsor,
+  retainInviteSponsorOnLpRoster,
+} from "../contact/investorInviteLink.service.js";
 import {
   normalizeInvestorQuestionnaireAnswersInput,
   serializeInvestorQuestionnaireAnswers,
@@ -99,6 +104,8 @@ export type ApplyMyInvestNowCommitmentInput = {
   investorClass?: string;
   /** Encrypted `ref=` from the sponsor offering preview link. */
   referringSponsorRef?: string | null;
+  /** Company selected in the investor's workspace. */
+  activeOrganizationId?: string | null;
 };
 
 function normalizeCommittedAmountStored(
@@ -376,7 +383,34 @@ export async function applyMyInvestNowCommitmentAddon(
           params.referringSponsorRef,
         )
       : null;
-    const addedByUserId = referringSponsor?.sponsorUserId || viewerUserId;
+    const storedInvite = await loadStoredInvestorInviteSponsor(viewerUserId);
+    const addedByUserId = viewerUserId
+      ? await resolveInvestNowAddedByUserId({
+          dealId: params.dealId,
+          investorUserId: viewerUserId,
+          referringSponsorUserId: referringSponsor?.sponsorUserId,
+          activeOrganizationId: params.activeOrganizationId,
+        })
+      : viewerUserId;
+    const assignedSponsorUserId =
+      addedByUserId.toLowerCase() !== viewerUserId.toLowerCase()
+        ? addedByUserId
+        : "";
+    const keepSameOrgSponsor = async (lpRowId: string | null | undefined) => {
+      if (!assignedSponsorUserId || !lpRowId) return;
+      await db
+        .update(dealLpInvestor)
+        .set({ addedBy: assignedSponsorUserId, updatedAt: new Date() })
+        .where(eq(dealLpInvestor.id, lpRowId));
+    };
+    const keepInviteSponsor = async (lpRowId: string | null | undefined) => {
+      if (!storedInvite?.sponsorUserId || !lpRowId) return;
+      await retainInviteSponsorOnLpRoster({
+        lpRowId,
+        viewerUserId,
+        sponsorUserId: storedInvite.sponsorUserId,
+      });
+    };
     let questionnaireAnswersJson: string | null = null;
     if (params.questionnaireAnswersInBody) {
       try {
@@ -554,6 +588,8 @@ export async function applyMyInvestNowCommitmentAddon(
                 : {}),
         })
             .where(eq(dealLpInvestor.id, target.id));
+        await keepInviteSponsor(target.id);
+        await keepSameOrgSponsor(target.id);
         return { ok: true };
     }
     const oldUip = String(inv.userInvestorProfileId ?? "").trim();
@@ -665,6 +701,8 @@ export async function applyMyInvestNowCommitmentAddon(
                 userInvestorProfileId: rowUip,
             })
             .where(eq(dealLpInvestor.id, roster.id));
+        await keepInviteSponsor(roster.id);
+        await keepSameOrgSponsor(roster.id);
         return { ok: true };
     }
     let resolvedInvestorClass: string | undefined;
@@ -808,5 +846,7 @@ export async function applyMyInvestNowCommitmentAddon(
           : {}),
     })
         .where(eq(dealLpInvestor.id, target.id));
+    await keepInviteSponsor(target.id);
+    await keepSameOrgSponsor(target.id);
     return { ok: true };
 }

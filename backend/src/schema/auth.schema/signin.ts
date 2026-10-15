@@ -29,6 +29,11 @@ export const users = pgTable("users", {
     (): AnyPgColumn => users.id,
     { onDelete: "set null" },
   ),
+  /** Company on that invite link. Not a company membership — investors stay out of the org. */
+  referredByCompanyId: uuid("referred_by_company_id").references(
+    () => companies.id,
+    { onDelete: "set null" },
+  ),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

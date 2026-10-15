@@ -43,6 +43,7 @@ import {
 import { patchDealLpInvestorMyInvestNowAddon } from "../controllers/deal/dealLpInvestorMyInvestNow.addon.controller.js";
 import { getDealLpInvestorMyInvestNowCommitment } from "../controllers/deal/dealLpInvestorMyInvestNowCommitment.get.controller.js";
 import { postDealLpInvestorMyInvestNowEsignSend } from "../controllers/deal/dealLpInvestorMyInvestNowEsignSend.controller.js";
+import { postDealLpInvestorMyInvestNowCommitmentComplete } from "../controllers/deal/dealLpInvestorMyInvestNowCommitmentComplete.controller.js";
 import {
   deleteDealEsignTemplate,
   getDealEsignTemplateView,
@@ -104,6 +105,7 @@ import {
   postDealInvestorCommunicationMail,
 } from "../controllers/deal/dealInvestorCommunicationMail.controller.js";
 import multer from "multer";
+import { blockCrossOrgColleagueDealMutations } from "../middleware/crossOrgDealManage.middleware.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -111,6 +113,8 @@ const upload = multer({
 });
 
 const router = Router();
+
+router.use("/deals/:dealId", blockCrossOrgColleagueDealMutations);
 
 router.get("/public/offering-preview", getPublicOfferingPreview);
 
@@ -148,6 +152,10 @@ router.patch(
 router.post(
   "/deals/:dealId/lp-investors/my-invest-now-esign-send",
   postDealLpInvestorMyInvestNowEsignSend,
+);
+router.post(
+  "/deals/:dealId/lp-investors/my-invest-now-commitment-complete",
+  postDealLpInvestorMyInvestNowCommitmentComplete,
 );
 router.get("/deals/:dealId/lp-investors/:lpInvestorId", getDealLpInvestor);
 router.put("/deals/:dealId/lp-investors/:lpInvestorId", putDealLpInvestor);

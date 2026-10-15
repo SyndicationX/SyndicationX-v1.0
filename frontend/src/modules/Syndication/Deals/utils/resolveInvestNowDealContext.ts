@@ -83,13 +83,19 @@ export function resolveInvestNowSponsorLabel(
 
 
 
-/** Prefer API `leadSponsorDisplayName`, then resolve from roster rows. */
+/** Prefer the lead sponsor's company, then their name, then the roster. */
 
 export function pickInvestNowLeadSponsorDisplayName(
 
-  membersPayload: Pick<DealMembersPayload, "members" | "leadSponsorDisplayName">,
+  membersPayload: Pick<
+    DealMembersPayload,
+    "members" | "leadSponsorDisplayName" | "leadSponsorCompanyName"
+  >,
 
 ): string {
+
+  const company = membersPayload.leadSponsorCompanyName?.trim()
+  if (company && company !== "—") return company
 
   const fromApi = membersPayload.leadSponsorDisplayName?.trim()
 
@@ -101,23 +107,84 @@ export function pickInvestNowLeadSponsorDisplayName(
 
 
 
-/** Lead sponsor unless a valid referring preview link supplied a sponsor name. */
+function usableSponsorLabel(value: string | null | undefined): string {
+  const name = value?.trim() ?? ""
+  return name && name !== "—" ? name : ""
+}
+
+/**
+ * Sponsor who brought this investor onto the deal, then a referring link,
+ * then the lead sponsor.
+ */
+function companyLabel(value: string | null | undefined): string {
+  const name = String(value ?? "")
+    .split("||")
+    .map((part) => part.trim())
+    .filter((part) => part && part !== "—")
+    .join(", ")
+  return usableSponsorLabel(name)
+}
 
 export function pickInvestNowSponsorDisplayName(
 
-  membersPayload: Pick<DealMembersPayload, "members" | "leadSponsorDisplayName">,
+  membersPayload: Pick<
+    DealMembersPayload,
+    | "members"
+    | "leadSponsorDisplayName"
+    | "leadSponsorCompanyName"
+    | "sameOrganizationSponsorDisplayName"
+    | "onboardingSponsorDisplayName"
+    | "onboardingSponsorCompanyName"
+    | "inviteSponsorCompanyName"
+    | "referringSponsorCompanyName"
+  >,
 
   options?: {
 
     referringSponsorDisplayName?: string | null
+    /** Sponsor stored on this investor's roster row (`added_by`). */
+    investorAddedByDisplayName?: string | null
+    /** Company of the sponsor stored on this investor's roster row. */
+    investorAddedByCompanyName?: string | null
 
   },
 
 ): string {
 
-  const fromReferral = options?.referringSponsorDisplayName?.trim()
+  const fromOnboardingCompany = companyLabel(
+    membersPayload.onboardingSponsorCompanyName,
+  )
+  if (fromOnboardingCompany) return fromOnboardingCompany
 
-  if (fromReferral && fromReferral !== "—") return fromReferral
+  const fromRosterCompany = companyLabel(options?.investorAddedByCompanyName)
+  if (fromRosterCompany) return fromRosterCompany
+
+  const fromInviteCompany = companyLabel(membersPayload.inviteSponsorCompanyName)
+  if (fromInviteCompany) return fromInviteCompany
+
+  const fromReferralCompany = companyLabel(
+    membersPayload.referringSponsorCompanyName,
+  )
+  if (fromReferralCompany) return fromReferralCompany
+
+  const fromLeadCompany = companyLabel(membersPayload.leadSponsorCompanyName)
+  if (fromLeadCompany) return fromLeadCompany
+
+  const fromOnboarding = usableSponsorLabel(
+    membersPayload.onboardingSponsorDisplayName,
+  )
+  if (fromOnboarding) return fromOnboarding
+
+  const fromRoster = usableSponsorLabel(options?.investorAddedByDisplayName)
+  if (fromRoster) return fromRoster
+
+  const fromSameOrganization = usableSponsorLabel(
+    membersPayload.sameOrganizationSponsorDisplayName,
+  )
+  if (fromSameOrganization) return fromSameOrganization
+
+  const fromReferral = usableSponsorLabel(options?.referringSponsorDisplayName)
+  if (fromReferral) return fromReferral
 
   return pickInvestNowLeadSponsorDisplayName(membersPayload)
 

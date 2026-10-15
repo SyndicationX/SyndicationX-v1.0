@@ -272,6 +272,11 @@ const invitingSponsorRosterDealIdsInflight = new Map<
   Promise<Set<string>>
 >();
 
+const companyColleagueSponsorDealIdsInflight = new Map<
+  string,
+  Promise<Set<string>>
+>();
+
 /**
  * Deals where a sponsor who invited or linked this contact is Lead, Admin, or
  * Co-sponsor, including deals in another organization.
@@ -290,24 +295,10 @@ async function listDealIdsWhereInvitingSponsorIsOnRoster(
          FROM deal_lp_investor lp
          INNER JOIN users viewer_u ON lower(trim(viewer_u.email)) = $1
          INNER JOIN users adder_u ON adder_u.id = lp.added_by
-         INNER JOIN deal_member dm_sponsor ON
-           dm_sponsor.deal_id = lp.deal_id
-           AND dm_sponsor.is_draft = false
-           AND lower(trim(dm_sponsor.deal_member_role)) IN (
-             ${INVITING_SPONSOR_ROLES_SQL}
-           )
-           AND (
-             trim(dm_sponsor.contact_member_id) = adder_u.id::text
-             OR EXISTS (
-               SELECT 1 FROM contact c
-               WHERE c.id::text = trim(both from dm_sponsor.contact_member_id)
-                 AND lower(trim(c.email)) = lower(trim(adder_u.email))
-             )
-           )
          WHERE lp.added_by IS NOT NULL
            AND lp.is_draft = false
            AND (
-             trim(lp.contact_member_id) = viewer_u.id::text
+             lower(trim(lp.contact_member_id)) = lower(viewer_u.id::text)
              OR (
                nullif(trim(lp.email), '') IS NOT NULL
                AND lower(trim(lp.email)) = $1
@@ -323,24 +314,10 @@ async function listDealIdsWhereInvitingSponsorIsOnRoster(
          FROM deal_member dm_investor
          INNER JOIN users viewer_u ON lower(trim(viewer_u.email)) = $1
          INNER JOIN users adder_u ON adder_u.id = dm_investor.added_by
-         INNER JOIN deal_member dm_sponsor ON
-           dm_sponsor.deal_id = dm_investor.deal_id
-           AND dm_sponsor.is_draft = false
-           AND lower(trim(dm_sponsor.deal_member_role)) IN (
-             ${INVITING_SPONSOR_ROLES_SQL}
-           )
-           AND (
-             trim(dm_sponsor.contact_member_id) = adder_u.id::text
-             OR EXISTS (
-               SELECT 1 FROM contact c
-               WHERE c.id::text = trim(both from dm_sponsor.contact_member_id)
-                 AND lower(trim(c.email)) = lower(trim(adder_u.email))
-             )
-           )
          WHERE dm_investor.added_by IS NOT NULL
            AND dm_investor.is_draft = false
            AND (
-             trim(dm_investor.contact_member_id) = viewer_u.id::text
+             lower(trim(dm_investor.contact_member_id)) = lower(viewer_u.id::text)
              OR EXISTS (
                SELECT 1 FROM contact c2
                WHERE c2.id::text = trim(both from dm_investor.contact_member_id)
@@ -360,7 +337,7 @@ async function listDealIdsWhereInvitingSponsorIsOnRoster(
                  ${INVITING_SPONSOR_ROLES_SQL}
                )
                AND (
-                 trim(dm.contact_member_id) = ref_u.id::text
+                 lower(trim(dm.contact_member_id)) = lower(ref_u.id::text)
                  OR EXISTS (
                    SELECT 1 FROM contact c_s
                    WHERE c_s.id::text = trim(both from dm.contact_member_id)
@@ -380,7 +357,7 @@ async function listDealIdsWhereInvitingSponsorIsOnRoster(
                  ${INVITING_SPONSOR_ROLES_SQL}
                )
                AND (
-                 trim(dm.contact_member_id) = creator_u.id::text
+                 lower(trim(dm.contact_member_id)) = lower(creator_u.id::text)
                  OR EXISTS (
                    SELECT 1 FROM contact c_s
                    WHERE c_s.id::text = trim(both from dm.contact_member_id)
@@ -397,14 +374,16 @@ async function listDealIdsWhereInvitingSponsorIsOnRoster(
          )
          AND EXISTS (SELECT 1 FROM sponsor_ids)
          AND (
-           trim(dm.contact_member_id) IN (
-             SELECT sponsor_user_id FROM sponsor_ids
+           lower(trim(dm.contact_member_id)) IN (
+             SELECT lower(sponsor_user_id) FROM sponsor_ids
            )
            OR EXISTS (
              SELECT 1 FROM users su
              INNER JOIN contact c
                ON c.id::text = trim(both from dm.contact_member_id)
-             WHERE su.id::text IN (SELECT sponsor_user_id FROM sponsor_ids)
+             WHERE lower(su.id::text) IN (
+               SELECT lower(sponsor_user_id) FROM sponsor_ids
+             )
                AND lower(trim(c.email)) = lower(trim(su.email))
            )
          )`,
@@ -422,6 +401,100 @@ async function listDealIdsWhereInvitingSponsorIsOnRoster(
       invitingSponsorRosterDealIdsInflight.delete(e);
     });
   invitingSponsorRosterDealIdsInflight.set(e, pending);
+  return pending;
+}
+
+/**
+ * Deals in another company where any portal user from this contact's company
+ * is Lead, Admin, or Co-sponsor. Every contact in that company sees them.
+ * Deals owned by the contact's own company stay on the existing offering rules.
+ */
+export async function listDealIdsSponsoredByCompanyColleague(
+  emailNorm: string,
+): Promise<Set<string>> {
+  const e = String(emailNorm ?? "").trim().toLowerCase();
+  if (!e || !e.includes("@")) return new Set();
+  const inflight = companyColleagueSponsorDealIdsInflight.get(e);
+  if (inflight) return inflight;
+  const pending = pool
+    .query<{ deal_id: string }>(
+      `WITH        viewer_orgs AS (
+         SELECT lower(trim(c.organization_id::text)) AS org_id
+         FROM contact c
+         WHERE lower(trim(c.email)) = $1
+           AND c.organization_id IS NOT NULL
+         UNION
+         SELECT lower(trim(u.organization_id::text)) AS org_id
+         FROM contact c
+         INNER JOIN users u ON u.id = c.created_by
+         WHERE lower(trim(c.email)) = $1
+           AND c.organization_id IS NULL
+           AND u.organization_id IS NOT NULL
+         UNION
+         SELECT lower(trim(m.company_id::text)) AS org_id
+         FROM contact c
+         INNER JOIN users u ON lower(trim(u.email)) = lower(trim(c.email))
+         INNER JOIN user_company_membership m ON m.user_id = u.id
+         WHERE lower(trim(c.email)) = $1
+         UNION
+         SELECT lower(trim(u.organization_id::text)) AS org_id
+         FROM users u
+         WHERE lower(trim(u.email)) = $1
+           AND u.organization_id IS NOT NULL
+         UNION
+         SELECT lower(trim(m.company_id::text)) AS org_id
+         FROM users u
+         INNER JOIN user_company_membership m ON m.user_id = u.id
+         WHERE lower(trim(u.email)) = $1
+       ),
+       company_users AS (
+         SELECT u.id::text AS user_id, lower(trim(u.email)) AS email
+         FROM users u
+         WHERE u.organization_id IS NOT NULL
+           AND lower(trim(u.organization_id::text)) IN (SELECT org_id FROM viewer_orgs)
+         UNION
+         SELECT u.id::text AS user_id, lower(trim(u.email)) AS email
+         FROM users u
+         INNER JOIN user_company_membership m ON m.user_id = u.id
+         WHERE lower(trim(m.company_id::text)) IN (SELECT org_id FROM viewer_orgs)
+       )
+       SELECT DISTINCT dm.deal_id::text AS deal_id
+       FROM deal_member dm
+       INNER JOIN add_deal_form f ON f.id = dm.deal_id
+       WHERE dm.is_draft = false
+         AND lower(trim(dm.deal_member_role)) IN (
+           ${INVITING_SPONSOR_ROLES_SQL}
+         )
+         AND (
+           f.organization_id IS NULL
+           OR lower(trim(f.organization_id::text)) NOT IN (SELECT org_id FROM viewer_orgs)
+         )
+         AND (
+           lower(trim(dm.contact_member_id)) IN (
+             SELECT lower(user_id) FROM company_users
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM contact sponsor_contact
+             INNER JOIN company_users cu
+               ON lower(trim(sponsor_contact.email)) = cu.email
+             WHERE sponsor_contact.id::text = trim(both from dm.contact_member_id)
+           )
+         )`,
+      [e],
+    )
+    .then(
+      (res) =>
+        new Set(
+          res.rows
+            .map((r) => String(r.deal_id ?? "").trim().toLowerCase())
+            .filter(Boolean),
+        ),
+    )
+    .finally(() => {
+      companyColleagueSponsorDealIdsInflight.delete(e);
+    });
+  companyColleagueSponsorDealIdsInflight.set(e, pending);
   return pending;
 }
 
@@ -593,10 +666,12 @@ export async function filterDealIdsByContactOfferingVisibility(
     .from(addDealForm)
     .where(inArray(addDealForm.id, ids));
 
-  const [participantDealIds, invitingSponsorDealIds] = await Promise.all([
-    listDealIdsInvestorIsPartOf(emailNorm),
-    listDealIdsWhereInvitingSponsorIsOnRoster(emailNorm),
-  ]);
+  const [participantDealIds, invitingSponsorDealIds, companyColleagueDealIds] =
+    await Promise.all([
+      listDealIdsInvestorIsPartOf(emailNorm),
+      listDealIdsWhereInvitingSponsorIsOnRoster(emailNorm),
+      listDealIdsSponsoredByCompanyColleague(emailNorm),
+    ]);
   const allowed = new Set<string>();
   for (const row of rows) {
     const id = String(row.id ?? "").trim();
@@ -604,6 +679,19 @@ export async function filterDealIdsByContactOfferingVisibility(
     const orgId =
       orgIdByDealId.get(id.toLowerCase()) ||
       String(row.organizationId ?? "").trim().toLowerCase();
+    /**
+     * The sponsor who added this contact keeps their deals visible in every
+     * organization, including when this company's offering setting would hide
+     * a deal the contact is not personally on. The same applies when any user
+     * from this contact's company is a sponsor on another company's deal.
+     */
+    if (
+      invitingSponsorDealIds.has(id.toLowerCase()) ||
+      companyColleagueDealIds.has(id.toLowerCase())
+    ) {
+      allowed.add(id);
+      continue;
+    }
     if (byOrg.has(orgId)) {
       if (
         dealMatchesOrganizationVisibility(
@@ -618,14 +706,6 @@ export async function filterDealIdsByContactOfferingVisibility(
       continue;
     }
     if (participantDealIds.has(id.toLowerCase())) {
-      allowed.add(id);
-      continue;
-    }
-    /**
-     * Another organization's deal stays visible when the sponsor who invited
-     * this contact is a sponsor on that deal.
-     */
-    if (invitingSponsorDealIds.has(id.toLowerCase())) {
       allowed.add(id);
     }
   }
@@ -659,11 +739,15 @@ export async function isDealAllowedByContactOfferingVisibility(params: {
   const orgId =
     matchedOrg?.organizationId ||
     String(deal.organizationId ?? "").trim().toLowerCase();
-  const [participantDealIds, invitingSponsorDealIds] = await Promise.all([
-    listDealIdsInvestorIsPartOf(emailNorm),
-    listDealIdsWhereInvitingSponsorIsOnRoster(emailNorm),
-  ]);
+  const [participantDealIds, invitingSponsorDealIds, companyColleagueDealIds] =
+    await Promise.all([
+      listDealIdsInvestorIsPartOf(emailNorm),
+      listDealIdsWhereInvitingSponsorIsOnRoster(emailNorm),
+      listDealIdsSponsoredByCompanyColleague(emailNorm),
+    ]);
   const secType = params.secType ?? deal.secType;
+  if (invitingSponsorDealIds.has(dealId.toLowerCase())) return true;
+  if (companyColleagueDealIds.has(dealId.toLowerCase())) return true;
   if (participantDealIds.has(dealId.toLowerCase())) return true;
   if (byOrg.has(orgId)) {
     return dealMatchesOrganizationVisibility(
@@ -673,6 +757,5 @@ export async function isDealAllowedByContactOfferingVisibility(params: {
       participantDealIds,
     );
   }
-  if (invitingSponsorDealIds.has(dealId.toLowerCase())) return true;
   return false;
 }

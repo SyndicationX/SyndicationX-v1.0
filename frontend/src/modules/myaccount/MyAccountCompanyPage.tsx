@@ -51,9 +51,15 @@ function sessionRole(u: Record<string, unknown> | null): string {
 function visibleToUsersChoiceFromUser(
   u: Record<string, unknown> | null,
 ): VisibleToUsersChoice {
-  return u?.visibleToUsers === true || u?.visible_to_users === true
-    ? "yes"
-    : "no"
+  const raw = u?.visibleToUsers ?? u?.visible_to_users
+  if (raw === true || raw === 1) return "yes"
+  if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase()
+    if (normalized === "true" || normalized === "yes" || normalized === "1") {
+      return "yes"
+    }
+  }
+  return "no"
 }
 
 export function MyAccountCompanyPage() {
@@ -214,6 +220,8 @@ export function MyAccountCompanyPage() {
 
       let joinedExistingCompany = false
       if (!canRenameOrgCompany || visibilityChanged) {
+        const savedVisibility =
+          visibilityChanged ? visibleToUsers === "yes" : undefined
         const profilePatch: Parameters<typeof patchMyProfile>[0] = {
           ...(canRenameOrgCompany || !needsCompanyName
             ? {}
@@ -226,7 +234,15 @@ export function MyAccountCompanyPage() {
         const { user, joinedExistingCompany: joined, startedSyndicating } =
           await patchMyProfile(profilePatch)
         joinedExistingCompany = Boolean(joined)
-        mergeSessionUserDetails(user)
+        mergeSessionUserDetails({
+          ...user,
+          ...(savedVisibility === undefined
+            ? {}
+            : {
+                visibleToUsers: savedVisibility,
+                visible_to_users: savedVisibility,
+              }),
+        })
         loadFromSession()
         if (startedSyndicating) {
           // New role lives in the access token, so mint a fresh pair before the

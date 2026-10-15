@@ -166,9 +166,18 @@ function normalizeContact(raw: Record<string, unknown>): ContactRow {
         ? String(raw.createdByUserId ?? raw.created_by_user_id).trim() ||
           undefined
         : undefined,
+    organizationId:
+      raw.organizationId != null || raw.organization_id != null
+        ? String(raw.organizationId ?? raw.organization_id).trim() || undefined
+        : undefined,
     organizationName:
       raw.organizationName != null || raw.organization_name != null
         ? String(raw.organizationName ?? raw.organization_name).trim() ||
+          undefined
+        : undefined,
+    addedByCompanyName:
+      raw.addedByCompanyName != null || raw.added_by_company_name != null
+        ? String(raw.addedByCompanyName ?? raw.added_by_company_name).trim() ||
           undefined
         : undefined,
     createdAt:
@@ -506,7 +515,7 @@ export async function fetchContactMatchingIds(params: {
 /** Deal counts and owners for the visible contacts page (max 100 ids). */
 export async function fetchContactDealStats(
   ids: string[],
-  options?: { organizationId?: string },
+  options?: { organizationId?: string; allOrganizations?: boolean },
 ): Promise<Map<string, ContactRow>> {
   const byId = new Map<string, ContactRow>()
   const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
@@ -515,12 +524,18 @@ export async function fetchContactDealStats(
   if (!base) return byId
   try {
     const params = new URLSearchParams()
-    const oid =
-      options?.organizationId?.trim() || organizationIdQueryParam() || ""
+    const allOrganizations = options?.allOrganizations === true
+    const oid = allOrganizations
+      ? ""
+      : options?.organizationId?.trim() || organizationIdQueryParam() || ""
     if (oid) params.set("organizationId", oid)
     params.set("ids", unique.slice(0, 100).join(","))
     const res = await fetch(`${base}/contacts/deal-stats?${params.toString()}`, {
-      headers: { ...authHeaders() },
+      headers: {
+        ...authHeaders(
+          allOrganizations ? { omitActiveOrganization: true } : undefined,
+        ),
+      },
       credentials: "include",
     })
     const data = (await res.json().catch(() => ({}))) as { contacts?: unknown }
@@ -538,7 +553,7 @@ export async function fetchContactDealStats(
 
 export async function hydrateContactDealStatsInChunks(
   ids: string[],
-  options?: { organizationId?: string },
+  options?: { organizationId?: string; allOrganizations?: boolean },
 ): Promise<Map<string, ContactRow>> {
   const byId = new Map<string, ContactRow>()
   const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
@@ -959,10 +974,17 @@ export async function fetchInvestorInviteLink(): Promise<string> {
   if (!base) {
     throw new Error("API is not configured (VITE_BASE_URL).")
   }
-  const res = await fetch(`${base}/contacts/investor-invite-link`, {
-    headers: { ...authHeaders() },
-    credentials: "include",
-  })
+  const params = new URLSearchParams()
+  const oid = organizationIdQueryParam()
+  if (oid) params.set("organizationId", oid)
+  const q = params.toString()
+  const res = await fetch(
+    `${base}/contacts/investor-invite-link${q ? `?${q}` : ""}`,
+    {
+      headers: { ...authHeaders() },
+      credentials: "include",
+    },
+  )
   const data = (await res.json().catch(() => ({}))) as {
     message?: unknown
     inviteUrl?: unknown

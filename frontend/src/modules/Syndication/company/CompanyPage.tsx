@@ -16,6 +16,7 @@ import {
   ClipboardList,
   Contact2,
   CreditCard,
+  Ticket,
   Download,
   Eye,
   LayoutGrid,
@@ -53,6 +54,7 @@ import {
 // import { CompanyEmailSettingsTab } from "./CompanyEmailSettingsTab";
 // import { CompanyOfferingsPageTab } from "./CompanyOfferingsPageTab";
 import { CompanyBillingTab } from "./CompanyBillingTab";
+import { CompanyCouponsTab } from "./CompanyCouponsTab";
 // import { CompanySettingsTabPanel } from "./CompanySettingsTabPanel";
 import { ExportCompaniesModal } from "./ExportCompaniesModal";
 import { UserManagementPage } from "../usermanagement/UserManagementPage";
@@ -77,6 +79,7 @@ type CompanyPageTab =
   | "contact"
   | "offerings"
   | "billing"
+  | "coupons"
   | "members"
   | "companies";
 
@@ -484,11 +487,14 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
       // { id: "offerings", label: "Offerings page", icon: LayoutGrid },
       { id: "billing", label: "Billing", icon: CreditCard },
     ];
+    if (platformAdmin) {
+      mainTabs.push({ id: "coupons", label: "Coupons", icon: Ticket });
+    }
     if (canAccessMembersPage()) {
       return [{ id: "members", label: "Org Members", icon: Users } as const, ...mainTabs];
     }
     return mainTabs;
-  }, [userDetailsRev]);
+  }, [platformAdmin, userDetailsRev]);
 
   const firstCompanyPageTab: CompanyPageTab = companyPageTabDefs[0]?.id ?? "billing";
 
@@ -516,7 +522,8 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
       billing === "success" ||
       billing === "cancel" ||
       billing === "portal_return" ||
-      billing === "pay"
+      billing === "pay" ||
+      billing === "upgrade"
     ) {
       setCompanyPageTab("billing");
       return;
@@ -1239,6 +1246,18 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
                 }
               />
             </div>
+
+            {platformAdmin ? (
+              <div
+                className="um_panel um_members_tab_panel"
+                id="cp-page-panel-coupons"
+                role="tabpanel"
+                aria-labelledby="cp-page-tab-coupons"
+                hidden={activeCompanyPageTab !== "coupons"}
+              >
+                <CompanyCouponsTab />
+              </div>
+            ) : null}
 
             {canAccessMembersPage() ? (
               <div

@@ -22,13 +22,13 @@ import {
   SESSION_USER_DETAILS_KEY,
 } from "../../../common/auth/sessionKeys";
 import { storeAuthTokens } from "../../../common/auth/authTokensApi";
+import { publishActiveBrowserUserFromSession } from "../../../common/auth/exclusiveBrowserSession";
 import {
   touchSessionActivity,
 } from "../../../common/auth/idleSession";
 import { INVESTOR, isPlatformAdmin } from "../../../common/auth/roleUtils";
 import { getApiV1Base } from "../../../common/utils/apiBaseUrl";
 import { dealInvestNowPath } from "../../Syndication/Deals/utils/dealInvestNowPath";
-import { resolveUnpaidLeadSponsorPricingPath } from "../../Syndication/Deals/utils/dealSaasAccess";
 import { consumeInvestNowIntent } from "../../Syndication/Deals/utils/investNowIntent";
 import {
   applyOfferingPortfolioPostAuth,
@@ -41,6 +41,18 @@ import { parseSafeNextPath } from "../../../common/auth/parseSafeNextPath";
 import { toast } from "../../../common/components/Toast";
 import { ensureActiveCompanyInitialized } from "../../../common/auth/setActiveCompany";
 import "./signin_form.css";
+
+/** Platform admins open Platform Metrics; every other role opens the Dashboard. */
+function homePathAfterSignIn(): string {
+  return isPlatformAdmin() ? "/metrics" : "/dashboard";
+}
+
+/** Deal, invest-now, and eSign links should reopen that page after sign-in. */
+function isLinkedSignInReturn(path: string | null): boolean {
+  if (!path) return false;
+  if (/\/esign(?:\/|$|\?)/i.test(path)) return true;
+  return /^\/deals\/[^/?#]+/i.test(path);
+}
 
 /** Investor accounts stay `investor` after a sponsor roster add; open Syndicating on sign-in. */
 function openSyndicatingForInvestorSponsor(userDetails: unknown): void {
@@ -63,6 +75,8 @@ const SigninForm = () => {
   const resetSuccess = location.state?.resetSuccess;
   const apiV1 = getApiV1Base();
   const inviteRef = searchParams.get("ref")?.trim() || "";
+  const inviteSponsorName = searchParams.get("sponsorName")?.trim() || "";
+  const inviteCompanyName = searchParams.get("companyName")?.trim() || "";
   const routeState = location.state as
     | {
         from?: string;
@@ -175,6 +189,7 @@ const SigninForm = () => {
           JSON.stringify(data.userDetails),
         );
         ensureActiveCompanyInitialized();
+        publishActiveBrowserUserFromSession();
       } else {
         sessionStorage.removeItem(SESSION_USER_DETAILS_KEY);
       }
@@ -212,6 +227,7 @@ const SigninForm = () => {
               SESSION_USER_DETAILS_KEY,
               JSON.stringify(claimed.userDetails),
             );
+            publishActiveBrowserUserFromSession();
           }
         } catch (claimError) {
           toast.error(
@@ -225,11 +241,7 @@ const SigninForm = () => {
       const portfolioIntent = consumeOfferingPortfolioAuthIntent();
       const storedIntent = consumeInvestNowIntent();
       sessionStorage.removeItem(AUTH_RETURN_NEXT_KEY);
-      let redirectTo = from
-        ? from
-        : isPlatformAdmin()
-          ? "/metrics"
-          : "/dashboard";
+      let redirectTo = from ? from : homePathAfterSignIn();
       let postSignInState:
         | { investNow: true }
         | { returnTo: string }
@@ -251,16 +263,15 @@ const SigninForm = () => {
         postSignInState = { investNow: true as const };
       }
       if (redirectTo === "/") {
-        redirectTo = isPlatformAdmin() ? "/metrics" : "/dashboard";
+        redirectTo = homePathAfterSignIn();
       }
-      const keepExistingRedirect =
+      const continuingLinkedFlow =
         Boolean(offeringDealId) ||
         Boolean(storedIntent?.dealId) ||
         routeState?.investNow === true ||
-        (typeof from === "string" && /\/esign(?:\/|$|\?)/i.test(from));
-      if (!keepExistingRedirect) {
-        const billingPath = await resolveUnpaidLeadSponsorPricingPath();
-        if (billingPath) redirectTo = billingPath;
+        isLinkedSignInReturn(from);
+      if (!isPlatformAdmin() && !continuingLinkedFlow) {
+        redirectTo = "/dashboard";
       }
       navigate(redirectTo, { replace: true, state: postSignInState });
     } catch {
@@ -415,6 +426,12 @@ const SigninForm = () => {
               inviteRef || searchParams.get("next")
                 ? `/signup?${new URLSearchParams({
                     ...(inviteRef ? { ref: inviteRef } : {}),
+                    ...(inviteSponsorName
+                      ? { sponsorName: inviteSponsorName }
+                      : {}),
+                    ...(inviteCompanyName
+                      ? { companyName: inviteCompanyName }
+                      : {}),
                     ...(searchParams.get("next")?.trim()
                       ? { next: searchParams.get("next")!.trim() }
                       : {}),

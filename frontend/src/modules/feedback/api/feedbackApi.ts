@@ -51,8 +51,10 @@ function asFeedback(raw: unknown): FeedbackItem | null {
           k === "admin_updated",
       )
     : undefined
+  const feedbackNo = Number(r.feedbackNo)
   return {
     id,
+    feedbackNo: Number.isFinite(feedbackNo) && feedbackNo > 0 ? feedbackNo : 0,
     userId: String(r.userId ?? "").trim(),
     username: String(r.username ?? "").trim(),
     userEmail: String(r.userEmail ?? "").trim(),

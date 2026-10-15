@@ -5,7 +5,9 @@ import { ThemeProvider } from "./common/theme/ThemeProvider";
 import { SESSION_BEARER_KEY } from "./common/auth/sessionKeys";
 import { LpInvestorShellGuard } from "@/modules/Investing";
 import { RequireAuth } from "./common/auth/RequireAuth";
+import { RequireAccess } from "./common/auth/RequireAccess";
 import {
+  canAccessMembersPage,
   canAccessCompanyPage,
   canAccessFeedback,
   isDealSponsorSessionUser,
@@ -55,7 +57,6 @@ import CompanyMembersPage from "./modules/Syndication/company/CompanyMembersPage
 import CompanyDealsPage from "./modules/Syndication/company/CompanyDealsPage";
 import CompanyContactsPage from "./modules/Syndication/company/CompanyContactsPage";
 import CustomerCompanyLayout from "./modules/Syndication/company/CustomerCompanyLayout";
-import MembersLayout from "./modules/Syndication/usermanagement/MembersLayout";
 import { UserManagementPage } from "./modules/Syndication/usermanagement/UserManagementPage";
 import ContactsPage from "./modules/Syndication/contacts/ContactsPage";
 import ContactDetailPage from "./modules/Syndication/contacts/ContactDetailPage";
@@ -90,13 +91,6 @@ const PlaceholderPage = ({ title }: PlaceholderPageProps) => {
   );
 };
 
-function CompanyRoute() {
-  const token = sessionStorage.getItem(SESSION_BEARER_KEY);
-  if (!token) return <Navigate to="/signin" replace />;
-  if (!canAccessCompanyPage()) return <Navigate to="/account" replace />;
-  return <CompanyPage />;
-}
-
 /** Syndication workspace settings; investing portal opens My account instead. */
 function SettingsRoute() {
   const { mode } = usePortalMode();
@@ -110,7 +104,7 @@ function SettingsRoute() {
   const leadSponsorPaying =
     billing === "pay" && isDealSponsorSessionUser();
   if (!canAccessCompanyPage() && !leadSponsorPaying) {
-    return <Navigate to="/account" replace />;
+    return <Navigate to="/dashboard" replace />;
   }
   return <CompanyPage />;
 }
@@ -123,32 +117,6 @@ function SettingsRoute() {
 //     return <Navigate to="/investing/company" replace />;
 //   return <CompanyPage />;
 // }
-
-function CustomersRoute() {
-  const token = sessionStorage.getItem(SESSION_BEARER_KEY);
-  if (!token) return <Navigate to="/signin" replace />;
-  if (!canAccessCompanyPage()) return <Navigate to="/dashboard" replace />;
-  if (!isPlatformAdmin()) {
-    return <Navigate to="/settings" replace />;
-  }
-  return <CompanyPage variant="customers" />;
-}
-
-function FeedbackRoute() {
-  const token = sessionStorage.getItem(SESSION_BEARER_KEY);
-  if (!token) return <Navigate to="/signin" replace />;
-  if (!canAccessFeedback()) return <Navigate to="/dashboard" replace />;
-  return <FeedbackPage />;
-}
-
-function MetricsRoute() {
-  const token = sessionStorage.getItem(SESSION_BEARER_KEY);
-  if (!token) return <Navigate to="/signin" replace />;
-  if (!isPlatformAdmin()) {
-    return <Navigate to="/dashboard" replace />;
-  }
-  return <PlatformMetricsPage />;
-}
 
 /** Match React Router to Vite `base` (`import.meta.env.BASE_URL`) for subpath deploys. */
 function routerBasename(): string | undefined {
@@ -172,7 +140,26 @@ function App() {
           <Route element={<RequireAuth />}>
             <Route element={<LpInvestorShellGuard />}>
             <Route element={<PageLayout />}>
-              <Route path="metrics" element={<MetricsRoute />} />
+              <Route element={<RequireAccess allowed={isPlatformAdmin} />}>
+                <Route path="metrics" element={<PlatformMetricsPage />} />
+                <Route path="customers/:companyId" element={<CustomerCompanyLayout />}>
+                  <Route
+                    index
+                    element={<Navigate to="members" replace />}
+                  />
+                  <Route path="members" element={<CompanyMembersPage />} />
+                  <Route path="contacts" element={<CompanyContactsPage />} />
+                  <Route
+                    path="platform-contacts"
+                    element={<Navigate to="../contacts" replace />}
+                  />
+                  <Route path="deals" element={<CompanyDealsPage />} />
+                </Route>
+                <Route
+                  path="customers"
+                  element={<CompanyPage variant="customers" />}
+                />
+              </Route>
               <Route path="dashboard" element={<SponsorDashboardPage />} />
             <Route path="deals" element={<DealsLayout />}>
               <Route index element={<DealsListPage />} />
@@ -281,7 +268,9 @@ function App() {
               path="investing/feedback"
               element={<Navigate to="/feedback" replace />}
             />
-            <Route path="feedback" element={<FeedbackRoute />} />
+            <Route element={<RequireAccess allowed={canAccessFeedback} />}>
+              <Route path="feedback" element={<FeedbackPage />} />
+            </Route>
             <Route
               path="investing/cashflows"
               element={<InvestorCashflowsPage />}
@@ -299,26 +288,14 @@ function App() {
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="support" element={<PlaceholderPage title="Support" />} />
             <Route path="settings" element={<SettingsRoute />} />
-            <Route path="company" element={<CompanyRoute />} />
+            <Route element={<RequireAccess allowed={canAccessCompanyPage} />}>
+              <Route path="company" element={<CompanyPage />} />
+            </Route>
     
                         {/* <Route path="company" element={<CompanyOverviewRoute />} /> */}
 
-            <Route path="customers/:companyId" element={<CustomerCompanyLayout />}>
-              <Route
-                index
-                element={<Navigate to="members" replace />}
-              />
-              <Route path="members" element={<CompanyMembersPage />} />
-              <Route path="contacts" element={<CompanyContactsPage />} />
-              <Route
-                path="platform-contacts"
-                element={<Navigate to="../contacts" replace />}
-              />
-              <Route path="deals" element={<CompanyDealsPage />} />
-            </Route>
-            <Route path="customers" element={<CustomersRoute />} />
-            <Route path="members" element={<MembersLayout />}>
-              <Route index element={<UserManagementPage />} />
+            <Route element={<RequireAccess allowed={canAccessMembersPage} />}>
+              <Route path="members" element={<UserManagementPage />} />
             </Route>
             <Route
               path="contacts/email-templates/new"

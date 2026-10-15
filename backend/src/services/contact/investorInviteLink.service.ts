@@ -6,7 +6,9 @@ import {
 } from "../../constants/deal-lifecycle/deal-stage.js";
 import { db } from "../../database/db.js";
 import { users } from "../../schema/auth.schema/signin.js";
+import { companies } from "../../schema/company.schema/company.js";
 import { contact } from "../../schema/contact.schema.js";
+import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema.js";
 import { insertDealLpInvestorRosterRow } from "../deal/dealLpInvestorRosterInsert.js";
 import {
   decryptInvestorInviteRef,
@@ -15,10 +17,18 @@ import {
 import { parseUsPhoneToE164 } from "../../utils/usPhone.js";
 import { invalidateContactDirectoryCache } from "../cache/listReadCache.js";
 import { queueGhlContactRowSync } from "../ghl/ghlContactSync.service.js";
-import { resolveOrganizationIdForUserId } from "../org/orgResolution.service.js";
+import {
+  resolveOrganizationIdForUserId,
+  userHasAccessToOrganization,
+} from "../org/orgResolution.service.js";
+import { listUserCompanyMemberships } from "../auth/userCompanyMembership.service.js";
 import { reconcileAssigningDealUsersForDeal } from "../deal/assigningDealUser.service.js";
 import { getAddDealFormById } from "../deal/dealForm.service.js";
-import { isPortalUserDealSponsorOnDeal } from "../deal/dealMemberScope.service.js";
+import {
+  isPortalUserCoSponsorOnDeal,
+  isPortalUserDealSponsorOnDeal,
+  isPortalUserLeadOrAdminSponsorOnDeal,
+} from "../deal/dealMemberScope.service.js";
 import {
   buildContactFullName,
   getUserDisplayNameById,
@@ -57,6 +67,69 @@ function requireFrontendOrigin(): string {
   return origin;
 }
 
+function inviteSignupUrl(params: {
+  ref: string;
+  sponsorName: string;
+  companyName: string;
+  nextPath?: string | null;
+}): string {
+  const search = new URLSearchParams();
+  search.set("ref", params.ref);
+  const sponsorName = params.sponsorName.trim();
+  const companyName = params.companyName.trim();
+  if (sponsorName) search.set("sponsorName", sponsorName);
+  if (companyName) search.set("companyName", companyName);
+  const nextPath = String(params.nextPath ?? "").trim();
+  if (nextPath) search.set("next", nextPath);
+  return `${requireFrontendOrigin()}/signup?${search.toString()}`;
+}
+
+async function companyRecordById(
+  companyId: string,
+): Promise<{ id: string; name: string } | null> {
+  const id = String(companyId ?? "").trim();
+  if (!id) return null;
+  const [row] = await db
+    .select({ id: companies.id, name: companies.name })
+    .from(companies)
+    .where(eq(companies.id, id))
+    .limit(1);
+  if (!row?.id) return null;
+  return { id: String(row.id), name: String(row.name ?? "").trim() };
+}
+
+/**
+ * Company stamped on this user's invite link: the workspace they asked for,
+ * otherwise their primary company, otherwise their first membership.
+ */
+export async function resolveSharerInviteCompany(
+  userId: string,
+  requestedCompanyId?: string | null,
+): Promise<{ companyId: string; companyName: string } | null> {
+  const uid = String(userId ?? "").trim();
+  if (!uid) return null;
+  const requested = String(requestedCompanyId ?? "").trim();
+  let companyId = "";
+  if (requested && (await userHasAccessToOrganization(uid, requested))) {
+    companyId = requested;
+  }
+  if (!companyId) {
+    companyId = (await resolveOrganizationIdForUserId(uid)) ?? "";
+  }
+  if (!companyId) {
+    const memberships = await listUserCompanyMemberships(uid);
+    const first = memberships.find((row) => row.companyId.trim());
+    if (!first) return null;
+    return {
+      companyId: first.companyId.trim(),
+      companyName: first.companyName.trim(),
+    };
+  }
+  const company = await companyRecordById(companyId);
+  if (!company) return null;
+  return { companyId: company.id, companyName: company.name };
+}
+
 async function assertSharerCanInvite(userId: string): Promise<boolean> {
   const uid = String(userId ?? "").trim();
   if (!uid) return false;
@@ -79,15 +152,23 @@ async function assertSharerCanInvite(userId: string): Promise<boolean> {
  */
 export async function buildInvestorInviteLinkForUser(
   userId: string,
+  requestedCompanyId?: string | null,
 ): Promise<InvestorInviteLink | null> {
   const uid = String(userId ?? "").trim();
   if (!(await assertSharerCanInvite(uid))) return null;
 
-  const origin = requireFrontendOrigin();
-  const ref = encryptInvestorInviteRef(uid);
+  const [sponsorName, company] = await Promise.all([
+    getUserDisplayNameById(uid),
+    resolveSharerInviteCompany(uid, requestedCompanyId),
+  ]);
+  const ref = encryptInvestorInviteRef(uid, null, company?.companyId);
   return {
     ref,
-    inviteUrl: `${origin}/signup?ref=${encodeURIComponent(ref)}`,
+    inviteUrl: inviteSignupUrl({
+      ref,
+      sponsorName,
+      companyName: company?.companyName ?? "",
+    }),
   };
 }
 
@@ -141,15 +222,28 @@ export async function buildInvestorInviteLinkForDeal(
     };
   }
 
-  const origin = requireFrontendOrigin();
-  const ref = encryptInvestorInviteRef(uid, did);
+  const dealOrg = String(deal.organizationId ?? "").trim();
+  const [sponsorName, dealCompany, sharerCompany] = await Promise.all([
+    getUserDisplayNameById(uid),
+    dealOrg ? companyRecordById(dealOrg) : Promise.resolve(null),
+    resolveSharerInviteCompany(uid),
+  ]);
+  const company = dealCompany
+    ? { companyId: dealCompany.id, companyName: dealCompany.name }
+    : sharerCompany;
+  const ref = encryptInvestorInviteRef(uid, did, company?.companyId);
   const next = `/deals/${encodeURIComponent(did)}`;
   return {
     ok: true,
     link: {
       ref,
       dealId: did,
-      inviteUrl: `${origin}/signup?ref=${encodeURIComponent(ref)}&next=${encodeURIComponent(next)}`,
+      inviteUrl: inviteSignupUrl({
+        ref,
+        sponsorName,
+        companyName: company?.companyName ?? "",
+        nextPath: next,
+      }),
     },
   };
 }
@@ -187,10 +281,18 @@ export async function resolveInvestorInviteReferrer(
   const sponsorUserId = String(row.id).trim();
   const sponsorOrgId =
     (await resolveOrganizationIdForUserId(sponsorUserId)) ?? null;
+  const tokenCompany = await companyRecordById(
+    String(decoded.companyId ?? "").trim(),
+  );
+  const tokenCompanyId = tokenCompany?.id ?? null;
 
   const tokenDealId = String(decoded.dealId ?? "").trim();
   if (!tokenDealId) {
-    return { sponsorUserId, organizationId: sponsorOrgId, dealId: null };
+    return {
+      sponsorUserId,
+      organizationId: tokenCompanyId ?? sponsorOrgId,
+      dealId: null,
+    };
   }
 
   const deal = await getAddDealFormById(tokenDealId);
@@ -199,13 +301,29 @@ export async function resolveInvestorInviteReferrer(
     deal.archived ||
     !(await isPortalUserDealSponsorOnDeal(tokenDealId, sponsorUserId))
   ) {
-    return { sponsorUserId, organizationId: sponsorOrgId, dealId: null };
+    return {
+      sponsorUserId,
+      organizationId: tokenCompanyId ?? sponsorOrgId,
+      dealId: null,
+    };
   }
 
   const dealOrg = String(deal.organizationId ?? "").trim() || null;
+  let organizationId = dealOrg ?? tokenCompanyId ?? sponsorOrgId;
+  // A co-sponsor added from another company keeps invite signups in their own
+  // company. The deal's company does not receive that co-sponsor's contacts.
+  if (
+    dealOrg &&
+    sponsorOrgId &&
+    dealOrg.toLowerCase() !== sponsorOrgId.toLowerCase() &&
+    (await isPortalUserCoSponsorOnDeal(tokenDealId, sponsorUserId)) &&
+    !(await isPortalUserLeadOrAdminSponsorOnDeal(tokenDealId, sponsorUserId))
+  ) {
+    organizationId = sponsorOrgId;
+  }
   return {
     sponsorUserId,
-    organizationId: dealOrg ?? sponsorOrgId,
+    organizationId,
     dealId: tokenDealId,
   };
 }
@@ -291,6 +409,7 @@ export async function ensureReferredInvestorContact(params: {
     /** Keep an owner someone already assigned; only fill an empty Owners cell. */
     const keepOwners = (existing.owners ?? []).filter((o) => String(o).trim());
     const keepDeal = String(existing.referredByDealId ?? "").trim();
+    const keepOrg = String(existing.organizationId ?? "").trim();
     const [updated] = await db
       .update(contact)
       .set({
@@ -299,6 +418,7 @@ export async function ensureReferredInvestorContact(params: {
           ? { owners: [ownerName] }
           : {}),
         ...(!keepDeal && dealToStore ? { referredByDealId: dealToStore } : {}),
+        ...(!keepOrg && orgId ? { organizationId: orgId } : {}),
       })
       .where(eq(contact.id, existing.id))
       .returning();
@@ -372,15 +492,26 @@ export async function applyInvestorInviteAfterAuth(params: {
 
   try {
     const [existing] = await db
-      .select({ referredByUserId: users.referredByUserId })
+      .select({
+        referredByUserId: users.referredByUserId,
+        referredByCompanyId: users.referredByCompanyId,
+      })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
+    const patch: {
+      referredByUserId?: string;
+      referredByCompanyId?: string;
+    } = {};
     if (!String(existing?.referredByUserId ?? "").trim()) {
-      await db
-        .update(users)
-        .set({ referredByUserId: referrer.sponsorUserId })
-        .where(eq(users.id, userId));
+      patch.referredByUserId = referrer.sponsorUserId;
+    }
+    const companyId = String(referrer.organizationId ?? "").trim();
+    if (!String(existing?.referredByCompanyId ?? "").trim() && companyId) {
+      patch.referredByCompanyId = companyId;
+    }
+    if (Object.keys(patch).length > 0) {
+      await db.update(users).set(patch).where(eq(users.id, userId));
     }
   } catch (e) {
     console.error("record investor invite referrer:", e);
@@ -416,6 +547,116 @@ export async function applyInvestorInviteAfterAuth(params: {
   }
 
   return { applied: true, contactId };
+}
+
+export type StoredInvestorInviteSponsor = {
+  sponsorUserId: string;
+  companyId: string | null;
+};
+
+/** Sponsor and company saved from the invite link, if this investor has one. */
+export async function loadStoredInvestorInviteSponsor(
+  userId: string,
+): Promise<StoredInvestorInviteSponsor | null> {
+  const uid = String(userId ?? "").trim();
+  if (!uid) return null;
+  const [row] = await db
+    .select({
+      referredByUserId: users.referredByUserId,
+      referredByCompanyId: users.referredByCompanyId,
+    })
+    .from(users)
+    .where(eq(users.id, uid))
+    .limit(1);
+  const sponsorUserId = String(row?.referredByUserId ?? "").trim();
+  if (!sponsorUserId) return null;
+  let companyId = String(row?.referredByCompanyId ?? "").trim();
+  if (!companyId) {
+    const company = await resolveSharerInviteCompany(sponsorUserId);
+    companyId = company?.companyId?.trim() ?? "";
+    if (companyId) {
+      await db
+        .update(users)
+        .set({ referredByCompanyId: companyId })
+        .where(eq(users.id, uid));
+    }
+  }
+  return { sponsorUserId, companyId: companyId || null };
+}
+
+/** Company name for the investor onboarding Sponsor field. */
+export async function loadInvestorInviteCompanyDisplayName(
+  userId: string,
+): Promise<string> {
+  const stored = await loadStoredInvestorInviteSponsor(userId);
+  const companyId = stored?.companyId?.trim() ?? "";
+  if (!companyId) return "";
+  const company = await companyRecordById(companyId);
+  return company?.name?.trim() ?? "";
+}
+
+/**
+ * CRM contact created for this invite (same email, sponsor's company or owner).
+ * Soft commitment should keep this id instead of swapping in the portal user id.
+ */
+export async function findInviteAttributedContactId(params: {
+  viewerUserId: string;
+  emailNorm: string;
+}): Promise<string | null> {
+  const viewerUserId = String(params.viewerUserId ?? "").trim();
+  const emailNorm = String(params.emailNorm ?? "").trim().toLowerCase();
+  if (!viewerUserId || !emailNorm.includes("@")) return null;
+  const stored = await loadStoredInvestorInviteSponsor(viewerUserId);
+  if (!stored) return null;
+
+  const matches = await db
+    .select({
+      id: contact.id,
+      organizationId: contact.organizationId,
+      createdBy: contact.createdBy,
+    })
+    .from(contact)
+    .where(sql`lower(trim(${contact.email})) = ${emailNorm}`);
+  const orgKey = String(stored.companyId ?? "").trim().toLowerCase();
+  const sponsorKey = stored.sponsorUserId.toLowerCase();
+  const inOrg = orgKey
+    ? matches.find(
+        (row) =>
+          String(row.organizationId ?? "").trim().toLowerCase() === orgKey,
+      )
+    : undefined;
+  if (inOrg?.id) return String(inOrg.id).trim();
+  const owned = matches.find(
+    (row) => String(row.createdBy ?? "").trim().toLowerCase() === sponsorKey,
+  );
+  return owned?.id ? String(owned.id).trim() : null;
+}
+
+/**
+ * Soft commitment and e-sign must not replace the invite sponsor with the
+ * investor's own user id. An adder who is already someone else is left alone.
+ */
+export async function retainInviteSponsorOnLpRoster(params: {
+  lpRowId: string;
+  viewerUserId: string;
+  sponsorUserId: string;
+}): Promise<void> {
+  const lpRowId = String(params.lpRowId ?? "").trim();
+  const sponsorUserId = String(params.sponsorUserId ?? "").trim();
+  const viewerKey = String(params.viewerUserId ?? "").trim().toLowerCase();
+  if (!lpRowId || !sponsorUserId) return;
+  const [row] = await db
+    .select({ addedBy: dealLpInvestor.addedBy })
+    .from(dealLpInvestor)
+    .where(eq(dealLpInvestor.id, lpRowId))
+    .limit(1);
+  const current = String(row?.addedBy ?? "").trim();
+  if (current && current.toLowerCase() !== viewerKey) return;
+  if (current.toLowerCase() === sponsorUserId.toLowerCase()) return;
+  await db
+    .update(dealLpInvestor)
+    .set({ addedBy: sponsorUserId, updatedAt: new Date() })
+    .where(eq(dealLpInvestor.id, lpRowId));
 }
 
 /**

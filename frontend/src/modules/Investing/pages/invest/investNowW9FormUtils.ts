@@ -173,12 +173,16 @@ function taxNameFromWizard(wizard: Record<string, unknown>): string {
   return ""
 }
 
-/** Name shown on the W-9 for the selected investing profile. */
+/**
+ * Name shown on the W-9: the person's first and last name.
+ * Profile wizard first/last wins, then the signed-in user's name.
+ * Entity or profile display names are only used when no person name exists.
+ */
 export function w9NameFromInvestorProfile(
   profile: InvestorProfileListRow,
 ): string {
   const wizard = readWizardState(profile)
-  const firstLast = firstLastFromWizard(wizard)
+  const firstLast = firstLastFromWizard(wizard) || sessionDisplayName()
   if (firstLast) return firstLast
   const fromWizard = wizard ? taxNameFromWizard(wizard) : ""
   if (fromWizard) return fromWizard
@@ -197,8 +201,39 @@ function sessionStr(camelKey: string): string {
   return typeof snake === "string" ? snake.trim() : ""
 }
 
-function sessionDisplayName(): string {
+/** SyndicationX account profile (My Account): first name and last name. */
+export function syndicationAccountW9Name(): string {
   return [sessionStr("firstName"), sessionStr("lastName")].filter(Boolean).join(" ")
+}
+
+function sessionDisplayName(): string {
+  return syndicationAccountW9Name()
+}
+
+/** Letters and digits only, so "O'Neil" and "oneil" can be compared without changing either spelling. */
+function nameMatchKey(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "")
+}
+
+/**
+ * Saved W-9 name that was copied from the investing profile, or that matches
+ * the account name with different spelling. The account first and last name
+ * should replace it.
+ */
+export function savedW9NameIsInvestorProfileDefault(
+  savedName: string,
+  profile: InvestorProfileListRow | undefined,
+  accountName: string,
+): boolean {
+  const saved = savedName.trim()
+  const account = accountName.trim()
+  if (!saved || !account || saved === account) return false
+  if (nameMatchKey(saved) === nameMatchKey(account)) return true
+  if (!profile) return false
+  const fromProfile = w9NameFromInvestorProfile(profile)
+  if (fromProfile && nameMatchKey(saved) === nameMatchKey(fromProfile)) return true
+  const display = profile.profileName.trim()
+  return Boolean(display && display !== "—" && nameMatchKey(saved) === nameMatchKey(display))
 }
 
 function prefillFromQuestionnaire(
@@ -294,12 +329,6 @@ export function buildInvestNowW9Prefill({
 
   if (profile) {
     const wizard = readWizardState(profile)
-    const name = w9NameFromInvestorProfile(profile) || sessionDisplayName()
-
-    next = {
-      ...next,
-      name,
-    }
 
     const taxAddressId = wizard ? String(wizard.taxAddressId ?? "").trim() : ""
     const addr = taxAddressId
@@ -338,6 +367,14 @@ export function buildInvestNowW9Prefill({
     zip: fromQuestionnaire.zip ?? "",
     ssn: fromQuestionnaire.ssn ?? "",
   })
+
+  const accountName = syndicationAccountW9Name()
+  if (accountName) {
+    if (next.name !== accountName) next = { ...next, name: accountName }
+  } else if (!next.name.trim() && profile) {
+    const fromProfile = w9NameFromInvestorProfile(profile)
+    if (fromProfile) next = { ...next, name: fromProfile }
+  }
 
   return next
 }

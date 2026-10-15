@@ -25,6 +25,7 @@ import {
 import {
   fetchMyLpDealInvestNowCommitment,
   patchMyLpDealInvestNowCommitment,
+  postMyLpDealInvestNowCommitmentComplete,
   postMyLpDealInvestNowEsignSend,
 } from "@/modules/Syndication/Deals/api/lpInvestNowCommitmentApi"
 import type { DealEsignTemplateFileRecord } from "@/modules/Syndication/Deals/api/dealsApi"
@@ -112,7 +113,9 @@ import {
   buildInvestNowW9Prefill,
   investNowW9FormApiPayload,
   mergeInvestNowW9Values,
+  savedW9NameIsInvestorProfileDefault,
   ssnFromAnyInvestorProfile,
+  syndicationAccountW9Name,
 } from "./investNowW9FormUtils"
 import {
   type InvestNowFieldErrors,
@@ -152,6 +155,16 @@ function formatDealCloseDateForInvestments(raw: string | undefined): string {
     day: "numeric",
     year: "numeric",
   })
+}
+
+function esignFailureAllowsSoftCommitment(
+  message: string | null | undefined,
+): boolean {
+  const normalized = String(message ?? "").trim().toLowerCase()
+  return (
+    normalized.includes("esign service is temporarily unavailable") ||
+    normalized.includes("ensure signflow is running")
+  )
 }
 
 export function DealInvestNowPage() {
@@ -521,9 +534,14 @@ export function DealInvestNowPage() {
               referringSponsorRef.trim(),
             )) ?? undefined
         }
+        const selfInvestor = inv.investors.find(
+          (r) => String(r.userEmail ?? "").trim().toLowerCase() === em,
+        )
         setSponsorLabel(
           pickInvestNowSponsorDisplayName(members, {
             referringSponsorDisplayName: resolvedReferringSponsorName,
+            investorAddedByDisplayName: selfInvestor?.addedByDisplayName,
+            investorAddedByCompanyName: selfInvestor?.addedByCompanyName,
           }),
         )
         if (referringSponsorRef?.trim() && resolvedReferringSponsorName?.trim()) {
@@ -620,19 +638,34 @@ export function DealInvestNowPage() {
       }
       const profileIdForPrefill = saved.userInvestorProfileId?.trim() ?? ""
       const savedW9Name = String(saved.w9Form?.name ?? "").trim()
-      if (savedW9Name && profileIdForPrefill) {
+      const resumeProfileRow = profileIdForPrefill
+        ? bookProfileRows.find((p) => p.id === profileIdForPrefill)
+        : undefined
+      const accountW9Name = syndicationAccountW9Name()
+      const replaceSavedProfileName = savedW9NameIsInvestorProfileDefault(
+        savedW9Name,
+        resumeProfileRow,
+        accountW9Name,
+      )
+      if (savedW9Name && profileIdForPrefill && !replaceSavedProfileName) {
         w9NameSourceRef.current = {
           profileId: profileIdForPrefill,
           appliedName: savedW9Name,
         }
         w9NameLockRef.current = true
+      } else if (replaceSavedProfileName && profileIdForPrefill) {
+        w9NameSourceRef.current = {
+          profileId: profileIdForPrefill,
+          appliedName: accountW9Name,
+        }
+        w9NameLockRef.current = false
       }
       setW9Values((prev) => {
         let next = prev
         if (saved.w9Form) {
           next = mergeInvestNowW9Values(next, {
             ...EMPTY_INVEST_NOW_W9,
-            name: String(saved.w9Form?.name ?? "").trim(),
+            name: replaceSavedProfileName ? "" : savedW9Name,
             addressLine: String(
               saved.w9Form?.address_line ?? saved.w9Form?.addressLine ?? "",
             ).trim(),
@@ -668,6 +701,7 @@ export function DealInvestNowPage() {
 
   const w9NameSourceRef = useRef({ profileId: "", appliedName: "" })
   const w9NameLockRef = useRef(false)
+  const w9NameUserEditedRef = useRef(false)
   const profileScopeRef = useRef({ savedUserProfileId: "", profileId: "" })
   const freshProfilePreselectRef = useRef(false)
 
@@ -881,9 +915,12 @@ export function DealInvestNowPage() {
     })
     const profileChanged =
       w9NameSourceRef.current.profileId !== savedUserProfileId
-    if (profileChanged) w9NameLockRef.current = false
+    if (profileChanged && !w9NameUserEditedRef.current) {
+      w9NameLockRef.current = false
+    }
     setW9Values((prev) => {
       const merged = mergeInvestNowW9Values(prev, prefill)
+      if (w9NameUserEditedRef.current) return merged
       const nextName = prefill.name.trim()
       const currentName = prev.name.trim()
       const autoFilled =
@@ -1596,10 +1633,6 @@ export function DealInvestNowPage() {
         : {}),
     })
     if (err) return err
-    toast.success(
-      "Committed successfully",
-      "Your investment commitment was saved. Continue to sign your documents.",
-    )
     return null
   }, [amount, w9Values, questionnaireAnswers, persistInvestNowProgress])
 
@@ -1796,7 +1829,9 @@ export function DealInvestNowPage() {
     if (esignErr) {
       const esignSetupMissing =
         !esignTemplate || (!isDealEsignTemplateReady(esignTemplate) && !esignCompleted)
-      if (esignSetupMissing) {
+      const esignServiceUnavailable =
+        esignFailureAllowsSoftCommitment(esignErr)
+      if (esignSetupMissing || esignServiceUnavailable) {
         setError("")
         setFieldErrors({})
         setDraftSavedModalOpen(true)
@@ -1810,6 +1845,17 @@ export function DealInvestNowPage() {
     }
     finishStartedRef.current = true
     setSubmitting(true)
+    try {
+      const mail = await postMyLpDealInvestNowCommitmentComplete(dealId, {
+        investmentId: investNowInvestmentIdRef.current?.trim() || undefined,
+        referringSponsorRef: referringSponsorRef?.trim() || undefined,
+      })
+      if (!mail.ok) {
+        console.warn("investment commitment email:", mail.message)
+      }
+    } catch (err) {
+      console.warn("investment commitment email:", err)
+    }
     const n = parseMoneyDigits(String(amount).trim())
 
     // Investor contributions: workflow — Stripe Checkout disabled for now
@@ -1891,6 +1937,7 @@ export function DealInvestNowPage() {
     offeringSize,
     closeDate,
     navigate,
+    referringSponsorRef,
     switchToInvesting,
   ])
 
@@ -2136,6 +2183,14 @@ export function DealInvestNowPage() {
         <InvestNowW9Step
           w9Values={w9Values}
           onW9Change={(v) => {
+            if (v.name !== w9Values.name) {
+              w9NameUserEditedRef.current = true
+              w9NameLockRef.current = true
+              w9NameSourceRef.current = {
+                profileId: savedUserProfileId,
+                appliedName: v.name,
+              }
+            }
             setW9Values(v)
             const clearedKeys: string[] = []
             if (v.name !== w9Values.name) clearedKeys.push(INVEST_NOW_FIELD.w9Name)
@@ -2293,9 +2348,9 @@ export function DealInvestNowPage() {
               </div>
               <div className="deals_add_inv_modal_scroll">
                 <p className="deals_suspend_all_modal_message">
-                  No documents are uploaded for this deal yet. You can contact
-                  your Sponsor & they will let you know when it is ready to
-                  complete the investment.
+                  {esignFailureAllowsSoftCommitment(esignSendError)
+                    ? "The eSign service is temporarily unavailable. You can save a soft commitment now and complete signing when the service is available."
+                    : "No documents are uploaded for this deal yet. You can contact your Sponsor & they will let you know when it is ready to complete the investment."}
                 </p>
               </div>
               <div className="um_modal_actions add_contact_modal_actions">

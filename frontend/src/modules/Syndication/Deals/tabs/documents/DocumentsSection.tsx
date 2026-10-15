@@ -144,6 +144,7 @@ interface DocumentsSectionProps {
   offeringInvestorPreviewJson?: string | null
   investorsListRefreshKey?: number
   viewerDealMemberRole?: ViewerDealMemberRole
+  viewOnly?: boolean
   onOfferingPreviewSynced?: (deal: DealDetailApi) => void
 }
 
@@ -669,6 +670,7 @@ export function DocumentsSection({
   offeringInvestorPreviewJson,
   investorsListRefreshKey = 0,
   viewerDealMemberRole: viewerDealMemberRoleProp = null,
+  viewOnly = false,
   onOfferingPreviewSynced,
 }: DocumentsSectionProps) {
   const dealIdTrim = dealId?.trim() ?? ""
@@ -2175,17 +2177,19 @@ export function DocumentsSection({
           aria-label="Document actions"
         >
           <div className="um_toolbar_actions deal_docs_toolbar_actions deal_docs_toolbar_actions_leading">
-            <input
-              ref={quickUploadInputRef}
-              type="file"
-              className="deal_docs_file_input"
-              multiple
-              accept={DEAL_OFFERING_DOCUMENT_ACCEPT}
-              onChange={onQuickUploadInputChange}
-              {...nativeFilePickerCancelProps(endQuickUploadPicker)}
-              aria-hidden
-              tabIndex={-1}
-            />
+            {!viewOnly ? (
+              <input
+                ref={quickUploadInputRef}
+                type="file"
+                className="deal_docs_file_input"
+                multiple
+                accept={DEAL_OFFERING_DOCUMENT_ACCEPT}
+                onChange={onQuickUploadInputChange}
+                {...nativeFilePickerCancelProps(endQuickUploadPicker)}
+                aria-hidden
+                tabIndex={-1}
+              />
+            ) : null}
             <button
               type="button"
               className="deal_docs_toolbar_btn"
@@ -2224,14 +2228,16 @@ export function DocumentsSection({
                 autoComplete="off"
               />
             </div>
-            <button
-              type="button"
-              className="um_btn_primary deal_docs_add_section_btn"
-              onClick={onAddSection}
-            >
-              <Plus size={18} strokeWidth={2} aria-hidden />
-              Add section
-            </button>
+            {!viewOnly ? (
+              <button
+                type="button"
+                className="um_btn_primary deal_docs_add_section_btn"
+                onClick={onAddSection}
+              >
+                <Plus size={18} strokeWidth={2} aria-hidden />
+                Add section
+              </button>
+            ) : null}
           </div>
         </div>
         {quickUploadError ? (
@@ -2241,9 +2247,11 @@ export function DocumentsSection({
         ) : null}
 
         <div className="deal_docs_ui_root">
-          <div className="deal_docs_ui_empty_zone">
-            {renderQuickUploadDropzone("panel")}
-          </div>
+          {!viewOnly ? (
+            <div className="deal_docs_ui_empty_zone">
+              {renderQuickUploadDropzone("panel")}
+            </div>
+          ) : null}
           {emptySearchLabel ? (
             <p className="deal_docs_ui_empty">{emptySearchLabel}</p>
           ) : null}
@@ -2450,7 +2458,7 @@ export function DocumentsSection({
                           aria-hidden
                         />
                       )}
-                      {!isAutoManagedSection ? (
+                      {!viewOnly && !isAutoManagedSection ? (
                         <button
                           type="button"
                           className="deal_docs_ui_banner_icon_btn"
@@ -2559,9 +2567,14 @@ export function DocumentsSection({
                               <th className="deal_docs_ui_th deal_docs_ui_th_label" scope="col">
                                 Label (Visible to LPs)
                               </th>
-                              <th className="deal_docs_ui_th deal_docs_ui_th_actions" scope="col">
-                                Actions
-                              </th>
+                              {!viewOnly ? (
+                                <th
+                                  className="deal_docs_ui_th deal_docs_ui_th_actions"
+                                  scope="col"
+                                >
+                                  Actions
+                                </th>
+                              ) : null}
                             </tr>
                           </thead>
                           <tbody>
@@ -2884,6 +2897,7 @@ export function DocumentsSection({
                                       ))}
                                     </select>
                                   </td>
+                                  {!viewOnly ? (
                                   <td className="deal_docs_ui_td deal_docs_ui_td_actions">
                                     <div className="deal_docs_ui_row_actions">
                                       {isEsignSection &&
@@ -2951,6 +2965,7 @@ export function DocumentsSection({
                                       </button>
                                     </div>
                                   </td>
+                                  ) : null}
                                 </tr>
                               )
                             })}

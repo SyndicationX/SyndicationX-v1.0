@@ -7,6 +7,7 @@ import {
   File,
   FileSignature,
   FileText,
+  Info,
   Link2,
   Pencil,
   Users,
@@ -48,6 +49,7 @@ import {
 } from "./api/dealsApi"
 import { DealAnnouncementBanner } from "./components/DealAnnouncementBanner"
 import { DealsPageCenteredLoader } from "./components/DealsPageCenteredLoader"
+import { DealBillableStageNoticeModal } from "./components/DealBillableStageNoticeModal"
 import { DealManageStageModal } from "./components/DealManageStageModal"
 import { DealSaasPaywallModal } from "./components/DealSaasPaywallModal"
 import {
@@ -109,6 +111,7 @@ import { dealHasOfferingShareLink } from "./utils/offeringOverviewForm"
 import { TabsScrollStrip } from "../../../common/components/tabs-scroll-strip/TabsScrollStrip"
 import { notifyDealsListRefetch } from "./createDealFormDraftStorage"
 import {
+  dealSaasBillingSettingsPath,
   isDealSaasPaymentRequiredError,
   type DealSaasPaywallDeal,
 } from "./utils/dealSaasAccess"
@@ -185,6 +188,10 @@ export function DealDetailPage() {
   const [saasPaywallDeal, setSaasPaywallDeal] =
     useState<DealSaasPaywallDeal | null>(null)
   const [manageStageOpen, setManageStageOpen] = useState(false)
+  /** Requested Capital Raising / Asset Managing stage held until SaaS payment. */
+  const [stageBillingNotice, setStageBillingNotice] = useState<string | null>(
+    null,
+  )
   const [upgradePromptDeal, setUpgradePromptDeal] =
     useState<DealSaasPaywallDeal | null>(null)
 
@@ -259,35 +266,55 @@ export function DealDetailPage() {
 
   const isWorkspaceAdmin = isCompanyAdmin() || isPlatformAdmin()
 
+  const syndicationViewOnly =
+    mode !== "investing" && dealDetailApi?.viewerCanManageDeal === false
+
   const viewerDealTabIds = useMemo(
-    () =>
-      visibleDealDetailTabIds(viewerDealMemberRole, {
+    () => {
+      const ids = visibleDealDetailTabIds(viewerDealMemberRole, {
         isWorkspaceAdmin,
         isRoleLoading: viewerDealMemberRoleFromApi === undefined,
-      }),
-    [viewerDealMemberRole, viewerDealMemberRoleFromApi, isWorkspaceAdmin],
+      })
+      return ids
+    },
+    [
+      viewerDealMemberRole,
+      viewerDealMemberRoleFromApi,
+      isWorkspaceAdmin,
+      syndicationViewOnly,
+    ],
   )
 
   const canUploadEsignTemplates = useMemo(
-    () => viewerCanUploadDealEsignTemplates(viewerDealMemberRole),
-    [viewerDealMemberRole],
+    () =>
+      !syndicationViewOnly &&
+      viewerCanUploadDealEsignTemplates(viewerDealMemberRole),
+    [viewerDealMemberRole, syndicationViewOnly],
   )
 
   const canSendEsignTemplates = useMemo(
-    () => viewerCanSendDealEsignTemplates(viewerDealMemberRole),
-    [viewerDealMemberRole],
+    () =>
+      !syndicationViewOnly &&
+      viewerCanSendDealEsignTemplates(viewerDealMemberRole),
+    [viewerDealMemberRole, syndicationViewOnly],
   )
 
   const canApproveFund = useMemo(
     () =>
+      !syndicationViewOnly &&
       viewerCanApproveDealFund(viewerDealMemberRole, { isWorkspaceAdmin }),
-    [viewerDealMemberRole, isWorkspaceAdmin],
+    [viewerDealMemberRole, isWorkspaceAdmin, syndicationViewOnly],
   )
 
   const canEditDeal = useMemo(() => {
+    if (syndicationViewOnly) return false
     if (dealDetailApi?.viewerCanEditDeal === false) return false
     return viewerCanEditDeal(viewerDealMemberRole)
-  }, [dealDetailApi?.viewerCanEditDeal, viewerDealMemberRole])
+  }, [
+    dealDetailApi?.viewerCanEditDeal,
+    viewerDealMemberRole,
+    syndicationViewOnly,
+  ])
 
   const [dealHasEsignDocuments, setDealHasEsignDocuments] = useState(false)
 
@@ -598,9 +625,10 @@ export function DealDetailPage() {
   }, [dealId, dealRequiredFieldsIncomplete, navigate])
 
   const canShareDealInvestorInvite =
-    viewerDealMemberRole === "lead_sponsor" ||
-    viewerDealMemberRole === "admin_sponsor" ||
-    viewerDealMemberRole === "co_sponsor"
+    !syndicationViewOnly &&
+    (viewerDealMemberRole === "lead_sponsor" ||
+      viewerDealMemberRole === "admin_sponsor" ||
+      viewerDealMemberRole === "co_sponsor")
 
   const openDealInviteLinkModal = useCallback(() => {
     if (!dealId?.trim() || isDealOfferingShareBlocked) return
@@ -829,9 +857,13 @@ export function DealDetailPage() {
         {saasPaywallDeal ? (
           <>
             <p className="deals_list_not_found">
-              {saasPaywallDeal.dealName.trim()
-                ? `Pay monthly SaaS (MRR) for “${saasPaywallDeal.dealName.trim()}” to continue.`
-                : "Pay monthly SaaS (MRR) for this deal to continue."}{" "}
+              {mode === "investing"
+                ? saasPaywallDeal.dealName.trim()
+                  ? `Contact your sponsor for access to “${saasPaywallDeal.dealName.trim()}”.`
+                  : "Contact your sponsor for access to this deal."
+                : saasPaywallDeal.dealName.trim()
+                  ? `Pay monthly SaaS (MRR) for “${saasPaywallDeal.dealName.trim()}” to continue.`
+                  : "Pay monthly SaaS (MRR) for this deal to continue."}{" "}
               <Link to={dealsListBackPath} className="deals_list_inline_back">
                 <ArrowLeft size={18} strokeWidth={2} aria-hidden />
                 Back to deals
@@ -839,6 +871,7 @@ export function DealDetailPage() {
             </p>
             <DealSaasPaywallModal
               deal={saasPaywallDeal}
+              investorFacing={mode === "investing"}
               onClose={() => navigate(dealsListBackPath)}
             />
           </>
@@ -950,6 +983,21 @@ export function DealDetailPage() {
           </div>
           ) : null}
         </div>
+        {syndicationViewOnly ? (
+          <div
+            className="deals_cross_org_view_only_notice"
+            role="status"
+            aria-label="View-only deal access"
+          >
+            <Info size={20} strokeWidth={2.25} aria-hidden />
+            <div>
+              <strong>View-only access</strong>
+              <span>
+                You can view this deal. Only the sponsor can make changes.
+              </span>
+            </div>
+          </div>
+        ) : null}
       </header>
 
       <div className="um_members_tabs_outer deals_tabs_outer um_segmented_tabs_outer">
@@ -1014,11 +1062,11 @@ export function DealDetailPage() {
       {showSyndicatingDealChrome ? (
         <>
       <div
-        className={
-          activeTab === "deal_members"
-            ? "um_members_tab_content deal_members_tab"
-            : "um_members_tab_content"
-        }
+        className={`${activeTab === "deal_members"
+          ? "um_members_tab_content deal_members_tab"
+          : "um_members_tab_content"}${
+          syndicationViewOnly ? " deals_syndication_view_only_content" : ""
+        }`}
       >
         <div
           id="deal-detail-tabpanel"
@@ -1066,6 +1114,7 @@ export function DealDetailPage() {
                 onViewMember={(row) => {
                   dealInvestorsTabRef.current?.openViewInvestor(row)
                 }}
+                viewOnly={syndicationViewOnly}
               />
             ) : null}
             <DealInvestorsTab
@@ -1108,6 +1157,7 @@ export function DealDetailPage() {
               invitationMailStatusByRowId={invitationMailSentByRowId}
               viewerDealMemberRole={viewerDealMemberRole}
               dealMembersRoster={memberRosterForTabs}
+              viewOnly={syndicationViewOnly}
             />
           </>
         ) : activeTab === "offering_details" && dealDetailApi ? (
@@ -1115,6 +1165,7 @@ export function DealDetailPage() {
             detail={dealDetailApi}
             onDealUpdated={handleDealPersisted}
             viewerDealMemberRole={viewerDealMemberRole}
+            viewOnly={syndicationViewOnly}
           />
         ) : activeTab === "documents" && dealDetailApi ? (
           <DealDocumentsTab
@@ -1123,6 +1174,7 @@ export function DealDetailPage() {
             offeringInvestorPreviewJson={dealDetailApi.offeringInvestorPreviewJson}
             investorsListRefreshKey={dealMembersRefreshKey}
             viewerDealMemberRole={viewerDealMemberRole}
+            viewOnly={syndicationViewOnly}
             onOfferingPreviewSynced={handleDealPersisted}
           />
         ) : activeTab === "esign_templates" ? (
@@ -1134,7 +1186,10 @@ export function DealDetailPage() {
             canUploadDocuments={canUploadEsignTemplates}
           />
         ) : activeTab === "investor_communication" && dealId?.trim() ? (
-          <InvestorCommunicationTab dealId={dealId.trim()} />
+          <InvestorCommunicationTab
+            dealId={dealId.trim()}
+            viewOnly={syndicationViewOnly}
+          />
         ) : activeTab === "distributions" && dealId?.trim() ? (
           <DistributionsTab
             dealId={dealId.trim()}
@@ -1143,6 +1198,7 @@ export function DealDetailPage() {
               deal?.title?.trim() ||
               undefined
             }
+            viewOnly={syndicationViewOnly}
           />
         ) : (
           <div className="deal_detail_wip_wrap" role="status">
@@ -1166,10 +1222,7 @@ export function DealDetailPage() {
         onSaved={(updated, pendingDealStage) => {
           handleDealPersisted(updated)
           if (pendingDealStage) {
-            toast.error(
-              "Stage change on hold",
-              "Pay monthly SaaS (MRR) for this deal to move it out of Draft.",
-            )
+            setStageBillingNotice(pendingDealStage)
             return
           }
           toast.success(
@@ -1177,6 +1230,17 @@ export function DealDetailPage() {
             `This deal is now ${dealStageLabel(updated.dealStage)}.`,
           )
         }}
+      />
+      <DealBillableStageNoticeModal
+        open={stageBillingNotice != null}
+        dealStage={stageBillingNotice}
+        mode="billing"
+        onOk={() => {
+          const id = dealId?.trim()
+          if (!id) return
+          navigate(dealSaasBillingSettingsPath(id, displayName))
+        }}
+        onClose={() => setStageBillingNotice(null)}
       />
       <DealSaasPaywallModal
         deal={upgradePromptDeal}

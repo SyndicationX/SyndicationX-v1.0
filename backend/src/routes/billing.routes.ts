@@ -22,6 +22,11 @@ import {
   postExtraCompanyUserCheckout,
   postExtraCompanyUserPaySaved,
   postExtraCompanyUserSyncCheckout,
+  getPlatformCoupons,
+  getPlatformCouponUsage,
+  postPreviewPlatformCoupon,
+  postPlatformCoupon,
+  postDeactivatePlatformCoupon,
 } from "../controllers/billing/companyBilling.controller.js";
 import {
   billingAlreadyPaidMiddleware,
@@ -45,6 +50,11 @@ router.get("/billing/config", getBillingConfig);
 router.get("/billing/start-date", getBillingStartDate);
 router.get("/billing/deals", getPlatformBillingDeals);
 router.get("/billing/organizations", getPlatformBillingOrganizations);
+router.get("/billing/coupons", getPlatformCoupons);
+router.get("/billing/coupons/usage", getPlatformCouponUsage);
+router.post("/billing/coupons/preview", postPreviewPlatformCoupon);
+router.post("/billing/coupons", postPlatformCoupon);
+router.post("/billing/coupons/:couponId/deactivate", postDeactivatePlatformCoupon);
 router.get("/companies/:companyId/billing/deals", getCompanyBillingDeals);
 router.post(
   "/companies/:companyId/billing/deals/:dealId/cycle",

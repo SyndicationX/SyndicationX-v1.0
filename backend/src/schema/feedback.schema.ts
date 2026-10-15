@@ -2,8 +2,10 @@ import {
   index,
   jsonb,
   pgTable,
+  serial,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -93,6 +95,8 @@ export const userFeedback = pgTable(
   "user_feedback",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    /** Permanent entry order: first submitted feedback is 1. */
+    feedbackNo: serial("feedback_no"),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -122,6 +126,7 @@ export const userFeedback = pgTable(
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   },
   (t) => ({
+    feedbackNoUidx: uniqueIndex("user_feedback_feedback_no_uidx").on(t.feedbackNo),
     statusIdx: index("user_feedback_status_idx").on(t.status),
     userIdx: index("user_feedback_user_id_idx").on(t.userId),
     createdIdx: index("user_feedback_created_at_idx").on(t.createdAt),

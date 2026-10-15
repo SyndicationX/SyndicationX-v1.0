@@ -29,6 +29,10 @@ interface DealRowActionsProps {
    */
   readOnlyActions?: boolean
   /**
+   * Syndication list: peer's deal in another organization. Preview and view only.
+   */
+  viewOnlySyndication?: boolean
+  /**
    * Session create-deal draft row: “Edit Deal” becomes “Continue editing”
    * (`/deals/create?resume=1`). Archive is disabled; Delete discards the session draft
    * after confirmation with a required reason.
@@ -65,6 +69,7 @@ export function DealRowActions({
   dealName,
   archived = false,
   readOnlyActions = false,
+  viewOnlySyndication = false,
   draftRow = false,
   requiredFieldsIncomplete = false,
   dealStage = "",
@@ -292,7 +297,7 @@ export function DealRowActions({
               className="um_kebab_menu um_kebab_menu--portal"
               role="menu"
             >
-              {onPreviewDeal || draftRow ? (
+              {(!viewOnlySyndication && onPreviewDeal) || draftRow ? (
                 <li role="none">
                   <button
                     type="button"
@@ -352,7 +357,7 @@ export function DealRowActions({
                   </button>
                 </li>
               ) : null}
-              {!readOnlyActions ? (
+              {!readOnlyActions && !viewOnlySyndication ? (
                 <>
                   {canEditDeal || draftRow ? (
                   <li role="none">

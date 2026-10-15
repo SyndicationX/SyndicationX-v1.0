@@ -16,6 +16,7 @@ import {
 } from "../../schema/deal.schema/deal-lp-investor.schema.js";
 import { users } from "../../schema/auth.schema/signin.js";
 import { contact } from "../../schema/contact.schema.js";
+import { invalidateContactDirectoryCache } from "../cache/listReadCache.js";
 import { assertEligibleForNewDealRosterAdd } from "../user/portalUserRosterGuard.service.js";
 import {
   applyTotalCommittedToDealInvestmentRowForCanonical,
@@ -228,6 +229,9 @@ function syntheticInvestmentFromDealMember(m: DealMemberRow): DealInvestmentRow 
     investorW9FormJson: null,
     fundingMethod: "",
     commitmentAmount: "",
+    commitmentCompletedAt: null,
+    commitmentInvestorEmailSentAt: null,
+    commitmentSponsorEmailSentAt: null,
     extraContributionAmounts: [],
     documentStoragePath: null,
     createdAt: m.createdAt,
@@ -260,6 +264,9 @@ function syntheticInvestmentFromGpLpRoster(
     investorW9FormJson: null,
     fundingMethod: "",
     commitmentAmount: m.committed_amount,
+    commitmentCompletedAt: null,
+    commitmentInvestorEmailSentAt: null,
+    commitmentSponsorEmailSentAt: null,
     extraContributionAmounts: [],
     documentStoragePath: null,
     createdAt: m.createdAt,
@@ -338,6 +345,16 @@ function normalizeRoleLabel(raw: string | null | undefined): string {
 
 function roleIsLeadSponsor(raw: string | null | undefined): boolean {
   return normalizeRoleLabel(raw) === "lead sponsor";
+}
+
+function roleIsSponsor(raw: string | null | undefined): boolean {
+  const role = normalizeRoleLabel(raw);
+  return (
+    role === "lead sponsor" ||
+    role === "admin sponsor" ||
+    role === "co-sponsor" ||
+    role === "co sponsor"
+  );
 }
 
 function normalizeRosterContactId(raw: string | null | undefined): string {
@@ -673,6 +690,304 @@ async function copyOutsideDealRosterIntoOrganization(
   return created;
 }
 
+/**
+ * Companies that should list this outside sponsor: the deal's company and the
+ * company of the user who added them. A peer sponsor's company does not
+ * receive the other sponsors.
+ */
+async function listOrganizationsForOutsideSponsorContact(
+  tx: DealWriteTx,
+  dealId: string,
+  sponsorHomeOrganizationId: string,
+  addedByUserId: string,
+): Promise<string[]> {
+  const targets = new Set<string>();
+  const add = (raw: string | null | undefined) => {
+    const id = String(raw ?? "").trim();
+    if (!ROSTER_CONTACT_UUID_RE.test(id)) return;
+    if (sameOrganization(id, sponsorHomeOrganizationId)) return;
+    targets.add(id);
+  };
+
+  const [deal] = await tx
+    .select({ organizationId: addDealForm.organizationId })
+    .from(addDealForm)
+    .where(eq(addDealForm.id, dealId))
+    .limit(1);
+  add(deal?.organizationId);
+
+  const adderId = addedByUserId.trim();
+  if (ROSTER_CONTACT_UUID_RE.test(adderId)) {
+    const [adder] = await tx
+      .select({ organizationId: users.organizationId })
+      .from(users)
+      .where(eq(users.id, adderId))
+      .limit(1);
+    add(adder?.organizationId);
+  }
+
+  return [...targets];
+}
+
+/**
+ * A copied sponsor or moved roster row stays in this company only when that
+ * person is on a deal this company owns, or a user in this company added them
+ * to a deal. Sharing a deal with a sponsor from this company is not enough.
+ */
+function copiedContactBelongsInOrganizationSql(orgId: string) {
+  const emailMatchesRoster = sql`lower(trim(${contact.email})) = lower(trim(coalesce(roster_contact.email, roster_user.email, '')))
+    AND position('@' in trim(coalesce(roster_contact.email, roster_user.email, ''))) > 1`;
+  const rosterUserJoin = sql`
+    LEFT JOIN contact roster_contact
+      ON roster_contact.id::text = trim(roster_id)
+    LEFT JOIN users roster_user
+      ON roster_user.id::text = trim(roster_id)
+      OR (
+        roster_contact.email IS NOT NULL
+        AND lower(trim(roster_user.email)) = lower(trim(roster_contact.email))
+      )`;
+  return sql`(
+    EXISTS (
+      SELECT 1
+      FROM deal_member dm
+      INNER JOIN add_deal_form f ON f.id = dm.deal_id
+      CROSS JOIN LATERAL (SELECT trim(dm.contact_member_id) AS roster_id) roster
+      ${rosterUserJoin}
+      WHERE dm.is_draft = false
+        AND (
+          f.organization_id = ${orgId}::uuid
+          OR EXISTS (
+            SELECT 1 FROM users adder
+            WHERE adder.id = dm.added_by
+              AND adder.organization_id = ${orgId}::uuid
+          )
+        )
+        AND ${emailMatchesRoster}
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM deal_lp_investor lp
+      INNER JOIN add_deal_form f ON f.id = lp.deal_id
+      WHERE (
+          f.organization_id = ${orgId}::uuid
+          OR EXISTS (
+            SELECT 1 FROM users adder
+            WHERE adder.id = lp.added_by
+              AND adder.organization_id = ${orgId}::uuid
+          )
+        )
+        AND lower(trim(coalesce(lp.email, ''))) = lower(trim(${contact.email}))
+        AND position('@' in trim(coalesce(lp.email, ''))) > 1
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM deal_investment di
+      INNER JOIN add_deal_form f ON f.id = di.deal_id
+      CROSS JOIN LATERAL (SELECT trim(di.contact_id) AS roster_id) roster
+      ${rosterUserJoin}
+      WHERE di.is_draft = false
+        AND f.organization_id = ${orgId}::uuid
+        AND trim(di.contact_id) <> ${DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER}
+        AND ${emailMatchesRoster}
+    )
+  )`;
+}
+
+/**
+ * A sponsor from another company becomes a CRM contact of each related
+ * company. Their portal account and home-company membership are unchanged.
+ */
+async function copySponsorIntoOrganization(
+  tx: DealWriteTx,
+  dealId: string,
+  sponsorRosterId: string,
+  addedByUserId: string,
+  organizationId: string,
+): Promise<boolean> {
+  if (!ROSTER_CONTACT_UUID_RE.test(organizationId)) return false;
+  const person = await resolveDealRosterPerson(tx, sponsorRosterId);
+  if (!person) return false;
+  if (sameOrganization(person.homeOrganizationId, organizationId)) return false;
+
+  const [existing] = await tx
+    .select({
+      id: contact.id,
+      isPortalUser: contact.isPortalUser,
+    })
+    .from(contact)
+    .where(
+      and(
+        eq(contact.organizationId, organizationId),
+        sql`lower(trim(${contact.email})) = ${person.email}`,
+      ),
+    )
+    .limit(1);
+  if (existing) {
+    if (!existing.isPortalUser) return false;
+    await tx
+      .update(contact)
+      .set({ isPortalUser: false, importSource: "deal_sponsor" })
+      .where(eq(contact.id, existing.id));
+    return true;
+  }
+
+  const createdBy = await resolveContactCreatorInOrganization(
+    tx,
+    organizationId,
+    addedByUserId,
+  );
+  if (!createdBy) return false;
+
+  const firstName = contactNameOrDash(person.firstName);
+  const lastName = contactNameOrDash(person.lastName);
+  await tx.insert(contact).values({
+    firstName,
+    lastName,
+    fullName: [firstName, lastName].filter((part) => part !== "—").join(" "),
+    email: person.email,
+    phone: person.phone,
+    note: "",
+    tags: [],
+    lists: [],
+    owners: [],
+    status: "active",
+    createdBy,
+    organizationId,
+    isPortalUser: false,
+    platformAdminOnly: false,
+    visibleToUsers: false,
+    relationship506b: "NO",
+    referredByDealId: dealId,
+    importSource: "deal_sponsor",
+  });
+  return true;
+}
+
+async function copySponsorIntoRelatedOrganizations(
+  tx: DealWriteTx,
+  dealId: string,
+  sponsorRosterId: string,
+  addedByUserId: string,
+): Promise<boolean> {
+  const person = await resolveDealRosterPerson(tx, sponsorRosterId);
+  if (!person) return false;
+  const organizationIds = await listOrganizationsForOutsideSponsorContact(
+    tx,
+    dealId,
+    person.homeOrganizationId,
+    addedByUserId,
+  );
+  let created = false;
+  for (const organizationId of organizationIds) {
+    if (
+      await copySponsorIntoOrganization(
+        tx,
+        dealId,
+        sponsorRosterId,
+        addedByUserId,
+        organizationId,
+      )
+    ) {
+      created = true;
+    }
+  }
+  return created;
+}
+
+/**
+ * Outside sponsors belong in this company's All Contacts when the company owns
+ * the deal or someone in the company added them. Sponsors from the other
+ * company on that deal are not copied back.
+ */
+export async function syncOutsideSponsorsIntoOrganizationContacts(
+  organizationId: string,
+  requestedByUserId: string,
+): Promise<number> {
+  const orgId = String(organizationId ?? "").trim();
+  const actorId = String(requestedByUserId ?? "").trim();
+  if (!ROSTER_CONTACT_UUID_RE.test(orgId) || !ROSTER_CONTACT_UUID_RE.test(actorId)) {
+    return 0;
+  }
+
+  const rosterRows = await db
+    .select({
+      dealId: dealMember.dealId,
+      contactMemberId: dealMember.contactMemberId,
+      addedBy: dealMember.addedBy,
+    })
+    .from(dealMember)
+    .innerJoin(addDealForm, eq(addDealForm.id, dealMember.dealId))
+    .where(
+      and(
+        eq(dealMember.isDraft, false),
+        sql`replace(lower(trim(${dealMember.dealMemberRole})), '_', ' ') in (
+          'lead sponsor', 'admin sponsor', 'co-sponsor', 'co sponsor'
+        )`,
+        sql`(
+          ${addDealForm.organizationId} = ${orgId}::uuid
+          OR EXISTS (
+            SELECT 1 FROM users adder
+            WHERE adder.id = ${dealMember.addedBy}
+              AND adder.organization_id = ${orgId}::uuid
+          )
+        )`,
+      ),
+    );
+  const investmentSponsorRows = await db
+    .select({
+      dealId: dealInvestment.dealId,
+      contactMemberId: dealInvestment.contactId,
+      addedBy: sql<string | null>`null`,
+    })
+    .from(dealInvestment)
+    .innerJoin(addDealForm, eq(addDealForm.id, dealInvestment.dealId))
+    .where(
+      and(
+        eq(addDealForm.organizationId, orgId),
+        eq(dealInvestment.isDraft, false),
+        ne(
+          dealInvestment.contactId,
+          DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER,
+        ),
+        sql`replace(lower(trim(${dealInvestment.investor_role})), '_', ' ') in (
+          'lead sponsor', 'admin sponsor', 'co-sponsor', 'co sponsor'
+        )`,
+      ),
+    );
+  const allSponsorRows = [...rosterRows, ...investmentSponsorRows];
+
+  let created = 0;
+  let removed = 0;
+  await db.transaction(async (tx) => {
+    for (const row of allSponsorRows) {
+      if (
+        await copySponsorIntoOrganization(
+          tx,
+          String(row.dealId),
+          String(row.contactMemberId),
+          String(row.addedBy ?? actorId),
+          orgId,
+        )
+      ) {
+        created += 1;
+      }
+    }
+    const deleted = await tx
+      .delete(contact)
+      .where(
+        and(
+          eq(contact.organizationId, orgId),
+          sql`${contact.importSource} in ('deal_sponsor', 'deal_org_move')`,
+          sql`NOT (${copiedContactBelongsInOrganizationSql(orgId)})`,
+        ),
+      )
+      .returning({ id: contact.id });
+    removed = deleted.length;
+  });
+  if (created > 0 || removed > 0) invalidateContactDirectoryCache();
+  return created;
+}
+
 async function alignDealOrganizationWithLeadSponsor(
   tx: DealWriteTx,
   dealId: string,
@@ -810,6 +1125,7 @@ export async function saveDealMemberRoleForDeal(
   const send = sendInvitationYesFromInput(input.sendInvitationMail);
   const now = new Date();
   const role = input.dealMemberRole?.trim() ?? "";
+  let sponsorContactCreated = false;
 
   await db.transaction(async (tx) => {
     await tx
@@ -883,7 +1199,17 @@ export async function saveDealMemberRoleForDeal(
         leadSponsorContactId,
       );
     }
+    if (roleIsSponsor(role)) {
+      sponsorContactCreated = await copySponsorIntoRelatedOrganizations(
+        tx,
+        dealId,
+        cid,
+        input.addedByUserId,
+      );
+    }
   });
+
+  if (sponsorContactCreated) invalidateContactDirectoryCache();
 
   const leadSponsorChanged =
     (currentWasLead && !currentWillBeLead) ||

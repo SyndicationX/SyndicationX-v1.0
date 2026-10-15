@@ -345,3 +345,65 @@ export async function postMyLpDealInvestNowEsignSend(
     return { ok: false, message: msg }
   }
 }
+
+export type PostMyLpDealInvestNowCommitmentCompleteResult =
+  | {
+      ok: true
+      investmentId: string | null
+      investorEmailSent: boolean
+      sponsorEmailSent: boolean
+      investorEmailSkipped: boolean
+      sponsorEmailSkipped: boolean
+    }
+  | { ok: false; message: string }
+
+/** POST after Invest Now Finish. Server sends investor and sponsor emails once. */
+export async function postMyLpDealInvestNowCommitmentComplete(
+  dealId: string,
+  body: { investmentId?: string; referringSponsorRef?: string },
+): Promise<PostMyLpDealInvestNowCommitmentCompleteResult> {
+  const did = dealId.trim()
+  if (!did) return { ok: false, message: "Missing deal id" }
+  try {
+    const token = await ensureValidAccessToken()
+    if (!token) return { ok: false, message: "Sign in required" }
+    const res = await fetch(
+      `${getApiV1Base()}/deals/${encodeURIComponent(did)}/lp-investors/my-invest-now-commitment-complete`,
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...(body.investmentId?.trim()
+            ? { investment_id: body.investmentId.trim() }
+            : {}),
+          ...(body.referringSponsorRef?.trim()
+            ? { referring_sponsor_ref: body.referringSponsorRef.trim() }
+            : {}),
+        }),
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok) {
+      const msg =
+        typeof data.message === "string"
+          ? data.message
+          : `Could not send commitment emails (${res.status})`
+      return { ok: false, message: msg }
+    }
+    return {
+      ok: true,
+      investmentId:
+        typeof data.investmentId === "string" ? data.investmentId : null,
+      investorEmailSent: Boolean(data.investorEmailSent),
+      sponsorEmailSent: Boolean(data.sponsorEmailSent),
+      investorEmailSkipped: Boolean(data.investorEmailSkipped),
+      sponsorEmailSkipped: Boolean(data.sponsorEmailSkipped),
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Network error"
+    return { ok: false, message: msg }
+  }
+}

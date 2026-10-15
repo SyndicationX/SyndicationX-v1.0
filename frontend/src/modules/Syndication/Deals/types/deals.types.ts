@@ -53,6 +53,11 @@ export interface DealListRow {
   viewerIsLeadSponsor?: boolean
   /** False when this viewer is a co-sponsor (or LP) and must not edit the deal. */
   viewerCanEditDeal?: boolean
+  /**
+   * False when this syndicator can open the deal only because a peer sponsors it
+   * in another organization. View only — the sponsor keeps manage access.
+   */
+  viewerCanManageDeal?: boolean
   /** ISO timestamp of this deal’s next SaaS billing date (lead sponsors only). */
   nextBillingDate?: string | null
   /** When SaaS billing / paywall starts for this deal. */

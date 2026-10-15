@@ -86,6 +86,11 @@ import {
   formatDealListDateDisplay,
   secTypeDisplayLabel,
 } from "./dealsListDisplay"
+import { resolveInvestmentStatusSelectValue } from "./constants/investment-status"
+import {
+  displayInvestorCommittedAmount,
+  parseMoneyDigits,
+} from "./utils/offeringMoneyFormat"
 // import { DealInvestorRoleBadge } from "./tabs/investors/DealInvestorRoleBadge"
 import "../usermanagement/user_management.css"
 import "./tabs/deal_members/add-investment/add_deal_modal.css"
@@ -371,6 +376,7 @@ export function DealsListPage({
       string,
       {
         committedRaw: string
+        softCommittedRaw: string
         fundedRaw: string
         remainingRaw: string
         investorCount: number
@@ -522,6 +528,7 @@ export function DealsListPage({
               id,
               {
                 committedRaw: "—",
+                softCommittedRaw: "—",
                 fundedRaw: "—",
                 remainingRaw: "—",
                 investorCount: 0,
@@ -558,10 +565,25 @@ export function DealsListPage({
                     ),
                   )
                 : "—"
+            const softCommittedTotal = investors
+              .filter(
+                (investor) =>
+                  resolveInvestmentStatusSelectValue(investor.status) ===
+                  "Soft committed",
+              )
+              .reduce((sum, investor) => {
+                const amount = parseMoneyDigits(
+                  displayInvestorCommittedAmount(investor),
+                )
+                return sum + (Number.isFinite(amount) ? amount : 0)
+              }, 0)
             return [
               id,
               {
                 committedRaw: kpis.committed,
+                softCommittedRaw: String(
+                  Math.round(softCommittedTotal * 100) / 100,
+                ),
                 fundedRaw: kpis.totalFunded,
                 remainingRaw: kpis.remaining,
                 investorCount: investors.length,
@@ -574,6 +596,7 @@ export function DealsListPage({
               id,
               {
                 committedRaw: "—",
+                softCommittedRaw: "—",
                 fundedRaw: "—",
                 remainingRaw: "—",
                 investorCount: 0,
@@ -983,8 +1006,17 @@ export function DealsListPage({
         colWidth: "10.75rem",
         thClassName: "deals_th_align_right",
         tdClassName: "um_td_numeric deals_td_align_right",
-        sortValue: (row) => committedSortValue(row.totalInProgress),
-        cell: (row) => <TableCompactAmountCell amount={row.totalInProgress} />,
+        sortValue: (row) =>
+          committedSortValue(
+            investorMetricsByDealId[row.id]?.softCommittedRaw ?? "—",
+          ),
+        cell: (row) => (
+          <TableCompactAmountCell
+            amount={
+              investorMetricsByDealId[row.id]?.softCommittedRaw ?? "—"
+            }
+          />
+        ),
       },
       {
         id: "funded",
@@ -1085,6 +1117,10 @@ export function DealsListPage({
                 row,
               )}
               readOnlyActions={dealsListContext === "investing"}
+              viewOnlySyndication={
+                dealsListContext !== "investing" &&
+                row.viewerCanManageDeal === false
+              }
               canEditDeal={row.viewerCanEditDeal !== false}
               dealId={row.id}
               dealName={row.dealName}
@@ -1278,6 +1314,7 @@ export function DealsListPage({
         />
         <DealSaasPaywallModal
           deal={saasPaywallDeal}
+          investorFacing={dealsListContext === "investing"}
           onClose={() => setSaasPaywallDeal(null)}
         />
       </>
@@ -1376,6 +1413,7 @@ export function DealsListPage({
 
       <DealSaasPaywallModal
         deal={saasPaywallDeal}
+        investorFacing={dealsListContext === "investing"}
         onClose={() => setSaasPaywallDeal(null)}
       />
 

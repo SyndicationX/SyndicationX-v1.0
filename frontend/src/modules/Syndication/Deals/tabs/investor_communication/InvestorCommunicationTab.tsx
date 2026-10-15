@@ -110,9 +110,13 @@ function MailStatusBadge({ status }: { status: InvestorCommunicationMailStatus }
 
 export interface InvestorCommunicationTabProps {
   dealId: string
+  viewOnly?: boolean
 }
 
-export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabProps) {
+export function InvestorCommunicationTab({
+  dealId,
+  viewOnly = false,
+}: InvestorCommunicationTabProps) {
   const [rows, setRows] = useState<InvestorCommunicationMailRow[]>([])
   const [loading, setLoading] = useState(true)
   const [sendMailOpen, setSendMailOpen] = useState(false)
@@ -402,13 +406,15 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
         cell: (row) => (
           <InvestorCommunicationRowActions
             row={row}
-            viewerIsCosponsor={viewerIsCosponsor}
+            viewerIsCosponsor={viewOnly ? false : viewerIsCosponsor}
             onView={handleView}
-            onResend={handleResend}
+            onResend={viewOnly ? undefined : handleResend}
             onSendToInvestors={
-              viewerIsCosponsor ? handleSendToInvestors : undefined
+              !viewOnly && viewerIsCosponsor
+                ? handleSendToInvestors
+                : undefined
             }
-            onDelete={handleDelete}
+            onDelete={viewOnly ? undefined : handleDelete}
           />
         ),
       },
@@ -425,6 +431,7 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
       selectedIds,
       toggleSelect,
       toggleSelectAllFiltered,
+      viewOnly,
       viewerIsCosponsor,
     ],
   )
@@ -503,6 +510,8 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
             />
           </div>
           <div className="um_toolbar_actions deal_inv_table_toolbar_actions">
+            {viewOnly ? null : (
+              <>
             {selectedIds.size > 0 ? (
               <button
                 type="button"
@@ -527,6 +536,8 @@ export function InvestorCommunicationTab({ dealId }: InvestorCommunicationTabPro
               <Send size={18} strokeWidth={2} aria-hidden />
               Send email
             </button>
+              </>
+            )}
           </div>
         </div>
 

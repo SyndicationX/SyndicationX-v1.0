@@ -1351,6 +1351,67 @@ a.deals_list_add_link.um_btn_primary {
   align-items: center;
 }
 
+.deal_offering_view_only_fields {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.deals_cross_org_view_only_notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  width: 100%;
+  margin-top: 0.85rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid #f0c36a;
+  border-left: 4px solid #d89412;
+  border-radius: 0.55rem;
+  background: #fff8e6;
+  color: #6b4700;
+  box-sizing: border-box;
+}
+
+.deals_cross_org_view_only_notice > svg {
+  flex: 0 0 auto;
+  margin-top: 0.05rem;
+  color: #b87500;
+}
+
+.deals_cross_org_view_only_notice > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.deals_cross_org_view_only_notice strong {
+  font-size: 0.95rem;
+  color: #5d3d00;
+}
+
+/* Cross-company syndicators may inspect every tab, but cannot manage the deal. */
+.deals_syndication_view_only_content .um_btn_primary,
+.deals_syndication_view_only_content .um_btn_secondary,
+.deals_syndication_view_only_content .um_btn_toolbar,
+.deals_syndication_view_only_content .um_toolbar_export_btn,
+.deals_syndication_view_only_content .deal_docs_toolbar_btn,
+.deals_syndication_view_only_content .deal_docs_ui_row_actions button,
+.deals_syndication_view_only_content .deal_docs_ui_doc_sign_btn,
+.deals_syndication_view_only_content .deal_docs_ui_doc_icon_btn_danger,
+.deals_syndication_view_only_content .deal_docs_ui_banner_inline_actions button,
+.deals_syndication_view_only_content input[type="checkbox"] {
+  display: none !important;
+}
+
+.deals_syndication_view_only_content .deal_docs_shared_with_summary {
+  pointer-events: none;
+  cursor: default;
+}
+
 .deals_detail_title_stack {
   display: flex;
   flex-direction: row;

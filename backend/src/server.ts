@@ -54,6 +54,8 @@ import { requestBudgetMiddleware } from "./middleware/requestBudget.middleware.j
 
 import { protectedUploadsMiddleware } from "./middleware/protectedUploads.middleware.js";
 
+import { requireApiAuth, requireAuth } from "./middleware/requireAuth.js";
+
 import { signflowWebhookBodyParser } from "./middleware/signflowWebhook.middleware.js";
 
 import { stripeWebhookBodyParser } from "./middleware/stripeWebhook.middleware.js";
@@ -244,6 +246,8 @@ app.post(
 
   socHttpAuditMiddleware,
 
+  requireAuth,
+
   uploadCompanySettingsBranding,
 
   postCompanySettingsBranding,
@@ -255,6 +259,8 @@ app.post(
   "/api/v1/deals",
 
   socHttpAuditMiddleware,
+
+  requireAuth,
 
   uploadDealCreateOrUpdateAssetImages,
 
@@ -268,6 +274,8 @@ app.put(
 
   socHttpAuditMiddleware,
 
+  requireAuth,
+
   uploadDealCreateOrUpdateAssetImages,
 
   putDeal,
@@ -279,6 +287,8 @@ app.post(
   "/api/v1/deals/:dealId/offering-gallery-uploads",
 
   socHttpAuditMiddleware,
+
+  requireAuth,
 
   uploadDealOfferingGalleryFile,
 
@@ -292,6 +302,8 @@ app.post(
 
   socHttpAuditMiddleware,
 
+  requireAuth,
+
   uploadDealOfferingDocumentFiles,
 
   postDealOfferingDocumentUploads,
@@ -301,6 +313,8 @@ app.post(
 app.post(
 
   "/api/v1/deals/:dealId/esign-template-uploads",
+
+  requireAuth,
 
   uploadDealEsignTemplateFiles,
 
@@ -318,6 +332,7 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.post(
   "/api/v1/deals/:dealId/distribution-setup/complete",
   socHttpAuditMiddleware,
+  requireAuth,
   postDealDistributionComplete,
 );
 
@@ -344,6 +359,8 @@ app.use("/api/v1", (req, res, next) => {
 });
 
 app.use("/api/v1", portalModeContextMiddleware);
+
+app.use("/api/v1", requireApiAuth);
 
 
 

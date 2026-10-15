@@ -298,6 +298,7 @@ export async function scopeOfferingInvestorPreviewJsonForViewer(params: {
   viewerUserId: string;
   viewerRole?: string | null;
   json: string | null | undefined;
+  requireSponsorScope?: boolean;
 }): Promise<string | null> {
   const json = params.json ?? null;
   try {
@@ -319,7 +320,14 @@ export async function scopeOfferingInvestorPreviewJsonForViewer(params: {
       dealId: params.dealId,
       viewerUserId: params.viewerUserId,
     });
-    if (!leadCtx) return json;
+    if (!leadCtx) {
+      if (!params.requireSponsorScope) return json;
+      const { visibility, sections } = parsePreviewParts(json);
+      return canonicalFromParts(
+        visibility,
+        filterSectionsByNestedVisibility(sections, () => false),
+      );
+    }
     const { visibility, sections } = parsePreviewParts(json);
     return canonicalFromParts(
       visibility,
@@ -329,6 +337,12 @@ export async function scopeOfferingInvestorPreviewJsonForViewer(params: {
     );
   } catch (err) {
     console.warn("scopeOfferingInvestorPreviewJsonForViewer:", err);
+    if (params.requireSponsorScope) {
+      return sanitizeOfferingInvestorPreviewBody({
+        visibility: {},
+        sections: [],
+      });
+    }
     return json;
   }
 }

@@ -29,6 +29,7 @@ export function feedbackExportLabel(row: FeedbackItem): string {
 
 export function buildFeedbackCsv(rows: FeedbackItem[]): string {
   const headers = [
+    "S.No",
     "Username",
     "User Email",
     "Role",
@@ -49,6 +50,7 @@ export function buildFeedbackCsv(rows: FeedbackItem[]): string {
     const roleLabel = feedbackUserRoleLabel(row.userRole)
     lines.push(
       [
+        row.feedbackNo > 0 ? String(row.feedbackNo) : "",
         row.username,
         row.userEmail,
         roleLabel === "—" ? "" : roleLabel,

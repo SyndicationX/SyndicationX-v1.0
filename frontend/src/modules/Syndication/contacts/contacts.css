@@ -380,7 +380,7 @@
  * or page size is large (e.g. 100).
  */
 .app_main_content:has(> .contacts_page),
-.app_main_content:has(.contacts_page) {
+.app_main_content:has(.contacts_page):not(:has(.contacts_page_embedded)) {
   display: flex;
   flex-direction: column;
   overflow-x: hidden;
@@ -494,11 +494,43 @@
 
 .company_page .contacts_page_embedded.um_page {
   margin-top: 0;
+  flex: 0 0 auto;
+  min-height: auto;
 }
 
 .company_page .contacts_page_embedded .contacts_embedded_header_row {
   justify-content: flex-end;
   margin-bottom: 0.65em;
+}
+
+/*
+ * Customers → All Contacts nests this directory under the company page.
+ * The standalone Contacts page sizes the row area with flex-basis 0 and
+ * min-height 0 so it scrolls inside the viewport. That same chain has no
+ * definite height here, so the table body collapses and the rows disappear.
+ */
+.company_page .contacts_page_embedded .contacts_main_tab_panel_wrap,
+.company_page .contacts_page_embedded .contacts_main_tab_panel_wrap > .um_members_tab_content,
+.company_page .contacts_page_embedded .contacts_table_panel.um_panel,
+.company_page .contacts_page_embedded .contacts_table_panel .um_table_wrap.data_table_shell,
+.company_page
+  .contacts_page_embedded
+  .contacts_table_panel
+  .um_table_wrap.data_table_shell
+  .data_table_scroll_region {
+  flex: 0 0 auto;
+  min-height: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+.company_page
+  .contacts_page_embedded
+  .contacts_table_panel
+  .um_table_wrap.data_table_shell
+  .data_table_scroll_region:not(.data_table_scroll_region--empty) {
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 .email_templates_page .email_templates_tab_panel {
@@ -508,8 +540,27 @@
 
 /* Templates tab: full width like Deal Members (table scrolls horizontally when zoomed out) */
 .email_templates_page .email_templates_tab_panel.email_templates_tab_panel_templates {
+  flex: 1 1 auto;
+  min-height: 0;
   max-width: none;
   width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.email_templates_page
+  .email_templates_tab_panel_templates
+  > .contacts_inner_header {
+  flex: 0 0 auto;
+}
+
+.email_templates_page
+  .email_templates_tab_panel_templates
+  > .contacts_main_tab_panel_wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .email_templates_page .email_templates_panel_hint {
@@ -1944,6 +1995,19 @@
   -webkit-overflow-scrolling: touch;
 }
 
+/* Must follow the rule above. Equal specificity would keep flex-basis 0 and
+   collapse the customer Contacts rows. */
+#cp-company-panel-contacts
+  .contacts_table_panel
+  .um_table_wrap.data_table_shell
+  .data_table_scroll_region:not(.data_table_scroll_region--empty) {
+  flex: 0 0 auto;
+  min-height: auto;
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
 .contacts_page
   .contacts_table_panel
   .um_table_wrap.data_table_shell
@@ -2060,6 +2124,41 @@
 .contacts_table_panel .um_table th,
 .contacts_table_panel .um_table td {
   vertical-align: middle;
+}
+
+/* Pin checkbox + User while the contacts directory scrolls horizontally. */
+.contacts_page
+  .contacts_table_panel
+  .um_table.contacts_directory_table.data_table_sticky_first {
+  --data-table-sticky-col-0-width: 2.75rem;
+  --data-table-sticky-col-1-width: 16rem;
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table.contacts_directory_table.data_table_sticky_first
+  th.data_table_col_sticky--0,
+.contacts_page
+  .contacts_table_panel
+  .um_table.contacts_directory_table.data_table_sticky_first
+  td.data_table_col_sticky--0 {
+  width: var(--data-table-sticky-col-0-width);
+  min-width: var(--data-table-sticky-col-0-width) !important;
+  max-width: var(--data-table-sticky-col-0-width);
+}
+
+.contacts_page
+  .contacts_table_panel
+  .um_table.contacts_directory_table.data_table_sticky_first
+  th.data_table_col_sticky--1,
+.contacts_page
+  .contacts_table_panel
+  .um_table.contacts_directory_table.data_table_sticky_first
+  td.data_table_col_sticky--1 {
+  left: var(--data-table-sticky-col-0-width);
+  width: var(--data-table-sticky-col-1-width);
+  min-width: var(--data-table-sticky-col-1-width) !important;
+  max-width: var(--data-table-sticky-col-1-width);
 }
 
 /* User column — was expanding to fill leftover width (min-width: 220px from members table). */

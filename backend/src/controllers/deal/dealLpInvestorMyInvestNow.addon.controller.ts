@@ -15,6 +15,7 @@ import { applyMyInvestNowCommitmentAddon } from "../../services/deal/dealLpInves
 import { readMyInvestNowCommitment } from "../../services/deal/dealLpInvestorMyInvestNowCommitment.read.service.js";
 import { evaluateLpInvestNowEligibility } from "../../services/deal/dealLpInvestNowEligibility.service.js";
 import { dealSaasLockHttpPayload } from "../../services/billing/dealBilling.service.js";
+import { sendInvestmentCommitmentNotifications } from "../../services/deal/investmentCommitmentEmail.service.js";
 
 function bodyString(v: unknown): string {
   if (typeof v === "string") return v;
@@ -194,6 +195,7 @@ export async function patchDealLpInvestorMyInvestNowAddon(
         ? bodyString(b.investor_class ?? b.investorClass)
         : undefined,
       referringSponsorRef: referringSponsorRefRaw || undefined,
+      activeOrganizationId: requestedOrganizationIdFromRequest(req),
     });
     if (!result.ok) {
       res.status(result.code === "duplicate_profile_for_deal" ? 409 : 400).json({
@@ -210,11 +212,44 @@ export async function patchDealLpInvestorMyInvestNowAddon(
       dealId: dealId.trim(),
       viewerEmailNorm: emailNorm,
       viewerUserId: user.id,
+      investmentId: investmentIdRaw || undefined,
       userInvestorProfileId: hasUserInvestorProfileIdKey
         ? userInvestorProfileRaw
         : undefined,
       profileId: profileRaw,
     });
+    const savedAmount = savedRow.ok
+      ? Number(savedRow.committedAmount.replace(/[$,\s]/g, ""))
+      : 0;
+    if (
+      statusPatch?.trim().toLowerCase() === "soft committed" &&
+      savedRow.ok &&
+      Number.isFinite(savedAmount) &&
+      savedAmount > 0
+    ) {
+      try {
+        const notification = await sendInvestmentCommitmentNotifications({
+          dealId: dealId.trim(),
+          viewerUserId: user.id,
+          viewerEmailNorm: emailNorm,
+          investmentId: savedRow.investmentId,
+          commitmentKind: "soft",
+        });
+        if (!notification.ok) {
+          console.warn(
+            "patchDealLpInvestorMyInvestNowAddon: soft commitment email",
+            notification.message,
+          );
+        }
+      } catch (emailErr) {
+        // The commitment is already saved; a mail transport failure must not
+        // turn the successful save into an API failure.
+        console.warn(
+          "patchDealLpInvestorMyInvestNowAddon: soft commitment email",
+          emailErr,
+        );
+      }
+    }
     res.status(200).json({
       message: "Committed amount saved",
       investorsPayload: payload,

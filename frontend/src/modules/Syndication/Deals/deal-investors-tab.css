@@ -1159,6 +1159,11 @@
   min-width: 0;
 }
 
+.deal_inv_td_sponsor_company {
+  max-width: 16rem;
+  white-space: normal;
+}
+
 .deal_inv_sponsor_name_hover {
   cursor: help;
 }

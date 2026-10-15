@@ -1,5 +1,5 @@
 import Stripe from "stripe";
-import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../../database/db.js";
 import {
   addDealForm,
@@ -27,6 +27,8 @@ import {
   type StripeBillingSeatBand,
 } from "../../config/stripe.config.js";
 import {
+  coGpSeatBandIsUpgrade,
+  coGpSeatBandNeedsUpgrade,
   creditExtraCompanyUsersPaid,
   descriptionForExtraCompanyUserCharge,
   extraCoGpSubscriptionItem,
@@ -34,6 +36,7 @@ import {
   extraCompanyUsersToCharge,
   getDealCompanyUserSnapshot,
   parseExtraCompanyUsersQuantity,
+  suggestedSeatBandForCoGpCount,
 } from "./dealExtraCompanyUser.service.js";
 import {
   notifyLeadSponsorsOfDealBillingStartDate,
@@ -683,6 +686,37 @@ export async function promotePendingDealStageAfterSaasPayment(
   if (lastErr) throw lastErr;
 }
 
+export async function dealHasRedeemedSaasCoupon(dealId: string): Promise<boolean> {
+  const id = normalizeDealId(dealId);
+  if (!id) return false;
+  const [row] = await db
+    .select({
+      saasCouponCode: addDealForm.saasCouponCode,
+      stripeSubscriptionId: addDealForm.stripeSubscriptionId,
+    })
+    .from(addDealForm)
+    .where(eq(addDealForm.id, id))
+    .limit(1);
+  if (!row) return false;
+  if (String(row.saasCouponCode ?? "").trim()) return true;
+  const subId = String(row.stripeSubscriptionId ?? "").trim();
+  if (!subId || !getStripeConfig()) return false;
+  try {
+    const sub = await getStripeClient().subscriptions.retrieve(subId);
+    const code = String(sub.metadata?.couponCode ?? "").trim();
+    const discounted = (sub.discounts?.length ?? 0) > 0 || Boolean(code);
+    if (!discounted) return false;
+    await db
+      .update(addDealForm)
+      .set({ saasCouponCode: code || "redeemed" })
+      .where(and(eq(addDealForm.id, id), isNull(addDealForm.saasCouponCode)));
+    return true;
+  } catch (err) {
+    console.warn("dealHasRedeemedSaasCoupon:", err);
+    return false;
+  }
+}
+
 export async function applyStripeSubscriptionToDeal(
   dealId: string,
   sub: Stripe.Subscription,
@@ -709,6 +743,9 @@ export async function applyStripeSubscriptionToDeal(
   const fresh = await subscriptionWithPeriodFields(sub);
   const mapped = planCycleSeatFromSubscription(fresh);
   const status = String(fresh.status ?? "none");
+  const redeemedCoupon =
+    String(fresh.metadata?.couponCode ?? sub.metadata?.couponCode ?? "").trim() ||
+    ((fresh.discounts?.length ?? 0) > 0 ? "redeemed" : "");
   await db
     .update(addDealForm)
     .set({
@@ -720,6 +757,12 @@ export async function applyStripeSubscriptionToDeal(
       stripeCurrentPeriodEnd: periodEndFromSubscription(fresh),
     })
     .where(eq(addDealForm.id, id));
+  if (redeemedCoupon) {
+    await db
+      .update(addDealForm)
+      .set({ saasCouponCode: redeemedCoupon })
+      .where(and(eq(addDealForm.id, id), isNull(addDealForm.saasCouponCode)));
+  }
   const extraUsers = parseExtraCompanyUsersQuantity(
     fresh.metadata?.extraCompanyUsers ?? sub.metadata?.extraCompanyUsers,
   );
@@ -1019,6 +1062,8 @@ export async function createDealStripeSubscription(params: {
   payerUserId?: string;
   paymentBehavior?: Stripe.SubscriptionCreateParams.PaymentBehavior;
   extraCompanyUsers?: number;
+  promotionCodeId?: string;
+  couponCode?: string;
 }): Promise<Stripe.Subscription | null> {
   const priceId = resolveStripePriceId(
     params.planId,
@@ -1058,6 +1103,9 @@ export async function createDealStripeSubscription(params: {
       ...(params.paymentBehavior
         ? { payment_behavior: params.paymentBehavior }
         : {}),
+      ...(params.promotionCodeId
+        ? { discounts: [{ promotion_code: params.promotionCodeId }] }
+        : {}),
       metadata: {
         companyId: String(params.deal.organizationId ?? ""),
         dealId: String(params.deal.id),
@@ -1069,6 +1117,7 @@ export async function createDealStripeSubscription(params: {
         extraCompanyUsers: String(extraUsers),
         extraUserComment: extraUserComment.slice(0, 500),
         ...(params.payerUserId ? { payerUserId: params.payerUserId } : {}),
+        ...(params.couponCode ? { couponCode: params.couponCode } : {}),
       },
     });
   const subStatus = String(sub.status ?? "").toLowerCase();
@@ -1104,6 +1153,8 @@ export async function upgradeDealStripeSubscription(params: {
   cycle: StripeBillingCycle;
   seatBand: StripeBillingSeatBand;
   paymentMethodId?: string;
+  promotionCodeId?: string;
+  couponCode?: string;
 }): Promise<UpgradeDealSubscriptionResult> {
   const existingId = params.deal.stripeSubscriptionId?.trim() ?? "";
   if (!existingId) {
@@ -1119,11 +1170,30 @@ export async function upgradeDealStripeSubscription(params: {
     planId: params.planId,
   });
   if (!match.ok) return match;
-  if (!dealPaidPlanNeedsUpgrade(params.deal.stripePlanId, match.suggestedPlanId)) {
+  const currentCompanyUsers = await getDealCompanyUserSnapshot(
+    String(params.deal.id),
+  );
+  const seatUpgrade =
+    coGpSeatBandNeedsUpgrade(
+      currentCompanyUsers?.seatBand,
+      currentCompanyUsers?.coGpCount ?? 0,
+    ) ||
+    coGpSeatBandIsUpgrade(
+      currentCompanyUsers?.seatBand,
+      params.seatBand,
+    );
+  if (
+    !dealPaidPlanNeedsUpgrade(
+      params.deal.stripePlanId,
+      match.suggestedPlanId,
+    ) &&
+    !seatUpgrade
+  ) {
     return {
       ok: false,
       status: 409,
-      message: "This deal is already on the plan required for its size.",
+      message:
+        "This deal is already on the offering and Co-Sponsor package selected.",
     };
   }
 
@@ -1160,10 +1230,37 @@ export async function upgradeDealStripeSubscription(params: {
       });
     }
 
+    const companyUsers = await getDealCompanyUserSnapshot(
+      String(params.deal.id),
+      { seatBand: params.seatBand },
+    );
+    const extraUsers = companyUsers
+      ? extraCompanyUsersToCharge(companyUsers)
+      : 0;
+    const extraUserComment = companyUsers
+      ? descriptionForExtraCompanyUserCharge(companyUsers, extraUsers)
+      : extraCompanyUserChargeDescription({ quantity: extraUsers });
+    const replacementExtraItem = await extraCoGpSubscriptionItem(
+      stripe,
+      extraUsers,
+      params.cycle,
+      extraUserComment,
+    );
+    const subscriptionItems: Stripe.SubscriptionUpdateParams.Item[] = [
+      { id: itemId, price: priceId },
+      ...sub.items.data
+        .slice(1)
+        .map((item) => ({ id: item.id, deleted: true }) as const),
+      ...(replacementExtraItem ? [replacementExtraItem] : []),
+    ];
+
     const updated = await stripe.subscriptions.update(sub.id, {
-      items: [{ id: itemId, price: priceId }],
+      items: subscriptionItems,
       proration_behavior: "always_invoice",
       payment_behavior: "pending_if_incomplete",
+      ...(params.promotionCodeId
+        ? { discounts: [{ promotion_code: params.promotionCodeId }] }
+        : {}),
       metadata: {
         ...sub.metadata,
         dealId: String(params.deal.id),
@@ -1172,6 +1269,9 @@ export async function upgradeDealStripeSubscription(params: {
         billingCycle: params.cycle,
         seatBand: params.seatBand,
         billingScope: "deal",
+        extraCompanyUsers: String(extraUsers),
+        extraUserComment: extraUserComment.slice(0, 500),
+        ...(params.couponCode ? { couponCode: params.couponCode } : {}),
       },
       expand: ["latest_invoice"],
     });
@@ -1230,6 +1330,55 @@ export async function upgradeDealStripeSubscription(params: {
 }
 
 /**
+ * Keep the current paid period unchanged while selecting the offering-size
+ * tier that Stripe will charge at the next renewal.
+ */
+export async function alignDealPlanForNextRenewal(
+  deal: AddDealFormRow,
+  planId: StripeBillingPlanId,
+): Promise<void> {
+  const subscriptionId = deal.stripeSubscriptionId?.trim() ?? "";
+  if (!subscriptionId || !getStripeConfig()) return;
+
+  const stripe = getStripeClient();
+  const sub = await stripe.subscriptions.retrieve(subscriptionId, {
+    expand: ["items.data.price"],
+  });
+  const mapped = planCycleSeatFromSubscription(sub);
+  const cycle =
+    mapped.cycle ??
+    normalizeDealBillingCycle(deal.stripeBillingCycle) ??
+    "monthly";
+  const seatBand = mapped.seatBand ?? "5";
+  const nextPriceId = resolveStripePriceId(planId, cycle, seatBand);
+  const mainItem = sub.items.data[0];
+  if (!nextPriceId || !mainItem) {
+    throw new Error(
+      `Stripe Price is not configured for ${planId} / ${seatBand} seats (${cycle}).`,
+    );
+  }
+
+  if (priceIdFromSubscription(sub) === nextPriceId) {
+    if (normalizeBillingPlanId(deal.stripePlanId) !== planId) {
+      await applyStripeSubscriptionToDeal(String(deal.id), sub);
+    }
+    return;
+  }
+
+  const updated = await stripe.subscriptions.update(subscriptionId, {
+    items: [{ id: mainItem.id, price: nextPriceId }],
+    proration_behavior: "none",
+    metadata: {
+      ...sub.metadata,
+      planId,
+      billingCycle: cycle,
+      seatBand,
+    },
+  });
+  await applyStripeSubscriptionToDeal(String(deal.id), updated);
+}
+
+/**
  * Start, stop, or realign this deal's SaaS subscription.
  * Archived / draft / liquidated deals drop MRR even when Stripe is unset.
  */
@@ -1262,8 +1411,12 @@ export async function syncDealSaasBillingForDeal(
     return;
   }
 
-  if (!dealIsActivelyBilled(deal)) {
-    const suggested = await suggestedPlanIdForDeal(id);
+  const suggested = await suggestedPlanIdForDeal(id);
+  if (dealIsActivelyBilled(deal)) {
+    if (normalizeBillingPlanId(deal.stripePlanId) !== suggested) {
+      await alignDealPlanForNextRenewal(deal, suggested);
+    }
+  } else {
     if (normalizeBillingPlanId(deal.stripePlanId) !== suggested) {
       await db
         .update(addDealForm)
@@ -1586,6 +1739,8 @@ export type DealBillingListRow = {
   planId: string | null;
   suggestedPlanId: string | null;
   needsPlanUpgrade: boolean;
+  suggestedSeatBand: StripeBillingSeatBand;
+  needsCoGpUpgrade: boolean;
   billingCycle: string | null;
   subscriptionStatus: string;
   nextBillingDate: string | null;
@@ -1603,6 +1758,7 @@ export type DealBillingListRow = {
   includedCoGps: number | null;
   extraUserFeeCents: number;
   extraUserComment: string;
+  couponRedeemed: boolean;
 };
 
 type DealBillingQueryRow = Pick<
@@ -1619,6 +1775,7 @@ type DealBillingQueryRow = Pick<
     | "saasBillingStartsAt"
     | "organizationId"
     | "pendingDealStage"
+    | "saasCouponCode"
   > & { companyName: string | null };
 
 const dealBillingSelect = {
@@ -1633,6 +1790,7 @@ const dealBillingSelect = {
   stripeCurrentPeriodEnd: addDealForm.stripeCurrentPeriodEnd,
   saasBillingStartsAt: addDealForm.saasBillingStartsAt,
   pendingDealStage: addDealForm.pendingDealStage,
+  saasCouponCode: addDealForm.saasCouponCode,
   organizationId: addDealForm.organizationId,
   companyName: companies.name,
 };
@@ -1737,6 +1895,11 @@ async function mapDealBillingQueryRows(
     const companyUsers = payable
       ? await getDealCompanyUserSnapshot(String(row.id))
       : null;
+    const currentSeatBand =
+      normalizeBillingSeatBand(companyUsers?.seatBand) ?? "5";
+    const suggestedSeatBand = suggestedSeatBandForCoGpCount(
+      companyUsers?.coGpCount ?? 0,
+    );
     list.push({
       id: String(row.id),
       companyId: String(row.organizationId ?? "").trim().toLowerCase(),
@@ -1751,6 +1914,11 @@ async function mapDealBillingQueryRows(
           : null,
       suggestedPlanId,
       needsPlanUpgrade: dealShouldAlertPlanUpgrade(dated, suggestedPlanId),
+      suggestedSeatBand,
+      needsCoGpUpgrade: coGpSeatBandNeedsUpgrade(
+        currentSeatBand,
+        companyUsers?.coGpCount ?? 0,
+      ),
       billingCycle: payable ? row.stripeBillingCycle ?? null : null,
       subscriptionStatus: payable
         ? row.stripeSubscriptionStatus || "none"
@@ -1773,6 +1941,7 @@ async function mapDealBillingQueryRows(
       includedCoGps: companyUsers?.includedCoGps ?? null,
       extraUserFeeCents: companyUsers?.extraUserFeeCents ?? 1000,
       extraUserComment: companyUsers?.extraUserComment ?? "",
+      couponRedeemed: Boolean(String(row.saasCouponCode ?? "").trim()),
     });
   }
 
@@ -2125,6 +2294,7 @@ export async function loadPayableDeal(params: {
   companyId: string;
   dealId: string;
   allowedDealIds: string[] | null;
+  requestedSeatBand?: string | null;
 }): Promise<
   | { ok: true; deal: AddDealFormRow }
   | { ok: false; status: number; message: string }
@@ -2187,7 +2357,20 @@ export async function loadPayableDeal(params: {
     )
   ) {
     const suggested = await suggestedPlanIdForDeal(dealId);
-    if (!dealPaidPlanNeedsUpgrade(deal.stripePlanId, suggested)) {
+    const companyUsers = await getDealCompanyUserSnapshot(dealId);
+    const needsCoGpUpgrade = coGpSeatBandNeedsUpgrade(
+      companyUsers?.seatBand,
+      companyUsers?.coGpCount ?? 0,
+    );
+    const voluntarySeatUpgrade = coGpSeatBandIsUpgrade(
+      companyUsers?.seatBand,
+      params.requestedSeatBand,
+    );
+    if (
+      !dealPaidPlanNeedsUpgrade(deal.stripePlanId, suggested) &&
+      !needsCoGpUpgrade &&
+      !voluntarySeatUpgrade
+    ) {
       return {
         ok: false,
         status: 409,

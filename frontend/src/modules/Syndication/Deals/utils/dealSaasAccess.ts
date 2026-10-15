@@ -1,6 +1,4 @@
-import { isLpInvestorSessionUser, isPlatformAdmin } from "../../../../common/auth/roleUtils"
-import { getSessionOrganizationCompanyId } from "../../../../common/auth/sessionOrganization"
-import { fetchCompanyBillingDeals } from "../../company/companyBillingApi"
+import { isPlatformAdmin } from "../../../../common/auth/roleUtils"
 import { CREATE_DEAL_DRAFT_ROW_ID } from "../createDealDraftListRow"
 import type { DealListRow } from "../types/deals.types"
 import { dealSaasBillingHasStarted } from "./saasBillingStartDate"
@@ -35,36 +33,6 @@ export function dealSaasBillingSettingsPath(
   const name = String(dealName ?? "").trim()
   if (name) params.set("dealName", name)
   return `/settings?${params.toString()}`
-}
-
-/**
- * After sign-in, send a lead sponsor who still has unpaid billable deals
- * to Pricing for the deal that needs payment first.
- */
-export async function resolveUnpaidLeadSponsorPricingPath(): Promise<
-  string | null
-> {
-  if (isLpInvestorSessionUser()) return null
-  const companyId = getSessionOrganizationCompanyId()?.trim() ?? ""
-  if (!companyId) return null
-  const result = await fetchCompanyBillingDeals(companyId)
-  if (!result.ok || !result.canPay) return null
-  const unpaid = result.deals.filter(
-    (row) =>
-      (row.billable === true || row.payable === true) &&
-      !row.billed &&
-      dealSaasBillingHasStarted(row.saasBillingStartsAt),
-  )
-  const upgrades = result.deals.filter((row) => row.needsPlanUpgrade === true)
-  const queue = unpaid.length > 0 ? unpaid : upgrades
-  if (queue.length === 0) return null
-  const pick = [...queue].sort((a, b) => {
-    const ta = Date.parse(String(a.nextBillingDate ?? "")) || Number.POSITIVE_INFINITY
-    const tb = Date.parse(String(b.nextBillingDate ?? "")) || Number.POSITIVE_INFINITY
-    return ta - tb
-  })[0]
-  if (!pick) return null
-  return dealSaasBillingSettingsPath(pick.id, pick.dealName)
 }
 
 function parseLockReason(raw: unknown): DealSaasLockReason | null {

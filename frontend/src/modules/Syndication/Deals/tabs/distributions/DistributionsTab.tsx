@@ -64,6 +64,7 @@ type DistributionsSubTab = "distributions" | "bank_account" | "distribution_fee"
 type DistributionsTabProps = {
   dealId: string
   dealName?: string
+  viewOnly?: boolean
 }
 
 type CompletedDistributionRow = PriorDistributionRecord & {
@@ -136,7 +137,11 @@ function formatDealBankDetails(
 /**
  * Deal Detail → Distributions: portal-style list (Woodland Ridge reference).
  */
-export function DistributionsTab({ dealId, dealName }: DistributionsTabProps) {
+export function DistributionsTab({
+  dealId,
+  dealName,
+  viewOnly = false,
+}: DistributionsTabProps) {
   const id = dealId.trim()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -698,7 +703,7 @@ export function DistributionsTab({ dealId, dealName }: DistributionsTabProps) {
         colWidth: "5.5rem",
         thClassName: "um_th_actions deal_dist_th_actions",
         tdClassName: "um_td_actions deal_inv_td_actions deal_dist_td_actions",
-        cell: (row) => (
+        cell: (row) => viewOnly ? null : (
           <DistributionRowActions
             rowLabel={distributionDisplayName(row)}
             onEdit={() => openEditSetup(row)}
@@ -719,6 +724,7 @@ export function DistributionsTab({ dealId, dealName }: DistributionsTabProps) {
       openEditSetup,
       handleExportOne,
       handleDeleteOne,
+      viewOnly,
     ],
   )
 
@@ -850,7 +856,7 @@ export function DistributionsTab({ dealId, dealName }: DistributionsTabProps) {
                     </p>
                   </div>
                 </div>
-                {dealFunding?.canManage ? (
+                {dealFunding?.canManage && !viewOnly ? (
                   <button
                     type="button"
                     className={
@@ -974,6 +980,8 @@ export function DistributionsTab({ dealId, dealName }: DistributionsTabProps) {
                   <h2 className="deal_dist_heading">Distributions</h2>
                 </div>
                 <div className="um_toolbar_actions deal_dist_toolbar_actions">
+                  {viewOnly ? null : (
+                    <>
                   {/* <button
                     type="button"
                     className="um_toolbar_export_btn"
@@ -1009,6 +1017,8 @@ export function DistributionsTab({ dealId, dealName }: DistributionsTabProps) {
                     Distribution Setup
                     <ArrowRight size={16} strokeWidth={2} aria-hidden />
                   </Link>
+                    </>
+                  )}
                 </div>
                 <div className="um_search_wrap deal_dist_search">
                   <Search className="um_search_icon" size={18} aria-hidden />

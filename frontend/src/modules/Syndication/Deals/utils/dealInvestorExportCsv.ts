@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from "../../../../common/auth/roleUtils"
 import { formatMemberUsername } from "../../usermanagement/memberAdminShared"
 import {
   dealInvestorProfileDisplayName,
@@ -60,6 +61,8 @@ export type DealInvestorExportHistoryLine = {
 export type BuildDealInvestorsExportCsvOptions = {
   /** When true, append ownership / allocation / total / history columns. */
   includeDistributionDetails?: boolean
+  /** Person name column. Defaults to platform admin only. */
+  includeSponsor?: boolean
   historyByRowKey?: Map<string, DealInvestorExportHistoryLine[]>
 }
 
@@ -96,6 +99,7 @@ export function buildDealInvestorsExportMatrix(
   options?: BuildDealInvestorsExportCsvOptions,
 ): string[][] {
   const includeDist = options?.includeDistributionDetails === true
+  const includeSponsor = options?.includeSponsor ?? isPlatformAdmin()
   const matrix: string[][] = [
     [
       "Member name",
@@ -104,6 +108,7 @@ export function buildDealInvestorsExportMatrix(
       "Investor class",
       "Status",
       "Sponsor name",
+      ...(includeSponsor ? ["Sponsor"] : []),
       "Committed",
       "Signed",
       "Funded",
@@ -120,6 +125,7 @@ export function buildDealInvestorsExportMatrix(
       "Verified accreditation",
       "Username",
       "Email",
+      "Phone",
     ],
   ]
   for (const row of rows) {
@@ -145,7 +151,14 @@ export function buildDealInvestorsExportMatrix(
       roleForCsv,
       invClass,
       dealInvestorStatusForTable(row),
-      String(row.addedByDisplayName ?? "").trim() || "—",
+      String(row.addedByCompanyName ?? "")
+        .split("||")
+        .map((part) => part.trim())
+        .filter((part) => part && part !== "—")
+        .join(", ") || "—",
+      ...(includeSponsor
+        ? [String(row.addedByDisplayName ?? "").trim() || "—"]
+        : []),
       displayInvestorCommittedAmountExport(row),
       String(row.signedDate ?? ""),
       investorFundedColumnLabel(row),
@@ -162,6 +175,7 @@ export function buildDealInvestorsExportMatrix(
       String(row.verifiedAccLabel ?? ""),
       String(row.userDisplayName ?? ""),
       String(row.userEmail ?? ""),
+      String(row.userPhone ?? ""),
     ])
   }
   return matrix

@@ -3,12 +3,14 @@ import {
   Activity,
   BadgeCheck,
   Briefcase,
+  Building2,
   Calendar,
   CalendarCheck,
   CircleDollarSign,
   DollarSign,
   IdCard,
   Mail,
+  Phone,
   Percent,
   Pencil,
   Shield,
@@ -29,9 +31,15 @@ import {
   type DataTableColumn,
 } from "../../../../../common/components/data-table/DataTable"
 import { TabsScrollStrip } from "../../../../../common/components/tabs-scroll-strip/TabsScrollStrip"
+import { isPlatformAdmin } from "@/common/auth/roleUtils"
 import { ViewReadonlyField } from "../../../../../common/components/ViewReadonlyField"
 import { formatDateDdMmmYyyy } from "../../../../../common/utils/formatDateDisplay"
-import { displayEmail } from "../../../../../common/utils/displayEmail"
+import { RedactedPill } from "../../../../../common/components/redacted-pill/RedactedPill"
+import {
+  displayEmail,
+  displayPhone,
+  isPrivacyRedacted,
+} from "../../../../../common/utils/displayEmail"
 import { fetchDistributionPayouts } from "@/modules/Investing/api/stripeInvestorPaymentsApi"
 import { fetchDealInvestors } from "../../api/dealsApi"
 import { fetchDistributionSetup } from "../../distribution-setup/api/distributionSetupApi"
@@ -587,8 +595,27 @@ export function DealInvestorViewModal({
                 <ViewReadonlyField
                   Icon={Mail}
                   label="Email address"
-                  value={displayEmail(investorRow.userEmail)}
+                  value={
+                    isPrivacyRedacted(investorRow.userEmail) ? (
+                      <RedactedPill />
+                    ) : (
+                      displayEmail(investorRow.userEmail)
+                    )
+                  }
                 />
+                {String(investorRow.userPhone ?? "").trim() ? (
+                  <ViewReadonlyField
+                    Icon={Phone}
+                    label="Phone number"
+                    value={
+                      isPrivacyRedacted(investorRow.userPhone) ? (
+                        <RedactedPill />
+                      ) : (
+                        displayPhone(investorRow.userPhone)
+                      )
+                    }
+                  />
+                ) : null}
                 <ViewReadonlyField
                   Icon={User}
                   label="Username"
@@ -654,10 +681,29 @@ export function DealInvestorViewModal({
                   value={invClass}
                 />
                 <ViewReadonlyField
-                  Icon={User}
+                  Icon={Building2}
                   label="Sponsor name"
-                  value={displayOrDash(investorRow.addedByDisplayName)}
+                  value={displayOrDash(
+                    String(investorRow.addedByCompanyName ?? "")
+                      .split("||")
+                      .map((part) => part.trim())
+                      .filter((part) => part && part !== "—")
+                      .join(", "),
+                  )}
                 />
+                {isPlatformAdmin() ? (
+                  <ViewReadonlyField
+                    Icon={User}
+                    label="Sponsor"
+                    value={displayOrDash(
+                      String(investorRow.addedByDisplayName ?? "")
+                        .split("||")
+                        .map((part) => part.trim())
+                        .filter((part) => part && part !== "—")
+                        .join(", "),
+                    )}
+                  />
+                ) : null}
                 <ViewReadonlyField
                   Icon={BadgeCheck}
                   label="Fund approval"

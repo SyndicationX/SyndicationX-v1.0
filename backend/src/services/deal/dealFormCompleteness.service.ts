@@ -32,7 +32,7 @@ export function isAddDealFormIncomplete(
   return false;
 }
 
-/** Investors must not see draft / incomplete deals in lists or read APIs. */
+/** Investors may see a Draft deal. Other unfinished autosave rows stay hidden. */
 export async function filterDealIdsVisibleToInvestors(
   dealIds: string[],
 ): Promise<string[]> {
@@ -41,7 +41,10 @@ export async function filterDealIdsVisibleToInvestors(
   const rows = await listAddDealFormsByIds(ids);
   const allowed = new Set(
     rows
-      .filter((row) => !isAddDealFormIncomplete(row))
+      .filter(
+        (row) =>
+          isDealStageDraft(row.dealStage) || !isAddDealFormIncomplete(row),
+      )
       .map((row) => String(row.id)),
   );
   return ids.filter((id) => allowed.has(id));

@@ -11,6 +11,8 @@ import {
   type SQL,
 } from "drizzle-orm";
 import {
+  COMPANY_ADMIN,
+  COMPANY_USER,
   INVESTOR,
   isCompanyAdminRole,
   isPlatformAdminRole,
@@ -19,10 +21,12 @@ import { db, pool } from "../../database/db.js";
 import { users } from "../../schema/auth.schema/signin.js";
 import { resolveDealViewerScope } from "../deal/dealAccess.service.js";
 import {
+  listDealIdsWhereViewerIsCoSponsor,
   listEquivalentPortalUserIdsForUser,
   viewerIsLeadOrAdminSponsorOnAnyDeal,
   viewerShouldSeeOnlySelfCreatedContacts,
 } from "../deal/dealMemberScope.service.js";
+import { syncOutsideSponsorsIntoOrganizationContacts } from "../deal/dealMember.service.js";
 import { listAddDealFormsForViewer } from "../deal/dealForm.service.js";
 import {
   visibleDealIdsCache,
@@ -33,6 +37,7 @@ import {
   normalizeOrganizationUuid,
   resolveActiveOrganizationIdForUser,
   resolveOrganizationIdForUserId,
+  resolvePortalRoleInOrganization,
   userHasAccessToOrganization,
 } from "../org/orgResolution.service.js";
 import {
@@ -330,6 +335,25 @@ export async function findContactByEmailForSignupPrefill(
 }
 
 /**
+ * Selected company for CRM writes and lists: membership, primary org, or a
+ * deal in that company where this user is lead, admin, or co-sponsor.
+ */
+async function viewerMayUseOrganizationForContacts(
+  userId: string,
+  organizationId: string,
+): Promise<boolean> {
+  if (await userHasAccessToOrganization(userId, organizationId)) return true;
+  if (await viewerIsLeadOrAdminSponsorOnAnyDeal(userId, organizationId)) {
+    return true;
+  }
+  const coDeals = await listDealIdsWhereViewerIsCoSponsor(
+    userId,
+    organizationId,
+  );
+  return coDeals.length > 0;
+}
+
+/**
  * Prefer `users.role` from DB over JWT so listing and access stay correct after role changes.
  * Org id matches {@link resolveOrganizationIdForUserId} (same as insert) so list and create stay aligned.
  */
@@ -352,7 +376,7 @@ async function getViewerContactScopeContext(
     .where(eq(users.id, viewerUserId))
     .limit(1);
   const dbRole = String(row?.role ?? "").trim();
-  const roleForScope = dbRole || String(jwtRoleFallback ?? "").trim();
+  const primaryRole = dbRole || String(jwtRoleFallback ?? "").trim();
   const preloaded = row
     ? {
         organizationId: row.organizationId,
@@ -367,9 +391,21 @@ async function getViewerContactScopeContext(
   );
   // Platform admins are not members of customer companies. A requested
   // organization id still scopes Customers → Contacts to that company.
-  if (isPlatformAdminRole(roleForScope) && requested) {
+  if (isPlatformAdminRole(primaryRole) && requested) {
+    organizationId = requested;
+  } else if (
+    requested &&
+    organizationId !== requested &&
+    (await viewerMayUseOrganizationForContacts(viewerUserId, requested))
+  ) {
     organizationId = requested;
   }
+  const roleForScope = isPlatformAdminRole(primaryRole)
+    ? primaryRole
+    : await resolvePortalRoleInOrganization(viewerUserId, organizationId, {
+        organizationId: preloaded?.organizationId ?? null,
+        role: primaryRole,
+      });
 
   return {
     roleForScope,
@@ -389,9 +425,12 @@ function fullOrgContactListVisibilityWhere(viewerEmailNorm: string): SQL {
 
 /**
  * Role-based All Contacts visibility (non–platform-admin).
- * - **Company admin** or **Lead Sponsor / Admin sponsor** on any deal: same org pool;
+ * - **Company admin**, **Company member**, or **Lead Sponsor / Admin sponsor**:
+ *   same org pool;
  *   include portal + external member contacts; exclude own email only.
- * - **Everyone else** (e.g. company_user, LP, co-sponsor): external only (`is_portal_user` false); exclude own email.
+ *   Company Admin and Company Member accounts are removed afterward.
+ * - **Everyone else** (e.g. LP, co-sponsor): external only
+ *   (`is_portal_user` false); exclude own email.
  *   Invite-link signups (`users.referred_by_user_id` = this viewer) are added back in
  *   {@link buildContactsScopeWhere} so they still appear under the inviter.
  */
@@ -399,13 +438,18 @@ function contactsVisibilityWhereForRole(
   roleForScope: string,
   viewerEmailNorm: string,
 ): SQL {
-  if (isCompanyAdminRole(roleForScope)) {
+  if (
+    isCompanyAdminRole(roleForScope) ||
+    String(roleForScope ?? "").trim() === COMPANY_USER
+  ) {
     return fullOrgContactListVisibilityWhere(viewerEmailNorm);
   }
   const nonPortal = eq(contact.isPortalUser, false);
-  if (!viewerEmailNorm || !viewerEmailNorm.includes("@")) return nonPortal;
+  const outsideSponsorCopy = sql`${contact.importSource} in ('deal_sponsor', 'deal_org_move')`;
+  const visibleContact = or(nonPortal, outsideSponsorCopy)!;
+  if (!viewerEmailNorm || !viewerEmailNorm.includes("@")) return visibleContact;
   const notSelf = sql`lower(trim(${contact.email})) <> ${viewerEmailNorm}`;
-  return and(nonPortal, notSelf)!;
+  return and(visibleContact, notSelf)!;
 }
 
 /** True if a portal `users` row exists for this email (any role). */
@@ -521,6 +565,7 @@ export async function listPlatformVisibleContacts(
   if (orgId) {
     parts.push(await platformContactsForOrganizationWhere(orgId));
   }
+  parts.push(excludeCompanyStaffFromContactsWhere(orgId));
   return db
     .select()
     .from(contact)
@@ -1127,7 +1172,13 @@ async function assertContactEmailPhoneUniqueForCreatorScope(params: {
       : await resolveOrganizationIdForUserId(params.creatorUserId);
 
   let scopePredicate: SQL;
-  if (await viewerShouldSeeOnlySelfCreatedContacts(params.creatorUserId)) {
+  if (
+    await viewerShouldSeeOnlySelfCreatedContacts(
+      params.creatorUserId,
+      undefined,
+      orgId,
+    )
+  ) {
     scopePredicate = eq(contact.createdBy, params.creatorUserId);
   } else if (!orgId) {
     scopePredicate = sql`true`;
@@ -1173,17 +1224,26 @@ async function assertContactEmailPhoneUniqueForCreatorScope(params: {
 export async function insertContact(params: {
   input: CreateContactInput;
   createdByUserId: string;
+  /** Selected company workspace. Falls back to the creator's primary company. */
+  organizationId?: string | null;
 }): Promise<ContactRow> {
   const phoneStored = normalizeContactPhoneForWrite(params.input.phone);
+  const requestedOrg = normalizeOrganizationUuid(params.organizationId);
+  const primaryOrg = await resolveOrganizationIdForUserId(params.createdByUserId);
+  const organizationId =
+    requestedOrg &&
+    (await viewerMayUseOrganizationForContacts(
+      params.createdByUserId,
+      requestedOrg,
+    ))
+      ? requestedOrg
+      : primaryOrg;
   await assertContactEmailPhoneUniqueForCreatorScope({
     creatorUserId: params.createdByUserId,
     email: params.input.email,
     phone: phoneStored,
+    existingContactOrganizationId: organizationId,
   });
-
-  const organizationId = await resolveOrganizationIdForUserId(
-    params.createdByUserId,
-  );
 
   const isPortalUser = await contactEmailMatchesPortalUser(params.input.email);
   const row: ContactInsert = {
@@ -1231,15 +1291,16 @@ export async function insertContact(params: {
  */
 async function listCrmContactIdsAssociatedWithSponsorViewer(
   viewerUserId: string,
-  opts?: { includeSameOrganization?: boolean },
+  opts?: { includeSameOrganization?: boolean; organizationId?: string | null },
 ): Promise<string[]> {
   const uid = String(viewerUserId ?? "").trim();
   if (!uid) return [];
   const viewerEquivalents = await listEquivalentPortalUserIdsForUser(uid);
   const sponsorIds =
     viewerEquivalents.length > 0 ? viewerEquivalents : [uid];
+  const requestedOrg = normalizeOrganizationUuid(opts?.organizationId);
   const orgId = opts?.includeSameOrganization
-    ? ((await resolveOrganizationIdForUserId(uid)) ?? null)
+    ? (requestedOrg ?? (await resolveOrganizationIdForUserId(uid)) ?? null)
     : null;
 
   const res = await pool.query<{ contact_id: string }>(
@@ -1280,7 +1341,15 @@ async function listCrmContactIdsAssociatedWithSponsorViewer(
        FROM effective e
        INNER JOIN users adder ON adder.id = e.added_by
        WHERE $2::uuid IS NOT NULL
-         AND adder.organization_id = $2::uuid
+         AND (
+           adder.organization_id = $2::uuid
+           OR EXISTS (
+             SELECT 1
+             FROM user_company_membership adder_membership
+             WHERE adder_membership.user_id = adder.id
+               AND adder_membership.company_id = $2::uuid
+           )
+         )
      ),
      raw_keys AS (
        SELECT DISTINCT lower(trim(contact_member_id)) AS k
@@ -1369,7 +1438,7 @@ async function listCrmContactIdsOnViewerCoSponsorDeals(
   viewerUserId: string,
 ): Promise<string[]> {
   return listCrmContactIdsAssociatedWithSponsorViewer(viewerUserId, {
-    includeSameOrganization: true,
+    includeSameOrganization: false,
   });
 }
 
@@ -1385,10 +1454,281 @@ function inContactIdsSql(ids: string[]): SQL | null {
 async function viewerIncludesSameOrganizationAssociatedInvestors(
   viewerUserId: string,
   roleForScope: string | null | undefined,
+  organizationId?: string | null,
 ): Promise<boolean> {
   if (isCompanyAdminRole(roleForScope)) return true;
-  if (await viewerIsLeadOrAdminSponsorOnAnyDeal(viewerUserId)) return true;
+  if (
+    await viewerIsLeadOrAdminSponsorOnAnyDeal(viewerUserId, organizationId)
+  ) {
+    return true;
+  }
   return false;
+}
+
+/**
+ * Company Admin and Company Member accounts belong on Org Members.
+ * A company list hides staff of that company. The platform-wide list hides
+ * every company admin and company member, except a sponsor copy that lives in
+ * a company they do not belong to.
+ */
+const CONTACT_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Contacts created by people who belong to this company (primary org or
+ * membership). Company admin and lead sponsors of that company use this to
+ * see contacts a member filed while co-sponsoring another company.
+ */
+function contactsCreatedByOrganizationMembersWhere(orgId: string): SQL {
+  return sql`EXISTS (
+    SELECT 1
+    FROM users creator
+    WHERE creator.id = ${contact.createdBy}
+      AND (
+        creator.organization_id = ${orgId}::uuid
+        OR EXISTS (
+          SELECT 1
+          FROM user_company_membership creator_membership
+          WHERE creator_membership.user_id = creator.id
+            AND creator_membership.company_id = ${orgId}::uuid
+        )
+      )
+  )`;
+}
+
+/**
+ * Contacts created or invited by a Co-sponsor who does not belong to the
+ * company being listed. That other company does not see the rows.
+ * The co-sponsor's own company still sees them, including its company admin
+ * and lead sponsors. `exemptUserIds` keeps the co-sponsor's own rows visible
+ * when he is the viewer. The co-sponsor's own contact card stays on the list.
+ * Pass null to apply this on the platform-wide list, matching each contact's company.
+ */
+function excludeOutsideCoSponsorContactsWhere(
+  orgId: string | null,
+  exemptUserIds: string[] = [],
+): SQL {
+  const dealOrgMatch = orgId
+    ? sql`f.organization_id = ${orgId}::uuid`
+    : sql`f.organization_id IS NOT DISTINCT FROM ${contact.organizationId}`;
+  const sponsorOutsideListedCompany = orgId
+    ? sql`sponsor.organization_id IS DISTINCT FROM ${orgId}::uuid
+        AND NOT EXISTS (
+          SELECT 1
+          FROM user_company_membership sponsor_membership
+          WHERE sponsor_membership.user_id = sponsor.id
+            AND sponsor_membership.company_id = ${orgId}::uuid
+        )`
+    : sql`sponsor.organization_id IS DISTINCT FROM ${contact.organizationId}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM user_company_membership sponsor_membership
+          WHERE sponsor_membership.user_id = sponsor.id
+            AND sponsor_membership.company_id = ${contact.organizationId}
+        )`;
+  const dealOrgMatchAny = orgId
+    ? sql`f_lead.organization_id = ${orgId}::uuid`
+    : sql`f_lead.organization_id IS NOT DISTINCT FROM ${contact.organizationId}`;
+  const exempt = [
+    ...new Set(
+      exemptUserIds
+        .map((id) => String(id ?? "").trim())
+        .filter((id) => CONTACT_UUID_RE.test(id)),
+    ),
+  ];
+  const exemptSql =
+    exempt.length > 0
+      ? sql`AND sponsor.id NOT IN (${sql.join(
+          exempt.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`
+      : sql``;
+  const coSponsorOnDeal = sql`(
+    EXISTS (
+      SELECT 1
+      FROM deal_member dm
+      WHERE dm.deal_id = f.id
+        AND dm.is_draft = false
+        AND replace(lower(trim(dm.deal_member_role)), '_', ' ') IN ('co-sponsor', 'co sponsor')
+        AND (
+          lower(trim(dm.contact_member_id)) = lower(sponsor.id::text)
+          OR EXISTS (
+            SELECT 1
+            FROM contact sponsor_contact
+            WHERE lower(trim(sponsor_contact.id::text)) = lower(trim(dm.contact_member_id))
+              AND lower(trim(sponsor_contact.email)) = lower(trim(sponsor.email))
+          )
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM deal_investment di
+      WHERE di.deal_id = f.id
+        AND di.is_draft = false
+        AND trim(di.contact_id) <> '__portal_investment_autosave__'
+        AND replace(lower(trim(di.investor_role)), '_', ' ') IN ('co-sponsor', 'co sponsor')
+        AND (
+          lower(trim(di.contact_id)) = lower(sponsor.id::text)
+          OR EXISTS (
+            SELECT 1
+            FROM contact sponsor_contact
+            WHERE lower(trim(sponsor_contact.id::text)) = lower(trim(di.contact_id))
+              AND lower(trim(sponsor_contact.email)) = lower(trim(sponsor.email))
+          )
+        )
+    )
+  )`;
+  const leadOrAdminOnCompanyDeal = sql`(
+    EXISTS (
+      SELECT 1
+      FROM deal_member lead_dm
+      WHERE lead_dm.deal_id = f_lead.id
+        AND lead_dm.is_draft = false
+        AND (
+          lower(trim(lead_dm.deal_member_role)) IN (
+            'lead sponsor', 'lead_sponsor', 'admin sponsor', 'admin_sponsor'
+          )
+          OR (
+            position('lead' in lower(trim(lead_dm.deal_member_role))) > 0
+            AND position('sponsor' in lower(trim(lead_dm.deal_member_role))) > 0
+          )
+        )
+        AND (
+          lower(trim(lead_dm.contact_member_id)) = lower(sponsor.id::text)
+          OR EXISTS (
+            SELECT 1
+            FROM contact sponsor_contact
+            WHERE lower(trim(sponsor_contact.id::text)) = lower(trim(lead_dm.contact_member_id))
+              AND lower(trim(sponsor_contact.email)) = lower(trim(sponsor.email))
+          )
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM deal_investment lead_di
+      WHERE lead_di.deal_id = f_lead.id
+        AND lead_di.is_draft = false
+        AND trim(lead_di.contact_id) <> '__portal_investment_autosave__'
+        AND (
+          lower(trim(lead_di.investor_role)) IN (
+            'lead sponsor', 'lead_sponsor', 'admin sponsor', 'admin_sponsor'
+          )
+          OR (
+            position('lead' in lower(trim(lead_di.investor_role))) > 0
+            AND position('sponsor' in lower(trim(lead_di.investor_role))) > 0
+          )
+        )
+        AND (
+          lower(trim(lead_di.contact_id)) = lower(sponsor.id::text)
+          OR EXISTS (
+            SELECT 1
+            FROM contact sponsor_contact
+            WHERE lower(trim(sponsor_contact.id::text)) = lower(trim(lead_di.contact_id))
+              AND lower(trim(sponsor_contact.email)) = lower(trim(sponsor.email))
+          )
+        )
+    )
+  )`;
+  return sql`NOT EXISTS (
+    SELECT 1
+    FROM users sponsor
+    WHERE position('@' in trim(coalesce(sponsor.email, ''))) > 1
+      AND lower(trim(${contact.email})) <> lower(trim(sponsor.email))
+      ${exemptSql}
+      AND (
+        ${contact.createdBy} = sponsor.id
+        OR EXISTS (
+          SELECT 1
+          FROM users invitee
+          WHERE lower(trim(invitee.email)) = lower(trim(${contact.email}))
+            AND position('@' in trim(coalesce(invitee.email, ''))) > 1
+            AND invitee.referred_by_user_id = sponsor.id
+        )
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM add_deal_form f
+        WHERE ${dealOrgMatch}
+          AND ${sponsorOutsideListedCompany}
+          AND ${coSponsorOnDeal}
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM add_deal_form f_lead
+        WHERE ${dealOrgMatchAny}
+          AND ${leadOrAdminOnCompanyDeal}
+      )
+  )`;
+}
+
+/** Detail view: same hide rule as the Contacts list. */
+async function contactIsPrivateToAnotherCoSponsor(
+  viewerUserId: string,
+  row: ContactRow,
+  organizationId: string | null,
+): Promise<boolean> {
+  const contactId = String(row.id ?? "").trim();
+  if (!CONTACT_UUID_RE.test(contactId)) return false;
+  const equivalentIds = await listEquivalentPortalUserIdsForUser(viewerUserId);
+  const exempt =
+    equivalentIds.length > 0 ? equivalentIds : [viewerUserId];
+  const visibleToViewer = excludeOutsideCoSponsorContactsWhere(
+    organizationId,
+    exempt,
+  );
+  const found = await db
+    .select({ id: contact.id })
+    .from(contact)
+    .where(and(eq(contact.id, contactId), sql`NOT (${visibleToViewer})`)!)
+    .limit(1);
+  return found.length > 0;
+}
+
+function excludeCompanyStaffFromContactsWhere(orgId: string | null): SQL {
+  const staffRole = sql`lower(trim(u.role)) in (${COMPANY_ADMIN}, ${COMPANY_USER})`;
+  const membershipRole = sql`lower(trim(m.role)) in (${COMPANY_ADMIN}, ${COMPANY_USER})`;
+  const staffOfListedCompany = orgId
+    ? sql`(
+        (${staffRole} AND u.organization_id = ${orgId}::uuid)
+        OR EXISTS (
+          SELECT 1
+          FROM user_company_membership m
+          WHERE m.user_id = u.id
+            AND m.company_id = ${orgId}::uuid
+            AND ${membershipRole}
+        )
+      )`
+    : sql`(
+        ${staffRole}
+        AND NOT (
+          ${contact.importSource} in ('deal_sponsor', 'deal_org_move')
+          AND ${contact.organizationId} IS NOT NULL
+          AND u.organization_id IS DISTINCT FROM ${contact.organizationId}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM user_company_membership m
+            WHERE m.user_id = u.id
+              AND m.company_id = ${contact.organizationId}
+              AND ${membershipRole}
+          )
+        )
+      )`;
+  return sql`NOT EXISTS (
+    SELECT 1
+    FROM users u
+    WHERE lower(trim(u.email)) = lower(trim(${contact.email}))
+      AND position('@' in trim(coalesce(u.email, ''))) > 1
+      AND ${staffOfListedCompany}
+  )`;
+}
+
+async function ensureOutsideSponsorsAreOrganizationContacts(
+  organizationId: string | null,
+  requestedByUserId: string,
+): Promise<void> {
+  const orgId = normalizeOrganizationUuid(organizationId);
+  if (!orgId) return;
+  await syncOutsideSponsorsIntoOrganizationContacts(orgId, requestedByUserId);
 }
 
 /**
@@ -1403,10 +1743,13 @@ async function viewerIncludesSameOrganizationAssociatedInvestors(
  * Self-registered investors who opted in (**`visible_to_users`**) are not mixed in here;
  * they are served separately by {@link listPlatformVisibleContacts}.
  *
- * **Lead / Admin** (and company admin): CRM rows for investors whose
- * Investors-tab **Sponsor name** (`added_by`) is this viewer, or (same company)
- * belongs to their organization. Co-sponsors see only investors whose Sponsor
- * name is them, plus contacts they created — not the rest of the org CRM.
+ * **Lead / Admin** (and company admin / company member): CRM rows for investors whose
+ * Investors-tab **Sponsor name** (`added_by`) is this viewer, or (same selected
+ * company) belongs to that company. Contacts a co-sponsor added stay on that
+ * co-sponsor's list only. Co-sponsors see only investors whose Sponsor name is
+ * them, plus contacts they created — not the rest of the org CRM and not
+ * another co-sponsor's contacts. Lead or admin status is judged on deals of
+ * the selected company, not the viewer's primary company.
  *
  * Other roles see external CRM rows only, plus investors they personally added.
  */
@@ -1420,14 +1763,19 @@ async function buildContactsScopeWhere(
     viewerRole,
     requestedOrganizationId,
   );
-  const sponsorTeamSeesFullCrm = await viewerIsLeadOrAdminSponsorOnAnyDeal(
+  await ensureOutsideSponsorsAreOrganizationContacts(
+    ctx.organizationId,
     viewerUserId,
   );
-  const coSponsorNarrow =
-    await viewerShouldSeeOnlySelfCreatedContacts(
-      viewerUserId,
-      ctx.roleForScope,
-    );
+  const sponsorTeamSeesFullCrm = await viewerIsLeadOrAdminSponsorOnAnyDeal(
+    viewerUserId,
+    ctx.organizationId,
+  );
+  const coSponsorNarrow = await viewerShouldSeeOnlySelfCreatedContacts(
+    viewerUserId,
+    ctx.roleForScope,
+    ctx.organizationId,
+  );
   const includeSameOrganization =
     isCompanyAdminRole(ctx.roleForScope) || sponsorTeamSeesFullCrm;
 
@@ -1442,6 +1790,7 @@ async function buildContactsScopeWhere(
   const associatedInvestorIds =
     await listCrmContactIdsAssociatedWithSponsorViewer(viewerUserId, {
       includeSameOrganization,
+      organizationId: ctx.organizationId,
     });
   const associatedIdsSql = inContactIdsSql(associatedInvestorIds);
   const notPlatformAdminOnlyOrAssociated = associatedIdsSql
@@ -1467,7 +1816,11 @@ async function buildContactsScopeWhere(
     // All Contacts is every company. A company id is only applied when a
     // caller asks for one company, such as Customers → Contacts.
     if (!requestedOrg) {
-      return fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm);
+      return and(
+        fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm),
+        excludeCompanyStaffFromContactsWhere(null),
+        excludeOutsideCoSponsorContactsWhere(null, referrerIds),
+      )!;
     }
     if (!orgId) {
       return null;
@@ -1487,8 +1840,13 @@ async function buildContactsScopeWhere(
       orgScope,
       excludePlatformAdminOnlyContactsWhere(),
       visForList,
+      excludeCompanyStaffFromContactsWhere(orgId),
     )!;
-    return or(orgList, contactsReferredByOrganizationMembersWhere(orgId))!;
+    return and(
+      or(orgList, contactsReferredByOrganizationMembersWhere(orgId))!,
+      excludeCompanyStaffFromContactsWhere(orgId),
+      excludeOutsideCoSponsorContactsWhere(orgId, referrerIds),
+    )!;
   }
 
   if (!orgId) {
@@ -1498,12 +1856,14 @@ async function buildContactsScopeWhere(
         inArray(contact.createdBy, creatorIds),
         visForList,
         excludePlatformAdminOnlyContactsWhere(),
+        excludeCompanyStaffFromContactsWhere(null),
       )!;
     }
     return and(
       or(inArray(contact.createdBy, creatorIds), associatedIdsSql)!,
       visOrAssociatedForList,
       notPlatformAdminOnlyOrAssociated,
+      excludeCompanyStaffFromContactsWhere(null),
     )!;
   }
 
@@ -1513,22 +1873,30 @@ async function buildContactsScopeWhere(
   const orgOrAssociated = associatedIdsSql
     ? or(orgScope, associatedIdsSql)!
     : orgScope;
+  const homeCompanyAdminOrLead =
+    isCompanyAdminRole(ctx.roleForScope) || sponsorTeamSeesFullCrm;
+  const scopeForList =
+    homeCompanyAdminOrLead
+      ? or(orgOrAssociated, contactsCreatedByOrganizationMembersWhere(orgId))!
+      : orgOrAssociated;
 
   const parts: SQL[] = [
-    orgOrAssociated,
+    scopeForList,
     visOrAssociatedForList,
     notPlatformAdminOnlyOrAssociated,
+    excludeCompanyStaffFromContactsWhere(orgId),
+    excludeOutsideCoSponsorContactsWhere(orgId, referrerIds),
   ];
   if (coSponsorNarrow) {
+    // Same gate as getContact: created by this co-sponsor, or an investor
+    // whose Sponsor name is this co-sponsor. Sponsor copies of other people's
+    // contacts stay out of the list so a denied detail is not clickable.
     const creatorIds = referrerIds;
     if (!associatedIdsSql) {
       parts.push(inArray(contact.createdBy, creatorIds));
     } else {
       parts.push(
-        or(
-          inArray(contact.createdBy, creatorIds),
-          associatedIdsSql,
-        )!,
+        or(inArray(contact.createdBy, creatorIds), associatedIdsSql)!,
       );
     }
   }
@@ -1563,6 +1931,55 @@ export async function listInviteeContactsForOrganization(
            FROM user_company_membership membership
            WHERE membership.user_id = sponsor.id
              AND membership.company_id = $1::uuid
+         )
+       )
+       AND NOT (
+         sponsor.organization_id IS DISTINCT FROM $1::uuid
+         AND NOT EXISTS (
+           SELECT 1
+           FROM user_company_membership sponsor_membership
+           WHERE sponsor_membership.user_id = sponsor.id
+             AND sponsor_membership.company_id = $1::uuid
+         )
+         AND EXISTS (
+           SELECT 1
+           FROM add_deal_form f
+           WHERE f.organization_id = $1::uuid
+             AND (
+               EXISTS (
+                 SELECT 1
+                 FROM deal_member dm
+                 WHERE dm.deal_id = f.id
+                   AND dm.is_draft = false
+                   AND replace(lower(trim(dm.deal_member_role)), '_', ' ') IN ('co-sponsor', 'co sponsor')
+                   AND (
+                     lower(trim(dm.contact_member_id)) = lower(sponsor.id::text)
+                     OR EXISTS (
+                       SELECT 1
+                       FROM contact sponsor_contact
+                       WHERE lower(trim(sponsor_contact.id::text)) = lower(trim(dm.contact_member_id))
+                         AND lower(trim(sponsor_contact.email)) = lower(trim(sponsor.email))
+                     )
+                   )
+               )
+               OR EXISTS (
+                 SELECT 1
+                 FROM deal_investment di
+                 WHERE di.deal_id = f.id
+                   AND di.is_draft = false
+                   AND trim(di.contact_id) <> '__portal_investment_autosave__'
+                   AND replace(lower(trim(di.investor_role)), '_', ' ') IN ('co-sponsor', 'co sponsor')
+                   AND (
+                     lower(trim(di.contact_id)) = lower(sponsor.id::text)
+                     OR EXISTS (
+                       SELECT 1
+                       FROM contact sponsor_contact
+                       WHERE lower(trim(sponsor_contact.id::text)) = lower(trim(di.contact_id))
+                         AND lower(trim(sponsor_contact.email)) = lower(trim(sponsor.email))
+                     )
+                   )
+               )
+             )
          )
        )
      ORDER BY lower(trim(c.email)),
@@ -1710,7 +2127,12 @@ async function widenScopeWithOptedInSelfRegistered(
         and lower(trim(crm.email)) = lower(trim(${contact.email}))
     )`);
   }
-  return or(scope, and(...parts)!)!;
+  const equivalentIds = await listEquivalentPortalUserIdsForUser(viewerUserId);
+  const exempt = equivalentIds.length > 0 ? equivalentIds : [viewerUserId];
+  return and(
+    or(scope, and(...parts)!)!,
+    excludeOutsideCoSponsorContactsWhere(ctx.organizationId, exempt),
+  )!;
 }
 
 export type ContactListFilters = {
@@ -1882,10 +2304,10 @@ export async function listContactIdsForViewerFilters(params: {
 /**
  * Distinct deals per CRM contact for the Contacts "Deals" column.
  *
- * `deal_investment.contact_id` may be either the CRM `contact.id` or a portal
- * `users.id`. Count a deal when the investment key matches the contact id, or
- * matches a portal user with the same email (same bridge as Members deal counts).
- * Scoped to deals visible to this viewer ({@link listAddDealFormsForViewer}).
+ * A contact is on a deal through an investment, a deal member row, or an LP
+ * roster row. Those keys may be the CRM `contact.id` or a portal `users.id`
+ * with the same email. The count matches {@link listDealsForContactForViewer}
+ * and is scoped to deals visible to this viewer.
  */
 async function listVisibleDealIdsForContactEnrichment(params: {
   viewerUserId: string;
@@ -1935,53 +2357,22 @@ export async function countDealInvestmentsByContactIdForViewer(params: {
   const idParams = sql.join(keys.map((k) => sql`${k}`), sql`, `);
 
   const visibility = await listVisibleDealIdsForContactEnrichment(params);
-  if (visibility.unrestricted) {
-    const executed = await db.execute(sql`
-      WITH contact_keys AS (
-        SELECT
-          lower(trim(c.id::text)) AS contact_key,
-          lower(trim(c.email)) AS email_norm
-        FROM contact c
-        WHERE lower(trim(c.id::text)) IN (${idParams})
-      ),
-      id_matches AS (
-        SELECT ck.contact_key, di.deal_id
-        FROM deal_investment di
-        INNER JOIN contact_keys ck
-          ON lower(trim(di.contact_id)) = ck.contact_key
-        WHERE di.is_draft = false
-      ),
-      user_matches AS (
-        SELECT ck.contact_key, di.deal_id
-        FROM deal_investment di
-        INNER JOIN users u
-          ON u.id::text = trim(both from di.contact_id)
-        INNER JOIN contact_keys ck
-          ON lower(trim(u.email)) = ck.email_norm
-        WHERE di.is_draft = false
-          AND ck.email_norm <> ''
-          AND position('@' in ck.email_norm) > 1
-      ),
-      all_links AS (
-        SELECT contact_key, deal_id FROM id_matches
-        UNION
-        SELECT contact_key, deal_id FROM user_matches
-      )
-      SELECT contact_key AS cid, COUNT(DISTINCT deal_id)::int AS cnt
-      FROM all_links
-      GROUP BY contact_key
-    `);
-    fillDealCountMapFromExecute(result, executed);
-    return result;
-  }
+  if (!visibility.unrestricted && visibility.dealIds.length === 0) return result;
 
-  const dealIds = visibility.dealIds;
-  if (dealIds.length === 0) return result;
-
-  const dealIdParams = sql.join(
-    dealIds.map((id) => sql`${id}`),
-    sql`, `,
-  );
+  const dealInList = () =>
+    sql.join(
+      (visibility.unrestricted ? [] : visibility.dealIds).map((id) => sql`${id}`),
+      sql`, `,
+    );
+  const investmentDealFilter = visibility.unrestricted
+    ? sql``
+    : sql`AND di.deal_id IN (${dealInList()})`;
+  const memberDealFilter = visibility.unrestricted
+    ? sql``
+    : sql`AND dm.deal_id IN (${dealInList()})`;
+  const lpDealFilter = visibility.unrestricted
+    ? sql``
+    : sql`AND lp.deal_id IN (${dealInList()})`;
 
   const executed = await db.execute(sql`
     WITH contact_keys AS (
@@ -1991,34 +2382,59 @@ export async function countDealInvestmentsByContactIdForViewer(params: {
       FROM contact c
       WHERE lower(trim(c.id::text)) IN (${idParams})
     ),
-    id_matches AS (
-      SELECT ck.contact_key, di.deal_id
-      FROM deal_investment di
-      INNER JOIN contact_keys ck
-        ON lower(trim(di.contact_id)) = ck.contact_key
-      WHERE di.deal_id IN (${dealIdParams})
-        AND di.is_draft = false
-    ),
-    user_matches AS (
-      SELECT ck.contact_key, di.deal_id
-      FROM deal_investment di
+    roster_ids AS (
+      SELECT contact_key, contact_key AS roster_id
+      FROM contact_keys
+      UNION
+      SELECT ck.contact_key, lower(trim(other.id::text))
+      FROM contact_keys ck
+      INNER JOIN contact other
+        ON lower(trim(other.email)) = ck.email_norm
+      WHERE ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+      UNION
+      SELECT ck.contact_key, lower(trim(u.id::text))
+      FROM contact_keys ck
       INNER JOIN users u
-        ON u.id::text = trim(both from di.contact_id)
-      INNER JOIN contact_keys ck
         ON lower(trim(u.email)) = ck.email_norm
-      WHERE di.deal_id IN (${dealIdParams})
-        AND di.is_draft = false
-        AND ck.email_norm <> ''
+      WHERE ck.email_norm <> ''
         AND position('@' in ck.email_norm) > 1
     ),
-    all_links AS (
-      SELECT contact_key, deal_id FROM id_matches
-      UNION
-      SELECT contact_key, deal_id FROM user_matches
+    links AS (
+      SELECT r.contact_key, di.deal_id::text AS deal_id
+      FROM deal_investment di
+      INNER JOIN roster_ids r
+        ON lower(trim(di.contact_id)) = r.roster_id
+      WHERE di.is_draft = false
+        ${investmentDealFilter}
+      UNION ALL
+      SELECT r.contact_key, dm.deal_id::text
+      FROM deal_member dm
+      INNER JOIN roster_ids r
+        ON lower(trim(dm.contact_member_id)) = r.roster_id
+      WHERE dm.is_draft = false
+        ${memberDealFilter}
+      UNION ALL
+      SELECT r.contact_key, lp.deal_id::text
+      FROM deal_lp_investor lp
+      INNER JOIN roster_ids r
+        ON lower(trim(lp.contact_member_id)) = r.roster_id
+      WHERE lp.is_draft = false
+        ${lpDealFilter}
+      UNION ALL
+      SELECT ck.contact_key, lp.deal_id::text
+      FROM deal_lp_investor lp
+      INNER JOIN contact_keys ck
+        ON lower(trim(lp.email)) = ck.email_norm
+      WHERE lp.is_draft = false
+        AND ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+        ${lpDealFilter}
     )
-    SELECT contact_key AS cid, COUNT(DISTINCT deal_id)::int AS cnt
-    FROM all_links
-    GROUP BY contact_key
+    SELECT links.contact_key AS cid, COUNT(DISTINCT links.deal_id)::int AS cnt
+    FROM links
+    INNER JOIN add_deal_form d ON d.id::text = links.deal_id
+    GROUP BY links.contact_key
   `);
   fillDealCountMapFromExecute(result, executed);
   return result;
@@ -2071,63 +2487,55 @@ export async function listDealsForContactForViewer(params: {
       FROM contact c
       WHERE lower(trim(c.id::text)) = ${key}
     ),
+    roster_ids AS (
+      SELECT contact_key AS roster_id
+      FROM contact_keys
+      UNION
+      SELECT lower(trim(other.id::text))
+      FROM contact_keys ck
+      INNER JOIN contact other
+        ON lower(trim(other.email)) = ck.email_norm
+      WHERE ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+      UNION
+      SELECT lower(trim(u.id::text))
+      FROM contact_keys ck
+      INNER JOIN users u
+        ON lower(trim(u.email)) = ck.email_norm
+      WHERE ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+    ),
     links AS (
       SELECT di.deal_id::text AS deal_id,
              NULLIF(trim(di.investor_role), '') AS role,
              3 AS priority
       FROM deal_investment di
-      INNER JOIN contact_keys ck
-        ON lower(trim(di.contact_id)) = ck.contact_key
+      INNER JOIN roster_ids r
+        ON lower(trim(di.contact_id)) = r.roster_id
       WHERE di.is_draft = false
-      UNION ALL
-      SELECT di.deal_id::text,
-             NULLIF(trim(di.investor_role), ''),
-             3
-      FROM deal_investment di
-      INNER JOIN users u
-        ON u.id::text = trim(both from di.contact_id)
-      INNER JOIN contact_keys ck
-        ON lower(trim(u.email)) = ck.email_norm
-      WHERE di.is_draft = false
-        AND ck.email_norm <> ''
-        AND position('@' in ck.email_norm) > 1
       UNION ALL
       SELECT dm.deal_id::text,
              NULLIF(trim(dm.deal_member_role), ''),
              1
       FROM deal_member dm
-      INNER JOIN contact_keys ck
-        ON lower(trim(dm.contact_member_id)) = ck.contact_key
+      INNER JOIN roster_ids r
+        ON lower(trim(dm.contact_member_id)) = r.roster_id
       WHERE dm.is_draft = false
-      UNION ALL
-      SELECT dm.deal_id::text,
-             NULLIF(trim(dm.deal_member_role), ''),
-             1
-      FROM deal_member dm
-      INNER JOIN users u
-        ON u.id::text = trim(both from dm.contact_member_id)
-      INNER JOIN contact_keys ck
-        ON lower(trim(u.email)) = ck.email_norm
-      WHERE dm.is_draft = false
-        AND ck.email_norm <> ''
-        AND position('@' in ck.email_norm) > 1
       UNION ALL
       SELECT lp.deal_id::text,
              NULLIF(trim(lp.role), ''),
              2
       FROM deal_lp_investor lp
-      INNER JOIN contact_keys ck
-        ON lower(trim(lp.contact_member_id)) = ck.contact_key
+      INNER JOIN roster_ids r
+        ON lower(trim(lp.contact_member_id)) = r.roster_id
       WHERE lp.is_draft = false
       UNION ALL
       SELECT lp.deal_id::text,
              NULLIF(trim(lp.role), ''),
              2
       FROM deal_lp_investor lp
-      INNER JOIN users u
-        ON u.id::text = trim(both from lp.contact_member_id)
       INNER JOIN contact_keys ck
-        ON lower(trim(u.email)) = ck.email_norm
+        ON lower(trim(lp.email)) = ck.email_norm
       WHERE lp.is_draft = false
         AND ck.email_norm <> ''
         AND position('@' in ck.email_norm) > 1
@@ -2360,6 +2768,105 @@ export async function listContactsForViewer(
   );
 }
 
+/**
+ * Contacts the viewer may see, limited to the requested ids.
+ * The contacts table asks for deal counts by id, so this must not depend on
+ * scanning a directory that was loaded for a different company.
+ */
+export async function listViewerContactsByIds(params: {
+  viewerUserId: string;
+  viewerRole?: string | null;
+  requestedOrganizationId?: string | null;
+  contactIds: string[];
+}): Promise<ContactRow[]> {
+  const ids = [
+    ...new Set(params.contactIds.map((id) => id.trim()).filter(Boolean)),
+  ];
+  if (ids.length === 0) return [];
+
+  const orgWhere = await buildContactsScopeWhere(
+    params.viewerUserId,
+    params.viewerRole,
+    params.requestedOrganizationId,
+  );
+  const orgRows = orgWhere
+    ? await db
+        .select()
+        .from(contact)
+        .where(and(orgWhere, inArray(contact.id, ids)))
+    : [];
+
+  const [viewer] = await db
+    .select({ email: users.email, role: users.role })
+    .from(users)
+    .where(eq(users.id, params.viewerUserId))
+    .limit(1);
+  const role = String(viewer?.role ?? params.viewerRole ?? "").trim();
+  const viewerEmailNorm = normalizeContactEmailForScope(viewer?.email ?? "");
+  const platformVisibility = isPlatformAdminRole(role)
+    ? or(eq(contact.platformAdminOnly, true), eq(contact.visibleToUsers, true))!
+    : optedInSelfRegisteredContactsWhere();
+  const platformParts: SQL[] = [platformVisibility, inArray(contact.id, ids)];
+  if (viewerEmailNorm.includes("@")) {
+    platformParts.push(
+      sql`lower(trim(${contact.email})) <> ${viewerEmailNorm}`,
+    );
+  }
+  const platformRows = await db
+    .select()
+    .from(contact)
+    .where(and(...platformParts)!);
+
+  const byId = new Map<string, ContactRow>();
+  for (const row of [...orgRows, ...platformRows]) {
+    byId.set(String(row.id).trim().toLowerCase(), row);
+  }
+  return [...byId.values()];
+}
+
+export type OrganizationContactCountOption = {
+  organizationId: string;
+  name: string;
+  contactCount: number;
+};
+
+/**
+ * Every company, with how many CRM contacts belong to that company.
+ * A direct count so the platform-admin filter does not depend on loading
+ * the full contact directory.
+ */
+export async function listOrganizationsWithContactCountsForViewer(): Promise<
+  OrganizationContactCountOption[]
+> {
+  const res = await pool.query<{
+    id: string;
+    name: string | null;
+    contact_count: number | string;
+  }>(
+    `SELECT co.id::text AS id,
+            co.name,
+            COUNT(c.id)::int AS contact_count
+     FROM companies co
+     LEFT JOIN contact c
+       ON c.organization_id = co.id
+      AND c.platform_admin_only = false
+     GROUP BY co.id, co.name
+     ORDER BY lower(co.name) ASC`,
+  );
+  return res.rows
+    .map((row) => {
+      const organizationId = String(row.id ?? "").trim();
+      const name = String(row.name ?? "").trim();
+      const parsed = Number(row.contact_count);
+      return {
+        organizationId,
+        name: name || "Untitled organization",
+        contactCount: Number.isFinite(parsed) ? Math.max(0, parsed) : 0,
+      };
+    })
+    .filter((row) => row.organizationId.length > 0);
+}
+
 export async function listContactsForViewerCached(
   viewerUserId: string,
   viewerRole?: string | null,
@@ -2423,12 +2930,13 @@ async function contactIdIsSponsorAssociatedInvestor(
   viewerUserId: string,
   contactId: string,
   includeSameOrganization: boolean,
+  organizationId?: string | null,
 ): Promise<boolean> {
   const id = String(contactId ?? "").trim();
   if (!id) return false;
   const dealRelatedIds = await listCrmContactIdsAssociatedWithSponsorViewer(
     viewerUserId,
-    { includeSameOrganization },
+    { includeSameOrganization, organizationId },
   );
   return dealRelatedIds.includes(id);
 }
@@ -2449,7 +2957,17 @@ async function viewerCanAccessContactRow(
     await viewerIncludesSameOrganizationAssociatedInvestors(
       viewerUserId,
       ctx.roleForScope,
+      ctx.organizationId,
     );
+  if (
+    await contactIsPrivateToAnotherCoSponsor(
+      viewerUserId,
+      row,
+      ctx.organizationId,
+    )
+  ) {
+    return false;
+  }
   if (isPlatformAdminRole(ctx.roleForScope)) return true;
   if (isPlatformAdminOnlyContactRow(row)) {
     if (isOptedInSelfRegisteredContactRow(row)) return true;
@@ -2457,12 +2975,14 @@ async function viewerCanAccessContactRow(
       viewerUserId,
       row.id,
       includeSameOrganization,
+      ctx.organizationId,
     );
   }
   if (
     await viewerShouldSeeOnlySelfCreatedContacts(
       viewerUserId,
       ctx.roleForScope,
+      ctx.organizationId,
     )
   ) {
     const equivalentIds = await listEquivalentPortalUserIdsForUser(
@@ -2487,14 +3007,29 @@ async function viewerCanAccessContactRow(
   ) {
     return true;
   }
+  const contactOrgDiffers =
+    Boolean(viewerOrg) &&
+    Boolean(row.organizationId) &&
+    row.organizationId !== viewerOrg;
+  if (contactOrgDiffers && viewerOrg) {
+    const creatorBelongsToViewerCompany =
+      (await userHasAccessToOrganization(row.createdBy, viewerOrg)) ||
+      (await resolveOrganizationIdForUserId(row.createdBy)) === viewerOrg;
+    const viewerIsHomeAdminOrLead =
+      isCompanyAdminRole(ctx.roleForScope) ||
+      (await viewerIsLeadOrAdminSponsorOnAnyDeal(viewerUserId, viewerOrg));
+    if (creatorBelongsToViewerCompany && viewerIsHomeAdminOrLead) return true;
+  }
   if (
     await contactIdIsSponsorAssociatedInvestor(
       viewerUserId,
       row.id,
       includeSameOrganization,
+      ctx.organizationId,
     )
   )
     return true;
+  if (contactOrgDiffers) return false;
   return viewerCanAccessContactCreator(
     viewerUserId,
     row.createdBy,
@@ -2534,23 +3069,24 @@ export async function updateContactFieldsForViewer(
   )
     return null;
 
+  const emailToStore = fields.email;
   const phoneStored = normalizeContactPhoneForWrite(fields.phone);
   await assertContactEmailPhoneUniqueForCreatorScope({
     creatorUserId: row.createdBy,
-    email: fields.email,
+    email: emailToStore,
     phone: phoneStored,
     excludeContactId: contactId,
     existingContactOrganizationId: row.organizationId,
   });
 
-  const isPortalUser = await contactEmailMatchesPortalUser(fields.email);
+  const isPortalUser = await contactEmailMatchesPortalUser(emailToStore);
   const [updated] = await db
     .update(contact)
     .set({
       firstName: fields.firstName,
       lastName: fields.lastName,
       fullName: buildContactFullName(fields.firstName, fields.lastName),
-      email: fields.email,
+      email: emailToStore,
       phone: phoneStored,
       note: fields.note,
       tags: fields.tags,
@@ -2633,7 +3169,23 @@ export async function getContactForViewer(
 ): Promise<ContactRow | null> {
   const row = await getContactById(contactId);
   if (!row) return null;
-  if (isOptedInSelfRegisteredContactRow(row)) return row;
+  if (isOptedInSelfRegisteredContactRow(row)) {
+    const ctx = await getViewerContactScopeContext(
+      viewerUserId,
+      viewerRole,
+      requestedOrganizationId,
+    );
+    if (
+      await contactIsPrivateToAnotherCoSponsor(
+        viewerUserId,
+        row,
+        ctx.organizationId,
+      )
+    ) {
+      return null;
+    }
+    return row;
+  }
   if (
     !(await viewerCanAccessContactRow(
       viewerUserId,

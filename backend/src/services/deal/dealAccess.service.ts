@@ -43,6 +43,7 @@ import { assignCreatorAsLeadSponsorOnDeal } from "./dealMember.service.js";
 import { listLpInvestorDealIdsForUserEmail, listInvestingParticipantDealIdsForUser } from "../investing/lpInvestorAccess.service.js";
 import { isDealAllowedByContactOfferingVisibility } from "../contact/contactOfferingVisibility.service.js";
 import { isInvestingPortalRequest } from "../../middleware/portalMode.middleware.js";
+import { listCrossOrgColleagueSponsoredDealIds } from "./crossOrgColleagueDeal.service.js";
 
 export type { DealViewerScope } from "./dealForm.service.js";
 
@@ -148,6 +149,10 @@ export async function resolveDealViewerScope(
   const enforceContactOfferingVisibility =
     !isPlatformAdmin && isInvestingPortalRequest();
 
+  const crossOrgColleagueSponsoredDealIds = isPlatformAdmin
+    ? []
+    : await listCrossOrgColleagueSponsoredDealIds(userId);
+
   /**
    * Users from Contacts (deal_participant / investor — not org staff) may only
    * see syndicating deals where they are Lead, Admin, or Co-sponsor.
@@ -168,7 +173,14 @@ export async function resolveDealViewerScope(
     enforceContactOfferingVisibility,
     syndicationSponsorOnly,
     syndicationSponsorDealIds,
+    crossOrgColleagueSponsoredDealIds,
   };
+}
+
+function dealIdInList(dealId: string, ids: string[] | null | undefined): boolean {
+  const key = String(dealId ?? "").trim().toLowerCase();
+  if (!key || !ids?.length) return false;
+  return ids.some((id) => id.toLowerCase() === key);
 }
 
 /** Syndication workspace (org, roster sponsor, platform admin) — not LP-only access. */
@@ -190,6 +202,12 @@ export async function viewerHasSyndicationDealWorkspaceAccess(
   ) {
     return true;
   }
+  if (
+    !scope.syndicationSponsorOnly &&
+    dealIdInList(dealId, scope.crossOrgColleagueSponsoredDealIds)
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -197,11 +215,13 @@ async function investorParticipantMayReadDeal(
   deal: AddDealFormRow,
   scope: DealViewerScope,
 ): Promise<boolean> {
-  if (!isAddDealFormIncomplete(deal)) return true;
+  if (!isAddDealFormIncomplete(deal) || isDealStageDraft(deal.dealStage)) {
+    return true;
+  }
   return viewerHasSyndicationDealWorkspaceAccess(deal, scope);
 }
 
-/** Investing lists: hide draft / incomplete deals unless viewer has sponsor workspace access. */
+/** Investing lists: hide unfinished autosave deals. Draft deals stay visible to contacts. */
 export async function filterDealsVisibleToInvestorParticipants(
   rows: AddDealFormRow[],
   scope: DealViewerScope,
@@ -227,6 +247,9 @@ export async function dealAccessibleToViewerScope(
    */
   async function passesContactOfferingVisibility(): Promise<boolean> {
     if (scope.isPlatformAdmin || !scope.enforceContactOfferingVisibility) {
+      return true;
+    }
+    if (dealIdInList(dealId, scope.crossOrgColleagueSponsoredDealIds)) {
       return true;
     }
     const emailNorm = await viewerEmailNormForScope(scope);
@@ -277,6 +300,14 @@ export async function dealAccessibleToViewerScope(
    * roster seat must not replace that list or block deals the contact is not
    * personally on.
    */
+  if (
+    !baseOk &&
+    dealIdInList(dealId, scope.crossOrgColleagueSponsoredDealIds) &&
+    (!scope.syndicationSponsorOnly || isInvestingPortalRequest())
+  ) {
+    baseOk = true;
+  }
+
   if (!baseOk && isInvestingPortalRequest() && !scope.isPlatformAdmin) {
     const emailNorm = await viewerEmailNormForScope(scope);
     if (
@@ -465,14 +496,20 @@ export async function listDealsForViewer(
   const sponsorIds = [...new Set([...leadAdminIds, ...coSponsorIds])];
   let rows = await mergeDealRowsById(base, sponsorIds);
 
-  if (scope.lpInvestorEmailScopedDealIds != null) return rows;
+  if (scope.lpInvestorEmailScopedDealIds != null) {
+    return withCrossOrgColleagueSponsoredDeals(rows, scope);
+  }
 
   const rosterIds = await listDealIdsFromDealMemberRosterForUser(scope.userId);
-  if (rosterIds.length === 0) return rows;
+  if (rosterIds.length === 0) {
+    return withCrossOrgColleagueSponsoredDeals(rows, scope);
+  }
 
   const visibleIds = new Set(rows.map((r) => String(r.id)));
   const missing = rosterIds.filter((id) => !visibleIds.has(id));
-  if (missing.length === 0) return rows;
+  if (missing.length === 0) {
+    return withCrossOrgColleagueSponsoredDeals(rows, scope);
+  }
 
   const extraRows = await listAddDealFormsByIds(missing);
   const orgId = scope.organizationId;
@@ -486,12 +523,22 @@ export async function listDealsForViewer(
           )
         ).filter((r): r is AddDealFormRow => r != null)
       : extraRows;
-  if (scopedExtras.length === 0) return rows;
+  const merged =
+    scopedExtras.length === 0
+      ? rows
+      : await mergeDealRowsById(
+          rows,
+          scopedExtras.map((r) => String(r.id)),
+        );
+  return withCrossOrgColleagueSponsoredDeals(merged, scope);
+}
 
-  return mergeDealRowsById(
-    rows,
-    scopedExtras.map((r) => String(r.id)),
-  );
+/** Investing lists that start from org deals also include a peer's other-org offerings. */
+export async function withCrossOrgColleagueSponsoredDeals(
+  rows: AddDealFormRow[],
+  scope: DealViewerScope,
+): Promise<AddDealFormRow[]> {
+  return mergeDealRowsById(rows, scope.crossOrgColleagueSponsoredDealIds ?? []);
 }
 
 /**

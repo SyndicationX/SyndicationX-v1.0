@@ -4,6 +4,7 @@ import {
   Copy,
   ExternalLink,
   Eye,
+  Info,
   Loader2,
   LogIn,
   Send,
@@ -113,7 +114,7 @@ export function DealOfferingPortfolioPage() {
    * Share preview is sponsor-side only. Investors who signed in from a shared
    * preview link open this same workspace route, so keep it hidden for them.
    */
-  const canShareOfferingPreview =
+  const sessionCanShareOfferingPreview =
     !isPublicOfferingRoute && mode !== "investing" && !isLpInvestorSessionUser()
 
   /** Public route: encrypted token (or legacy UUID) from `?preview=`. */
@@ -158,6 +159,8 @@ export function DealOfferingPortfolioPage() {
   const [notFound, setNotFound] = useState(false)
   const [saasPaywallDeal, setSaasPaywallDeal] =
     useState<DealSaasPaywallDeal | null>(null)
+  const canShareOfferingPreview =
+    sessionCanShareOfferingPreview && detail?.viewerCanManageDeal !== false
 
   const [lpShareToken, setLpShareToken] = useState<string | null>(null)
   const [lpShareSponsorRef, setLpShareSponsorRef] = useState<string | null>(null)
@@ -700,8 +703,28 @@ export function DealOfferingPortfolioPage() {
           <div className="deal_offer_pf_back_row">
             <Link to={portfolioBackTo} className="deal_offer_pf_back">
               <ArrowLeft size={18} strokeWidth={2} aria-hidden />
-              {mode === "investing" ? "Back to opportunities" : "Back to deal"}
+              {mode === "investing"
+                ? "Back to opportunities"
+                : detail.viewerCanManageDeal === false
+                  ? "Back to deals"
+                  : "Back to deal"}
             </Link>
+          </div>
+        ) : null}
+
+        {!isPublicOfferingRoute && detail.viewerCanManageDeal === false ? (
+          <div
+            className="deals_cross_org_view_only_notice"
+            role="status"
+            aria-label="View-only deal access"
+          >
+            <Info size={20} strokeWidth={2.25} aria-hidden />
+            <div>
+              <strong>View-only access</strong>
+              <span>
+                You can view this deal. Only the sponsor can make changes.
+              </span>
+            </div>
           </div>
         ) : null}
 

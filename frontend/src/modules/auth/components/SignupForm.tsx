@@ -31,6 +31,7 @@ import {
   SESSION_PORTAL_MODE_KEY,
   SESSION_USER_DETAILS_KEY,
 } from "../../../common/auth/sessionKeys";
+import { publishActiveBrowserUserFromSession } from "../../../common/auth/exclusiveBrowserSession";
 import { isPlatformAdmin } from "../../../common/auth/roleUtils";
 import { parseSafeNextPath } from "../../../common/auth/parseSafeNextPath";
 import {
@@ -104,6 +105,8 @@ export default function SignupForm() {
   const token = (tokenParam ?? "").trim() || searchParams.get("token")?.trim() || "";
   /** Sponsor's investor invite link — attributes this signup to them (see contacts page). */
   const inviteRef = searchParams.get("ref")?.trim() || "";
+  const inviteSponsorName = searchParams.get("sponsorName")?.trim() || "";
+  const inviteCompanyName = searchParams.get("companyName")?.trim() || "";
   /** Set when the link was emailed from Add Contact, so signup stays on that contact. */
   const invitedEmail =
     inviteRef && searchParams.get("email")?.trim()
@@ -400,6 +403,7 @@ export default function SignupForm() {
         SESSION_USER_DETAILS_KEY,
         JSON.stringify(details),
       );
+      publishActiveBrowserUserFromSession();
     } else {
       sessionStorage.removeItem(SESSION_USER_DETAILS_KEY);
     }
@@ -497,6 +501,7 @@ export default function SignupForm() {
             SESSION_USER_DETAILS_KEY,
             JSON.stringify(claimed.userDetails),
           );
+          publishActiveBrowserUserFromSession();
         }
       } catch (claimError) {
         toast.error(
@@ -1038,6 +1043,12 @@ export default function SignupForm() {
               inviteRef || searchParams.get("next")
                 ? `/signin?${new URLSearchParams({
                     ...(inviteRef ? { ref: inviteRef } : {}),
+                    ...(inviteSponsorName
+                      ? { sponsorName: inviteSponsorName }
+                      : {}),
+                    ...(inviteCompanyName
+                      ? { companyName: inviteCompanyName }
+                      : {}),
                     ...(searchParams.get("next")?.trim()
                       ? { next: searchParams.get("next")!.trim() }
                       : {}),

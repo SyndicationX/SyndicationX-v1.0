@@ -140,7 +140,7 @@ export default function FeedbackPage() {
     initialSort: { columnId: "submitted", direction: "desc" },
   })
 
-  const { page, pageSize, rows: items, isLoading: loading, refresh } = table
+  const { rows: items, isLoading: loading, refresh } = table
   const error = table.error
 
   const load = useCallback(async () => {
@@ -302,10 +302,10 @@ export default function FeedbackPage() {
       colWidth: "3.75rem",
       thClassName: "feedback_sno_col",
       tdClassName: "feedback_sno_col um_td_numeric",
-      cell: (_row, rowIndex) =>
-        (page - 1) * pageSize + (rowIndex ?? 0) + 1,
+      sortValue: (row) => row.feedbackNo,
+      cell: (row) => (row.feedbackNo > 0 ? row.feedbackNo : "—"),
     }),
-    [page, pageSize],
+    [],
   )
 
   const sharedIdentityCols = useMemo<DataTableColumn<FeedbackItem>[]>(

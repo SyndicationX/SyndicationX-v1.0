@@ -3,6 +3,7 @@ import {
   AlignLeft,
   Archive,
   Ban,
+  Building2,
   Check,
   CheckCircle2,
   ClipboardList,
@@ -46,15 +47,15 @@ import {
   DropdownSelect,
   type DropdownSelectOption,
 } from "../../../common/components/dropdown-select"
+import { RedactedPill } from "../../../common/components/redacted-pill/RedactedPill"
 import {
   displayEmail,
+  displayPhone,
   isDisplayableEmail,
+  isPrivacyRedacted,
 } from "../../../common/utils/displayEmail"
 import { formatCount } from "@/common/utils/formatCount"
-import {
-  formatUsPhoneStoredForUi,
-  nationalDigitsFromStoredPhone,
-} from "../../../common/phone/usPhoneNumber"
+import { nationalDigitsFromStoredPhone } from "../../../common/phone/usPhoneNumber"
 import { ViewReadonlyField } from "../../../common/components/ViewReadonlyField"
 import { FormTooltip } from "../../../common/components/form-tooltip/FormTooltip"
 import {
@@ -256,13 +257,14 @@ function contactRowMatchesSearch(row: ContactRow, query: string): boolean {
     row.email,
     row.phone,
     nationalDigitsFromStoredPhone(String(row.phone ?? "")),
-    formatUsPhoneStoredForUi(row.phone),
+    displayPhone(row.phone),
     row.note,
     ...row.tags,
     ...row.lists,
     ...row.owners,
     row.createdByDisplayName ?? "",
     row.invitedByDisplayName ?? "",
+    row.addedByCompanyName ?? "",
     row.organizationName ?? "",
     row.visibleToUsers === true ? "yes" : "no",
     String(row.dealCount ?? 0),
@@ -331,6 +333,7 @@ function accreditationBadge(status: string | null | undefined) {
   )
 }
 
+/* Used by hidden Contact tags and Owners columns (restore with those columns).
 function TagsCell({ items }: { items: string[] }) {
   if (!items.length)
     return <span className="um_status_muted">—</span>
@@ -344,6 +347,7 @@ function TagsCell({ items }: { items: string[] }) {
     </div>
   )
 }
+*/
 
 export type ContactsPageProps = {
   /** Customers → company: CRM directory for this organization only. */
@@ -363,13 +367,18 @@ function ContactsPage({
     () =>
       scopedOrganizationId
         ? { organizationId: scopedOrganizationId }
-        : undefined,
-    [scopedOrganizationId],
+        : platformAdmin
+          ? { allOrganizations: true as const }
+          : {},
+    [scopedOrganizationId, platformAdmin],
   )
   const suspendAllTitleId = useId()
   const offeringVisibilityTitleId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const [rows, setRows] = useState<ContactRow[]>([])
+  const [dealCountById, setDealCountById] = useState<Map<string, number>>(
+    () => new Map(),
+  )
   const [orgScopeKey, setOrgScopeKey] = useState(
     () => getSessionOrganizationCompanyId() ?? "",
   )
@@ -579,7 +588,9 @@ function ContactsPage({
     [directoryRows],
   )
 
-  const filteredRows = useMemo(
+  const platformAdminCompanyFilter = platformAdmin && !scopedOrganizationId
+
+  const rowsBeforeOwnerFilter = useMemo(
     () =>
       tabRows
         .filter((r) => !tagFilter || contactHasTag(r, tagFilter))
@@ -595,11 +606,6 @@ function ContactsPage({
           const vis = r.showOfferingsVisibility ?? null
           if (offeringVisibilityFilter === "unset") return vis == null
           return vis === offeringVisibilityFilter
-        })
-        .filter((r) => {
-          if (ownerFilter === "all") return true
-          const want = ownerFilter.trim().toLowerCase()
-          return r.owners.some((o) => o.trim().toLowerCase() === want)
         }),
     [
       tabRows,
@@ -607,12 +613,93 @@ function ContactsPage({
       tagFilter,
       accreditationFilter,
       offeringVisibilityFilter,
-      ownerFilter,
     ],
+  )
+
+  const ownerFilterOptions = useMemo(() => {
+    if (!platformAdminCompanyFilter) return ownerSponsorOptions
+    const byOrg = new Map<string, { name: string; count: number }>()
+    let unnamed = 0
+    for (const row of rowsBeforeOwnerFilter) {
+      const addedByCompany = row.addedByCompanyName?.trim() ?? ""
+      const organizationId = row.organizationId?.trim() ?? ""
+      const organizationName = row.organizationName?.trim() ?? ""
+      const name = addedByCompany || organizationName
+      if (!organizationId && !name) {
+        unnamed += 1
+        continue
+      }
+      const key = addedByCompany
+        ? `company:${addedByCompany.toLowerCase()}`
+        : organizationId || name.toLowerCase()
+      const existing = byOrg.get(key)
+      if (existing) {
+        existing.count += 1
+      } else {
+        byOrg.set(key, {
+          name: name || "Untitled organization",
+          count: 1,
+        })
+      }
+    }
+    const options: DropdownSelectOption[] = [
+      {
+        value: "all",
+        label: `All owners (${formatCount(rowsBeforeOwnerFilter.length)})`,
+      },
+    ]
+    for (const [value, { name, count }] of [...byOrg.entries()].sort((a, b) =>
+      a[1].name.localeCompare(b[1].name, undefined, { sensitivity: "base" }),
+    )) {
+      options.push({ value, label: `${name} (${formatCount(count)})` })
+    }
+    if (unnamed > 0) {
+      options.push({
+        value: "__none__",
+        label: `No organization (${formatCount(unnamed)})`,
+      })
+    }
+    return options
+  }, [platformAdminCompanyFilter, ownerSponsorOptions, rowsBeforeOwnerFilter])
+
+  const filteredRows = useMemo(
+    () =>
+      rowsBeforeOwnerFilter.filter((r) => {
+        if (ownerFilter === "all") return true
+        if (platformAdminCompanyFilter) {
+          if (ownerFilter === "__none__") {
+            return (
+              !r.addedByCompanyName?.trim() &&
+              !r.organizationId?.trim() &&
+              !r.organizationName?.trim()
+            )
+          }
+          if (ownerFilter.startsWith("company:")) {
+            return (
+              (r.addedByCompanyName?.trim().toLowerCase() ?? "") ===
+              ownerFilter.slice("company:".length)
+            )
+          }
+          const organizationId = r.organizationId?.trim() ?? ""
+          if (organizationId) return organizationId === ownerFilter
+          return (r.organizationName?.trim().toLowerCase() ?? "") === ownerFilter
+        }
+        const want = ownerFilter.trim().toLowerCase()
+        return r.owners.some((o) => o.trim().toLowerCase() === want)
+      }),
+    [rowsBeforeOwnerFilter, ownerFilter, platformAdminCompanyFilter],
   )
 
   const applyContactDealStats = useCallback((stats: Map<string, ContactRow>) => {
     if (stats.size === 0) return
+    setDealCountById((prev) => {
+      const next = new Map(prev)
+      for (const [id, row] of stats) {
+        const key = id.trim().toLowerCase()
+        if (key) next.set(key, row.dealCount ?? 0)
+      }
+      return next
+    })
     const merge = (row: ContactRow): ContactRow => {
       const next = stats.get(row.id)
       if (!next) return row
@@ -628,25 +715,22 @@ function ContactsPage({
     setPlatformRows((prev) => prev.map(merge))
   }, [])
 
-  const visibleContactIdsKey = useMemo(() => {
-    const start = (page - 1) * pageSize
-    return filteredRows
-      .slice(start, start + pageSize)
-      .map((r) => r.id)
-      .join(",")
-  }, [filteredRows, page, pageSize])
+  const directoryContactIdsKey = useMemo(
+    () => rows.map((r) => r.id).filter(Boolean).join(","),
+    [rows],
+  )
 
   useEffect(() => {
-    const ids = visibleContactIdsKey.split(",").filter(Boolean)
+    const ids = directoryContactIdsKey.split(",").filter(Boolean)
     if (ids.length === 0) return
     let cancelled = false
-    void fetchContactDealStats(ids, dealStatsOptions).then((stats) => {
+    void hydrateContactDealStatsInChunks(ids, dealStatsOptions).then((stats) => {
       if (!cancelled) applyContactDealStats(stats)
     })
     return () => {
       cancelled = true
     }
-  }, [visibleContactIdsKey, applyContactDealStats, dealStatsOptions])
+  }, [directoryContactIdsKey, applyContactDealStats, dealStatsOptions])
 
   const openContactsForTag = useCallback((tagName: string) => {
     const name = tagName.trim()
@@ -1708,6 +1792,8 @@ function ContactsPage({
                   >
                     {rawEmail}
                   </a>
+                ) : isPrivacyRedacted(rawEmail) ? (
+                  <RedactedPill />
                 ) : (
                   <span className="um_user_meta_email um_status_muted">
                     {displayEmail(rawEmail)}
@@ -1726,8 +1812,13 @@ function ContactsPage({
         thClassName: "contacts_th_phone",
         tdClassName: "contacts_td_phone",
         cell: (row) => {
-          const phone = formatUsPhoneStoredForUi(row.phone).trim()
-          return phone ? phone : <span className="um_status_muted">—</span>
+          if (isPrivacyRedacted(row.phone)) return <RedactedPill />
+          const phone = displayPhone(row.phone).trim()
+          return phone && phone !== "—" ? (
+            phone
+          ) : (
+            <span className="um_status_muted">—</span>
+          )
         },
       },
       {
@@ -1964,6 +2055,8 @@ function ContactsPage({
                   >
                     {rawEmail}
                   </a>
+                ) : isPrivacyRedacted(rawEmail) ? (
+                  <RedactedPill />
                 ) : (
                   <span className="um_user_meta_email um_status_muted">
                     {emailShown}
@@ -1988,9 +2081,11 @@ function ContactsPage({
         align: "center",
         thClassName: "contacts_th_deals_count",
         tdClassName: "contacts_td_deals_count",
-        sortValue: (row) => row.dealCount ?? 0,
+        sortValue: (row) =>
+          dealCountById.get(row.id.trim().toLowerCase()) ?? row.dealCount ?? 0,
         cell: (row) => {
-          const n = row.dealCount ?? 0
+          const n =
+            dealCountById.get(row.id.trim().toLowerCase()) ?? row.dealCount ?? 0
           if (n <= 0) {
             return (
               <span className="contacts_deals_count_num contacts_deals_count_num--empty">
@@ -2001,7 +2096,7 @@ function ContactsPage({
           return (
             <span
               className="contacts_deals_count_num contacts_deals_count_num--value"
-              title="Distinct deals where this contact id or a portal user with the same email has an investment (your visible deals only)."
+              title="Distinct deals where this contact is an investor, a deal member, or on the LP roster (your visible deals only)."
             >
               {formatCount(n)}
             </span>
@@ -2014,7 +2109,12 @@ function ContactsPage({
         sortValue: (row) => nationalDigitsFromStoredPhone(String(row.phone ?? "")),
         thClassName: "contacts_th_phone",
         tdClassName: "contacts_td_phone",
-        cell: (row) => formatUsPhoneStoredForUi(row.phone),
+        cell: (row) =>
+          isPrivacyRedacted(row.phone) ? (
+            <RedactedPill />
+          ) : (
+            displayPhone(row.phone)
+          ),
       },
       {
         id: "showOfferingsVisibility",
@@ -2135,33 +2235,39 @@ function ContactsPage({
         ),
       },
       */
+      /* Hidden: Owners & Invited by columns (restore by uncommenting)
       {
         id: "owners",
         header: "Owners",
         sortValue: (row) => row.owners.join(" "),
         cell: (row) => <TagsCell items={row.owners} />,
       },
-      ...(platformAdmin
-        ? ([
-            {
-              id: "organization",
-              header: "Organization",
-              sortValue: (row) => row.organizationName ?? "",
-              thClassName: "contacts_th_organization",
-              tdClassName: "contacts_td_organization",
-              cell: (row) => {
-                const name = row.organizationName?.trim()
-                return name ? (
-                  <span className="contacts_organization" title={name}>
-                    {name}
-                  </span>
-                ) : (
-                  <span className="um_status_muted">—</span>
-                )
-              },
-            },
-          ] satisfies DataTableColumn<ContactRow>[])
-        : []),
+      */
+      {
+        id: "organization",
+        header: "Organization/Owners",
+        sortValue: (row) =>
+          row.addedByCompanyName?.trim() || row.organizationName || "",
+        thClassName: "contacts_th_organization",
+        tdClassName: "contacts_td_organization",
+        cell: (row) => {
+          const name =
+            row.addedByCompanyName?.trim() || row.organizationName?.trim()
+          if (!name) return <span className="um_status_muted">—</span>
+          return (
+            <span className="um_org_badge" title={name}>
+              <Building2
+                className="um_org_badge_icon"
+                size={15}
+                strokeWidth={2}
+                aria-hidden
+              />
+              <span className="um_org_badge_label">{name}</span>
+            </span>
+          )
+        },
+      },
+      /* Hidden: Invited by column (restore by uncommenting)
       {
         id: "invitedBy",
         header: "Invited by",
@@ -2179,6 +2285,7 @@ function ContactsPage({
           )
         },
       },
+      */
       ...(platformAdmin
         ? ([
             {
@@ -2248,6 +2355,7 @@ function ContactsPage({
       },
     ],
     [
+      dealCountById,
       allContactsInFilterSelected,
       contactsListTab,
       exportContactRow,
@@ -2688,14 +2796,26 @@ function ContactsPage({
                           triggerClassName="contacts_toolbar_filter_dropdown_trigger"
                           panelClassName="contacts_toolbar_filter_dropdown_panel"
                           value={ownerFilter}
-                          options={ownerSponsorOptions}
+                          options={ownerFilterOptions}
                           disabled={loading}
-                          ariaLabel="Filter by owner"
+                          ariaLabel={
+                            platformAdminCompanyFilter
+                              ? "Filter by company"
+                              : "Filter by owner"
+                          }
                           placeholder="Owner"
                           useFixedPanel
                           searchable
-                          searchPlaceholder="Search Lead or Admin sponsors…"
-                          searchAriaLabel="Search owners"
+                          searchPlaceholder={
+                            platformAdminCompanyFilter
+                              ? "Search companies…"
+                              : "Search Lead or Admin sponsors…"
+                          }
+                          searchAriaLabel={
+                            platformAdminCompanyFilter
+                              ? "Search companies"
+                              : "Search owners"
+                          }
                           searchShowOptionCountHint
                           onChange={(v) => {
                             setOwnerFilter(v)
@@ -2807,7 +2927,9 @@ function ContactsPage({
               <DataTable
                 key={tableResetKey}
                 visualVariant="members"
+                membersTableClassName="um_table_members deal_inv_table contacts_directory_table"
                 stickyFirstColumn
+                stickyColumnCount={2}
                 columns={columns}
                 rows={contactsLoading ? [] : filteredRows}
                 isLoading={contactsLoading}
@@ -3635,7 +3757,13 @@ function ContactsPage({
               <ViewReadonlyField
                 Icon={Mail}
                 label="Email"
-                value={displayEmail(suspendRow.email)}
+                value={
+                  isPrivacyRedacted(suspendRow.email) ? (
+                    <RedactedPill />
+                  ) : (
+                    displayEmail(suspendRow.email)
+                  )
+                }
               />
             </div>
 
@@ -3877,7 +4005,13 @@ function ContactsPage({
               <ViewReadonlyField
                 Icon={Mail}
                 label="Email"
-                value={displayEmail(inviteRow.email)}
+                value={
+                  isPrivacyRedacted(inviteRow.email) ? (
+                    <RedactedPill />
+                  ) : (
+                    displayEmail(inviteRow.email)
+                  )
+                }
               />
             </div>
 

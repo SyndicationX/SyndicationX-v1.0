@@ -93,6 +93,8 @@ export type FeedbackPageOption = {
 
 export type FeedbackItem = {
   id: string
+  /** Permanent entry order. The first submitted feedback is 1. */
+  feedbackNo: number
   userId: string
   username: string
   userEmail: string

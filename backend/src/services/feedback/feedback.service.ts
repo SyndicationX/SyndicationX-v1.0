@@ -41,6 +41,7 @@ export type FeedbackPageCatalogItem = {
 
 export type FeedbackPublicRow = {
   id: string;
+  feedbackNo: number;
   userId: string;
   username: string;
   userEmail: string;
@@ -101,6 +102,7 @@ function toPublic(
   const role = String(userRole ?? "").trim();
   return {
     id: row.id,
+    feedbackNo: Number(row.feedbackNo) || 0,
     userId: row.userId,
     username: row.username,
     userEmail: row.userEmail,
@@ -502,6 +504,7 @@ export async function listMyFeedback(
 
 /** Columns the feedback search box matches against. */
 const feedbackSearchColumns = [
+  searchableColumn(sql`${userFeedback.feedbackNo}::text`),
   searchableColumn(userFeedback.username),
   searchableColumn(userFeedback.userEmail),
   searchableColumn(userFeedback.pageLabel),
@@ -518,6 +521,7 @@ const feedbackSearchColumns = [
  * it is ordered through a correlated lookup rather than a join.
  */
 const feedbackSortColumns: Record<string, SQL | AnyColumn> = {
+  sno: userFeedback.feedbackNo,
   username: userFeedback.username,
   email: userFeedback.userEmail,
   role: sql`(select u.role from ${users} u where u.id = ${userFeedback.userId})`,

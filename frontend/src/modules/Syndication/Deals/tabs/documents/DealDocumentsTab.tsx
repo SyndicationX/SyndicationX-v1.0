@@ -11,6 +11,7 @@ type DealDocumentsTabProps = {
   offeringInvestorPreviewJson?: string | null
   investorsListRefreshKey?: number
   viewerDealMemberRole?: ViewerDealMemberRole
+  viewOnly?: boolean
   onOfferingPreviewSynced?: (deal: DealDetailApi) => void
 }
 
@@ -20,6 +21,7 @@ export function DealDocumentsTab({
   offeringInvestorPreviewJson,
   investorsListRefreshKey = 0,
   viewerDealMemberRole = null,
+  viewOnly = false,
   onOfferingPreviewSynced,
 }: DealDocumentsTabProps) {
   return (
@@ -31,6 +33,7 @@ export function DealDocumentsTab({
         offeringInvestorPreviewJson={offeringInvestorPreviewJson}
         investorsListRefreshKey={investorsListRefreshKey}
         viewerDealMemberRole={viewerDealMemberRole}
+        viewOnly={viewOnly}
         onOfferingPreviewSynced={onOfferingPreviewSynced}
       />
     </div>

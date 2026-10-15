@@ -45,12 +45,15 @@ interface DealOfferingDetailsTabProps {
   detail: DealDetailApi
   onDealUpdated?: (deal: DealDetailApi) => void
   viewerDealMemberRole?: ViewerDealMemberRole
+  /** Peer deal from another organization: read the offering, do not change it. */
+  viewOnly?: boolean
 }
 
 export function DealOfferingDetailsTab({
   detail,
   onDealUpdated,
   viewerDealMemberRole = null,
+  viewOnly = false,
 }: DealOfferingDetailsTabProps) {
   const onDealUpdatedRef = useRef(onDealUpdated)
   onDealUpdatedRef.current = onDealUpdated
@@ -87,14 +90,15 @@ export function DealOfferingDetailsTab({
   }, [detail.id, detail.offeringInvestorPreviewJson])
 
   useEffect(() => {
-    if (!previewHydrated || !detail.id.trim()) return
+    if (viewOnly || !previewHydrated || !detail.id.trim()) return
     writeOfferingPreviewInvestorVisibility(detail.id, investorPreviewVisibility)
     scheduleOfferingInvestorPreviewServerSync(detail.id, {
       onSuccess: (d) => onDealUpdatedRef.current?.(d),
     })
-  }, [detail.id, investorPreviewVisibility, previewHydrated])
+  }, [detail.id, investorPreviewVisibility, previewHydrated, viewOnly])
 
   useEffect(() => {
+    if (viewOnly) return
     const nowVisible = investorPreviewVisibility.assets
     const wasVisible = prevAssetsInvestorVisibleRef.current
     prevAssetsInvestorVisibleRef.current = nowVisible
@@ -102,7 +106,7 @@ export function DealOfferingDetailsTab({
     clearOverviewExcludedAssetIds(detail.id)
     markOverviewAssetsMergePending(detail.id)
     dispatchOverviewAssetsMergeEvent(detail.id)
-  }, [detail.id, investorPreviewVisibility.assets])
+  }, [detail.id, investorPreviewVisibility.assets, viewOnly])
 
   useEffect(() => {
     const fromUrl = searchParams.get(OFFERING_SECTION_QUERY_PARAM)
@@ -341,7 +345,7 @@ export function DealOfferingDetailsTab({
                     ) : null}
                   </span>
                 </button>
-                {investorToggle}
+                {viewOnly ? null : investorToggle}
                 <button
                   type="button"
                   className="deal_offering_trigger_chevron_btn"
@@ -367,7 +371,14 @@ export function DealOfferingDetailsTab({
                 hidden={!expanded}
                 className="deal_offering_panel"
               >
-                {expanded ? sectionBody(id) : null}
+                {expanded ? (
+                  <fieldset
+                    disabled={viewOnly}
+                    className="deal_offering_view_only_fields"
+                  >
+                    {sectionBody(id)}
+                  </fieldset>
+                ) : null}
               </div>
             </div>
           )

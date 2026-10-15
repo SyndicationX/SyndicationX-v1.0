@@ -58,7 +58,7 @@ export function isCoSponsorStoredRole(raw: string | null | undefined): boolean {
   );
 }
 
-/** Extra Co-GP billing counts co-sponsors only, not team members. */
+/** Extra Co-GP billing counts co-sponsors only, not other roster roles. */
 export function isCoGpStoredRole(raw: string | null | undefined): boolean {
   return isCoSponsorStoredRole(raw);
 }
@@ -74,15 +74,53 @@ export function extraCoGpUnitAmountCents(
     : EXTRA_COMPANY_USER_FEE_CENTS;
 }
 
-/** 5 and 10 co-sponsors are included. 10+ has no per-GP add-on. */
+/** 5 and 10 co-sponsors are included in those packages. 10+ includes 12; each Co-GP past 12 is $10. */
 export function includedCoGpsForSeatBand(
   seatBand: string | null | undefined,
 ): number | null {
   const band = normalizeBillingSeatBand(seatBand);
   if (band === "5") return 5;
   if (band === "10") return 10;
-  if (band === "10plus") return null;
+  if (band === "10plus") return 12;
   return null;
+}
+
+/** Smallest Co-GP package that contains the deal's current Co-GP roster. */
+export function suggestedSeatBandForCoGpCount(
+  coGpCount: number,
+): StripeBillingSeatBand {
+  const count = Math.max(0, Math.floor(Number(coGpCount) || 0));
+  if (count > 10) return "10plus";
+  if (count > 5) return "10";
+  return "5";
+}
+
+export function coGpSeatBandNeedsUpgrade(
+  currentSeatBand: string | null | undefined,
+  coGpCount: number,
+): boolean {
+  const current = normalizeBillingSeatBand(currentSeatBand) ?? "5";
+  const suggested = suggestedSeatBandForCoGpCount(coGpCount);
+  const rank: Record<StripeBillingSeatBand, number> = {
+    "5": 1,
+    "10": 2,
+    "10plus": 3,
+  };
+  return rank[suggested] > rank[current];
+}
+
+export function coGpSeatBandIsUpgrade(
+  currentSeatBand: string | null | undefined,
+  requestedSeatBand: string | null | undefined,
+): boolean {
+  const current = normalizeBillingSeatBand(currentSeatBand) ?? "5";
+  const requested = normalizeBillingSeatBand(requestedSeatBand) ?? "5";
+  const rank: Record<StripeBillingSeatBand, number> = {
+    "5": 1,
+    "10": 2,
+    "10plus": 3,
+  };
+  return rank[requested] > rank[current];
 }
 
 export type DealBillingRosterMember = {
@@ -502,8 +540,7 @@ export async function getDealCompanyUserSnapshot(
   const seatBand =
     normalizeBillingSeatBand(options?.seatBand) ??
     planAndCycleFromPriceId(deal.stripePriceId).seatBand;
-  const includedCoGps =
-    seatBand === "10plus" ? null : (includedCoGpsForSeatBand(seatBand) ?? 5);
+  const includedCoGps = includedCoGpsForSeatBand(seatBand) ?? 5;
   const billing = buildExtraUserBilling({
     members: roster,
     includedCoGps,

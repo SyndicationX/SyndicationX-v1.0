@@ -7,6 +7,7 @@ import {
   ClipboardList,
   FileText,
   Flag,
+  Hash,
   LayoutGrid,
   List,
   Loader2,
@@ -159,6 +160,11 @@ export function FeedbackDetailsModal({
             {error ? <p className="feedback_form_error">{error}</p> : null}
 
             <div className="um_view_grid feedback_details_grid">
+              <ViewReadonlyField
+                Icon={Hash}
+                label="S.No"
+                value={item.feedbackNo > 0 ? String(item.feedbackNo) : "—"}
+              />
               <ViewReadonlyField
                 Icon={User}
                 label="Submitted by"

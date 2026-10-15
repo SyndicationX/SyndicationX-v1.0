@@ -147,6 +147,67 @@ export async function fetchCompanyBillingStatus(
   }
 }
 
+export type BillingCouponPreview = {
+  code: string
+  promotionCodeId: string
+  name: string | null
+  percentOff: number | null
+  amountOffCents: number | null
+  currency: string | null
+  duration: string
+  durationInMonths: number | null
+}
+
+export async function previewBillingCoupon(
+  code: string,
+  dealId?: string,
+): Promise<{ ok: true; coupon: BillingCouponPreview } | { ok: false; message: string }> {
+  const base = getApiV1Base()
+  if (!base) return { ok: false, message: "API is not configured (VITE_BASE_URL)." }
+  try {
+    const res = await fetch(`${base}/billing/coupons/preview`, {
+      method: "POST",
+      headers: {
+        ...authHeaders(),
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        code,
+        ...(dealId?.trim() ? { dealId: dealId.trim() } : {}),
+      }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return { ok: false, message: messageFromBody(data, "That coupon code is not valid.") }
+    }
+    const raw =
+      data && typeof data === "object" ? (data as { coupon?: unknown }).coupon : null
+    if (!raw || typeof raw !== "object") {
+      return { ok: false, message: "That coupon code is not valid." }
+    }
+    const row = raw as Record<string, unknown>
+    const promoCode = typeof row.code === "string" ? row.code.trim() : ""
+    if (!promoCode) return { ok: false, message: "That coupon code is not valid." }
+    return {
+      ok: true,
+      coupon: {
+        code: promoCode,
+        promotionCodeId: typeof row.promotionCodeId === "string" ? row.promotionCodeId : "",
+        name: typeof row.name === "string" ? row.name : null,
+        percentOff: typeof row.percentOff === "number" ? row.percentOff : null,
+        amountOffCents: typeof row.amountOffCents === "number" ? row.amountOffCents : null,
+        currency: typeof row.currency === "string" ? row.currency : null,
+        duration: typeof row.duration === "string" ? row.duration : "once",
+        durationInMonths:
+          typeof row.durationInMonths === "number" ? row.durationInMonths : null,
+      },
+    }
+  } catch {
+    return { ok: false, message: "Could not reach the server." }
+  }
+}
+
 export async function startCompanyBillingCheckout(
   companyId: string,
   planId: string,
@@ -154,6 +215,7 @@ export async function startCompanyBillingCheckout(
   seatBand: StripeBillingSeatBand = "5",
   dealId?: string,
   extraCompanyUsers?: number,
+  promotionCode?: string,
 ): Promise<
   | { ok: true; url: string }
   | { ok: false; message: string; statusCode: number }
@@ -184,6 +246,7 @@ export async function startCompanyBillingCheckout(
           ...(extraCompanyUsers && extraCompanyUsers > 0
             ? { extraCompanyUsers }
             : {}),
+          ...(promotionCode?.trim() ? { promotionCode: promotionCode.trim() } : {}),
         }),
       },
     )
@@ -249,6 +312,7 @@ export async function payCompanyBillingWithSavedMethod(
   dealId: string,
   paymentMethodId: string,
   extraCompanyUsers?: number,
+  promotionCode?: string,
 ): Promise<
   | { ok: true; paidDealId: string | null; status: CompanyBillingStatus }
   | { ok: false; message: string; statusCode: number }
@@ -280,6 +344,7 @@ export async function payCompanyBillingWithSavedMethod(
           ...(extraCompanyUsers && extraCompanyUsers > 0
             ? { extraCompanyUsers }
             : {}),
+          ...(promotionCode?.trim() ? { promotionCode: promotionCode.trim() } : {}),
         }),
       },
     )
@@ -421,6 +486,8 @@ export type CompanyDealBillingRow = {
   planId: string | null
   suggestedPlanId?: string | null
   needsPlanUpgrade?: boolean
+  suggestedSeatBand?: "5" | "10" | "10plus" | string | null
+  needsCoGpUpgrade?: boolean
   billingCycle: string | null
   subscriptionStatus: string
   nextBillingDate: string | null
@@ -437,6 +504,7 @@ export type CompanyDealBillingRow = {
   includedCoGps?: number | null
   extraUserFeeCents?: number
   extraUserComment?: string | null
+  couponRedeemed?: boolean
 }
 
 export type BillingOrganizationOption = {

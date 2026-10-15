@@ -1192,6 +1192,49 @@ select option {
   font-weight: 500;
 }
 
+.um_org_badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.um_org_badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0.2em 0.55em;
+  border: 1px solid #e2e8f0;
+  border-radius: var(--ui-button-border-radius, 4px);
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+  vertical-align: middle;
+}
+
+.um_org_badge_icon {
+  flex-shrink: 0;
+  color: #64748b;
+}
+
+.um_org_badge_label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+td.um_td_memberships:not(.um_td_role) {
+  max-width: 18rem;
+}
+
 .um_membership_sep {
   color: #94a3b8;
   font-weight: 400;

@@ -113,6 +113,8 @@ export interface DealDetailApi {
   offeringPreviewToken?: string | null
   /** False when the signed-in viewer is a co-sponsor (or LP) on this deal. */
   viewerCanEditDeal?: boolean
+  /** False when another organization's deal is visible here for viewing only. */
+  viewerCanManageDeal?: boolean
   viewerIsLeadSponsor?: boolean
   suggestedPlanId?: string | null
   needsPlanUpgrade?: boolean
@@ -475,6 +477,19 @@ function normalizeDealListRow(
       }
       return {}
     })(),
+    ...(() => {
+      const raw = firstDefined(r, [
+        "viewerCanManageDeal",
+        "viewer_can_manage_deal",
+      ])
+      if (raw === true || raw === "true" || raw === 1 || raw === "1") {
+        return { viewerCanManageDeal: true as const }
+      }
+      if (raw === false || raw === "false" || raw === 0 || raw === "0") {
+        return { viewerCanManageDeal: false as const }
+      }
+      return {}
+    })(),
   }
 }
 
@@ -818,6 +833,19 @@ export function normalizeDealDetailApi(
       }
       if (raw === false || raw === "false" || raw === 0 || raw === "0") {
         return { viewerCanEditDeal: false as const }
+      }
+      return {}
+    })(),
+    ...(() => {
+      const raw = firstDefined(d, [
+        "viewerCanManageDeal",
+        "viewer_can_manage_deal",
+      ])
+      if (raw === true || raw === "true" || raw === 1 || raw === "1") {
+        return { viewerCanManageDeal: true as const }
+      }
+      if (raw === false || raw === "false" || raw === 0 || raw === "0") {
+        return { viewerCanManageDeal: false as const }
       }
       return {}
     })(),
@@ -2758,6 +2786,7 @@ function normalizeInvestorRowApi(
       firstDefined(raw, ["userEmail", "user_email", "email"]),
       "—",
     ),
+    userPhone: str(firstDefined(raw, ["userPhone", "user_phone", "phone"]), ""),
     firstName: str(
       firstDefined(raw, ["firstName", "first_name"]),
       "",
@@ -2801,6 +2830,12 @@ function normalizeInvestorRowApi(
         "added_by_display_name",
       ]),
       "—",
+    ),
+    addedByCompanyName: str(
+      firstDefined(raw, [
+        "addedByCompanyName",
+        "added_by_company_name",
+      ]),
     ),
     ...(() => {
       const email = firstDefined(raw, ["addedByEmail", "added_by_email"])
@@ -3033,21 +3068,65 @@ function normalizeDealMembersResponse(data: unknown): DealMembersPayload {
       "lead_sponsor_display_name",
     ]),
   )
+  const leadSponsorCompanyName = str(
+    firstDefined(d, [
+      "leadSponsorCompanyName",
+      "lead_sponsor_company_name",
+    ]),
+  )
   const referringSponsorDisplayName = str(
     firstDefined(d, [
       "referringSponsorDisplayName",
       "referring_sponsor_display_name",
     ]),
   )
+  const referringSponsorCompanyName = str(
+    firstDefined(d, [
+      "referringSponsorCompanyName",
+      "referring_sponsor_company_name",
+    ]),
+  )
   const referringSponsorRef = str(
     firstDefined(d, ["referringSponsorRef", "referring_sponsor_ref"]),
+  )
+  const inviteSponsorCompanyName = str(
+    firstDefined(d, [
+      "inviteSponsorCompanyName",
+      "invite_sponsor_company_name",
+    ]),
+  )
+  const sameOrganizationSponsorDisplayName = str(
+    firstDefined(d, [
+      "sameOrganizationSponsorDisplayName",
+      "same_organization_sponsor_display_name",
+    ]),
+  )
+  const onboardingSponsorDisplayName = str(
+    firstDefined(d, [
+      "onboardingSponsorDisplayName",
+      "onboarding_sponsor_display_name",
+    ]),
+  )
+  const onboardingSponsorCompanyName = str(
+    firstDefined(d, [
+      "onboardingSponsorCompanyName",
+      "onboarding_sponsor_company_name",
+    ]),
   )
   return {
     members,
     ...(viewerDealMemberRole !== undefined ? { viewerDealMemberRole } : {}),
     ...(leadSponsorDisplayName ? { leadSponsorDisplayName } : {}),
+    ...(leadSponsorCompanyName ? { leadSponsorCompanyName } : {}),
     ...(referringSponsorDisplayName ? { referringSponsorDisplayName } : {}),
+    ...(referringSponsorCompanyName ? { referringSponsorCompanyName } : {}),
     ...(referringSponsorRef ? { referringSponsorRef } : {}),
+    ...(inviteSponsorCompanyName ? { inviteSponsorCompanyName } : {}),
+    ...(sameOrganizationSponsorDisplayName
+      ? { sameOrganizationSponsorDisplayName }
+      : {}),
+    ...(onboardingSponsorDisplayName ? { onboardingSponsorDisplayName } : {}),
+    ...(onboardingSponsorCompanyName ? { onboardingSponsorCompanyName } : {}),
   }
 }
 
@@ -3179,6 +3258,8 @@ export async function fetchDealMembers(
     const params = new URLSearchParams()
     const ref = options?.referringSponsorRef?.trim()
     if (ref) params.set("referring_sponsor_ref", ref)
+    const sponsorCompanyId = organizationIdQueryParam()
+    if (sponsorCompanyId) params.set("sponsorCompanyId", sponsorCompanyId)
     const q = params.toString()
     const res = await fetch(
       `${base}/deals/${encodeURIComponent(dealId)}/members${q ? `?${q}` : ""}`,

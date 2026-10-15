@@ -3819,12 +3819,113 @@ select.cp_settings_input_pill.um_field_select {
   color: var(--font-color-title, #0f172a);
 }
 
+.cp_billing_auto_plan {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: min(100%, 18rem);
+  padding: 0.65rem 0.8rem;
+  border: 1px solid color-mix(in srgb, #16a34a 28%, var(--portal-border, #e2e8f0));
+  border-radius: var(--portal-card-radius, 4px);
+  background: color-mix(in srgb, #16a34a 7%, var(--portal-surface, #ffffff));
+  color: #047857;
+}
+.cp_billing_auto_plan > svg {
+  flex: 0 0 auto;
+}
+.cp_billing_auto_plan > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.cp_billing_auto_plan strong {
+  color: var(--portal-text, #0f172a);
+  font-size: 0.9375rem;
+}
+.cp_billing_auto_plan small {
+  color: var(--portal-text-muted, #64748b);
+  font-size: 0.75rem;
+}
+
 .cp_billing_filter_row_disabled {
   opacity: 0.5;
 }
 
-.cp_billing_filter_row_disabled .cp_billing_cycle_option {
+.cp_billing_filter_row_disabled .cp_billing_cycle_option,
+.cp_billing_filter_row_disabled .cp_cosponsor_choice {
   cursor: not-allowed;
+}
+
+.cp_cosponsor_picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  max-width: 100%;
+}
+
+.cp_cosponsor_choice {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem;
+  min-width: 5.5rem;
+  padding: 0.65rem 0.75rem 0.55rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.cp_cosponsor_choice input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+}
+
+.cp_cosponsor_choice_count {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: #0f172a;
+}
+
+.cp_cosponsor_choice_label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.cp_cosponsor_choice:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.cp_cosponsor_choice_active {
+  border-color: var(--main-auth-button-color, #155abf);
+  background: color-mix(in srgb, var(--main-auth-button-color, #155abf) 8%, #ffffff);
+  box-shadow: 0 0 0 1px var(--main-auth-button-color, #155abf);
+}
+
+.cp_cosponsor_choice_active .cp_cosponsor_choice_count,
+.cp_cosponsor_choice_active .cp_cosponsor_choice_label {
+  color: var(--main-auth-button-color, #155abf);
+}
+
+.cp_cosponsor_choice:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--main-auth-button-color, #155abf) 45%, transparent);
+  outline-offset: 2px;
 }
 
 .cp_billing_plan_deal_ref {
@@ -3862,6 +3963,24 @@ select.cp_settings_input_pill.um_field_select {
   background: #f1f5f9;
   border: 1px solid #e2e8f0;
   border-radius: var(--ui-button-border-radius, 4px);
+}
+.cp_billing_cosponsor_picker {
+  gap: 0.2em;
+}
+.cp_billing_cosponsor_option {
+  position: relative;
+  min-width: 2.4em;
+  justify-content: center;
+  padding: 0.4em 0.45em;
+}
+.cp_billing_cosponsor_option input[type="radio"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
 }
 .cp_billing_cycle_option {
   display: inline-flex;
@@ -3981,6 +4100,21 @@ select.cp_settings_input_pill.um_field_select {
   font-weight: 600;
   color: var(--font-color-title, #0f172a);
 }
+.cp_billing_plan_heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.cp_billing_plan_heading .cp_billing_coupon_link,
+.cp_billing_plan_heading .cp_billing_coupon_applied {
+  margin: 0;
+  flex-shrink: 0;
+  text-align: right;
+}
+.cp_billing_plan_heading .cp_billing_coupon_link {
+  color: #047857;
+}
 .cp_billing_plan_tagline {
   margin: 0.35em 0 1.1em;
   font-size: 0.85em;
@@ -4021,6 +4155,147 @@ select.cp_settings_input_pill.um_field_select {
   color: #166534;
   background: #dcfce7;
 }
+.cp_billing_coupon_link,
+.cp_billing_coupon_remove {
+  margin: 0.35rem 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--main-auth-button-color, #155abf);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.cp_billing_coupon_applied {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.4rem 0 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #047857;
+}
+
+.cp_billing_coupon_remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0.15rem;
+  border: 0;
+  background: none;
+  color: #b91c1c;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.cp_billing_coupon_remove:hover {
+  color: #991b1b;
+}
+
+.cp_billing_plan_price_was {
+  margin-right: 0.35rem;
+  color: var(--portal-text-muted, #94a3b8);
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-decoration: line-through;
+}
+
+.cp_coupon_apply_field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.9rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--portal-text-muted, #64748b);
+}
+
+.cp_coupon_apply_error {
+  margin: 0.65rem 0 0;
+  color: #b91c1c;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.cp_coupon_stage {
+  position: relative;
+  box-sizing: border-box;
+  width: min(20rem, 100%);
+}
+
+.cp_coupon_stage_confirmed {
+  width: min(32rem, 100%);
+  padding: 2rem 1.25rem;
+}
+
+.cp_coupon_dialog {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-height: none;
+  border-radius: 12px;
+  box-shadow:
+    0 16px 32px color-mix(in srgb, #0f172a 14%, transparent),
+    0 2px 8px color-mix(in srgb, #0f172a 6%, transparent);
+}
+
+.cp_coupon_dialog .deal_stage_modal_head {
+  gap: 0.65rem;
+  padding: 0.85rem 0.9rem 0.7rem;
+}
+
+.cp_coupon_dialog .deal_stage_modal_body {
+  padding: 0.75rem 0.9rem 0.85rem;
+}
+
+.cp_coupon_dialog .deal_stage_modal_actions {
+  padding: 0.7rem 0.9rem 0.85rem;
+}
+
+.cp_coupon_dialog .deal_stage_modal_title {
+  font-size: 1.05rem;
+}
+
+.cp_coupon_confetti {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.cp_coupon_deactivate_icon {
+  color: #b91c1c;
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border-color: color-mix(in srgb, #ef4444 28%, transparent);
+}
+
+.cp_coupon_deactivate_confirm {
+  color: #fff;
+  background: #b91c1c;
+}
+
+.cp_coupon_deactivate_confirm:hover:not(:disabled) {
+  background: #991b1b;
+}
+
+.cp_coupon_row_deactivate {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
 .cp_billing_plan_price_amount {
   font-size: 2em;
   font-weight: 700;
@@ -4146,6 +4421,133 @@ select.cp_settings_input_pill.um_field_select {
   background: #15803d;
   border-color: #15803d;
   color: #ffffff;
+}
+.cp_billing_deal_payment_actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+}
+.cp_billing_actions_col {
+  min-width: 13.5rem;
+}
+.cp_billing_deal_payment_actions .cp_billing_pay_btn,
+.cp_billing_upgrade_btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+.cp_billing_upgrade_btn,
+.app_shell button.um_btn_secondary.cp_billing_upgrade_btn {
+  height: var(--portal-button-height, var(--top-navbar-control-height, 2.25rem));
+  min-height: var(--portal-button-height, var(--top-navbar-control-height, 2.25rem));
+  padding: 0 0.85rem;
+  border-color: color-mix(in srgb, var(--sidebar-active-text, #155abf) 55%, #ffffff);
+  background: color-mix(in srgb, var(--sidebar-active-text, #155abf) 7%, #ffffff);
+  color: var(--sidebar-active-text, #155abf);
+  font-weight: 650;
+}
+.cp_billing_upgrade_btn:hover:not(:disabled),
+.app_shell button.um_btn_secondary.cp_billing_upgrade_btn:hover:not(:disabled) {
+  border-color: var(--sidebar-active-text, #155abf);
+  background: color-mix(in srgb, var(--sidebar-active-text, #155abf) 13%, #ffffff);
+  color: var(--sidebar-active-text, #155abf);
+}
+@media (max-width: 720px) {
+  .cp_billing_deal_payment_actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .cp_billing_actions_col {
+    min-width: 8rem;
+  }
+}
+
+/* Detailed billing needs stable columns; do not compress stage/actions into unreadable cells. */
+.cp_billing_detail_table_wrap .data_table_scroll_region,
+.cp_billing_detail_table_wrap
+  .data_table_scroll_region.data_table_scroll_region--overflow-x {
+  overflow-x: auto !important;
+}
+.cp_billing_detail_table_wrap
+  .data_table_scroll_region
+  .um_table.deal_inv_table.cp_billing_detail_table {
+  width: 100% !important;
+  min-width: 74rem !important;
+  max-width: none !important;
+  table-layout: fixed !important;
+}
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(1) {
+  width: 13rem !important;
+  max-width: 13rem !important;
+}
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(2) {
+  width: 8rem !important;
+  max-width: 8rem !important;
+}
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(3) {
+  width: 5.5rem !important;
+}
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(4) {
+  width: 9rem !important;
+}
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(5) {
+  width: 7.5rem !important;
+}
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(6) {
+  width: 9.5rem !important;
+}
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(7) {
+  width: 8rem !important;
+}
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td).cp_billing_actions_col {
+  width: 13.5rem !important;
+  min-width: 13.5rem !important;
+  max-width: 13.5rem !important;
+  overflow: visible;
+}
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(2),
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(3),
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(5),
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(6),
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  :is(th, td):nth-child(7) {
+  padding-inline: 0.65rem;
+}
+.cp_billing_detail_table_wrap
+  .um_table.cp_billing_detail_table
+  td:nth-child(2)
+  .deals_stage_chip--compact {
+  display: inline-flex;
+  max-width: 100%;
+  white-space: nowrap;
 }
 .cp_billing_start_date_btn {
   display: inline-flex;
@@ -4287,6 +4689,15 @@ select.cp_settings_input_pill.um_field_select {
 .cp_billing_pe_element {
   padding: 1.5rem 1.5rem 0;
   min-height: 180px;
+}
+.cp_billing_pe_name {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.9rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--portal-text, #0f172a);
 }
 .cp_billing_pe_security {
   display: flex;
@@ -4444,6 +4855,98 @@ select.cp_settings_input_pill.um_field_select {
   .cp_billing_pe_actions .um_btn_primary,
   .cp_billing_pe_actions .um_btn_secondary {
     flex: 1;
+  }
+}
+
+.cp_coupons_panel,
+.cp_coupons_history {
+  margin-bottom: 1.35rem;
+  padding: 1.15rem 1.2rem 1.2rem;
+  border: 1px solid var(--portal-border, #e2e8f0);
+  border-radius: var(--portal-card-radius, 4px);
+  background: var(--portal-surface, #fff);
+  box-shadow: 0 1px 3px rgb(15 23 42 / 5%);
+}
+
+.cp_coupons_panel .cp_billing_payment_methods_head,
+.cp_coupons_history .cp_billing_payment_methods_head {
+  margin-bottom: 1rem;
+}
+
+.cp_coupons_history .cp_billing_invoices_table_wrap {
+  border: 0;
+  box-shadow: none;
+}
+
+.cp_coupons_note {
+  margin: 0 0 0.85rem;
+}
+
+.cp_coupons_create {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.85rem 1rem;
+  align-items: end;
+  margin: 0;
+}
+
+.cp_coupons_field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--portal-text-muted, #64748b);
+}
+
+.cp_coupons_discount {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.4rem;
+}
+
+.cp_coupons_input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--portal-border, #e2e8f0);
+  border-radius: 8px;
+  background: var(--portal-surface, #fff);
+  color: var(--font-color-title, #0f172a);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.cp_coupons_submit {
+  display: flex;
+  align-items: end;
+}
+
+.cp_coupons_submit .um_btn_primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.cp_coupons_code {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.cp_coupons_spin {
+  animation: cp_coupons_spin 0.8s linear infinite;
+}
+
+@keyframes cp_coupons_spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

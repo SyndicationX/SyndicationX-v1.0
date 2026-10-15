@@ -54,6 +54,19 @@ export const dealInvestment = pgTable("deal_investment", {
   /** Invest Now funding method (`stripe_checkout`, `wire_transfer`, legacy `ach`, `check`). */
   fundingMethod: text("funding_method").notNull().default(""),
   commitmentAmount: text("commitment_amount").notNull().default(""),
+  /** Set once when the investor finishes Invest Now. */
+  commitmentCompletedAt: timestamp("commitment_completed_at", {
+    withTimezone: true,
+  }),
+  /** Set after the investor confirmation email is accepted by the mailer. */
+  commitmentInvestorEmailSentAt: timestamp(
+    "commitment_investor_email_sent_at",
+    { withTimezone: true },
+  ),
+  /** Set after the sponsor notification email is accepted by the mailer. */
+  commitmentSponsorEmailSentAt: timestamp("commitment_sponsor_email_sent_at", {
+    withTimezone: true,
+  }),
   extraContributionAmounts: jsonb("extra_contribution_amounts")
     .$type<string[]>()
     .notNull(),

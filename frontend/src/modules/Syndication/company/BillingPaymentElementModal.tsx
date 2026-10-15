@@ -63,6 +63,7 @@ function PaymentForm({
 }) {
   const stripe = useStripe();
   const elements = useElements();
+  const [cardholderName, setCardholderName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
@@ -85,13 +86,25 @@ function PaymentForm({
     setInfo("");
     if (!stripe || !elements) return;
 
+    const name = cardholderName.trim();
+    if (!name) {
+      setError("Enter the cardholder name.");
+      return;
+    }
+
     setSubmitting(true);
     try {
+      const confirmParams = {
+        return_url: returnUrl(),
+        payment_method_data: {
+          billing_details: { name },
+        },
+      };
       if (mode === "setup") {
         const { error: confirmError, setupIntent } =
           await stripe.confirmSetup({
             elements,
-            confirmParams: { return_url: returnUrl() },
+            confirmParams,
             redirect: "if_required",
           });
         if (confirmError) {
@@ -117,7 +130,7 @@ function PaymentForm({
       const { error: confirmError, paymentIntent } =
         await stripe.confirmPayment({
           elements,
-          confirmParams: { return_url: returnUrl() },
+          confirmParams,
           redirect: "if_required",
         });
 
@@ -157,9 +170,28 @@ function PaymentForm({
   return (
     <form className="cp_billing_pe_form" onSubmit={(e) => void handleSubmit(e)}>
       <div className="cp_billing_pe_element">
+        <label className="cp_billing_pe_name" htmlFor="cp-billing-cardholder-name">
+          Cardholder name
+          <input
+            id="cp-billing-cardholder-name"
+            className="cp_billing_filter_input"
+            name="cardholderName"
+            autoComplete="cc-name"
+            value={cardholderName}
+            maxLength={255}
+            required
+            disabled={submitting}
+            onChange={(event) => setCardholderName(event.target.value)}
+          />
+        </label>
         <PaymentElement
           options={{
             layout: "tabs",
+            fields: {
+              billingDetails: {
+                name: "never",
+              },
+            },
           }}
         />
       </div>

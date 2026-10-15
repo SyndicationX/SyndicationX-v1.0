@@ -25,7 +25,9 @@ import {
 import {
   filterDealIdsByContactOfferingVisibility,
   listContactOrganizationInvestingDealIds,
+  listDealIdsSponsoredByCompanyColleague,
 } from "../contact/contactOfferingVisibility.service.js";
+import { listCrossOrgColleagueSponsoredDealIds } from "../deal/crossOrgColleagueDeal.service.js";
 
 /** Stored `deal_lp_investor.role` values treated as LP Investor for nav + deal scope. */
 export function isLpInvestorRoleInLpTable(role: string | null | undefined): boolean {
@@ -258,10 +260,10 @@ export async function listDealIdsFromSponsorDealMemberForEmail(
 const SPONSOR_DEAL_MEMBER_ROLES_SQL = `'lead sponsor', 'admin sponsor', 'co-sponsor', 'co sponsor'`;
 
 /**
- * Portal user ids of sponsors who invited or linked this investor — from
+ * Portal user ids of people who added or invited this contact — from
  * `deal_lp_investor.added_by`, `deal_member.added_by`, `users.referred_by_user_id`,
- * or `contact.created_by` (first-time platform invite), where that user is a
- * sponsor on a deal roster.
+ * or `contact.created_by`. Deals are limited afterward to rosters where that
+ * person is a Lead, Admin, or Co-sponsor, in any organization.
  */
 async function listSponsorUserIdsForInvestorEmail(
   emailNorm: string,
@@ -273,24 +275,10 @@ async function listSponsorUserIdsForInvestorEmail(
      FROM deal_lp_investor lp
      INNER JOIN users viewer_u ON lower(trim(viewer_u.email)) = $1
      INNER JOIN users adder_u ON adder_u.id = lp.added_by
-     INNER JOIN deal_member dm_sponsor ON
-       dm_sponsor.deal_id = lp.deal_id
-       AND dm_sponsor.is_draft = false
-       AND lower(trim(dm_sponsor.deal_member_role)) IN (
-         ${SPONSOR_DEAL_MEMBER_ROLES_SQL}
-       )
-       AND (
-         trim(dm_sponsor.contact_member_id) = adder_u.id::text
-         OR EXISTS (
-           SELECT 1 FROM contact c
-           WHERE c.id::text = trim(both from dm_sponsor.contact_member_id)
-             AND lower(trim(c.email)) = lower(trim(adder_u.email))
-         )
-       )
      WHERE lp.added_by IS NOT NULL
        AND lp.is_draft = false
        AND (
-         trim(lp.contact_member_id) = viewer_u.id::text
+         lower(trim(lp.contact_member_id)) = lower(viewer_u.id::text)
          OR (
            nullif(trim(lp.email), '') IS NOT NULL
            AND lower(trim(lp.email)) = $1
@@ -308,24 +296,10 @@ async function listSponsorUserIdsForInvestorEmail(
      FROM deal_member dm_investor
      INNER JOIN users viewer_u ON lower(trim(viewer_u.email)) = $1
      INNER JOIN users adder_u ON adder_u.id = dm_investor.added_by
-     INNER JOIN deal_member dm_sponsor ON
-       dm_sponsor.deal_id = dm_investor.deal_id
-       AND dm_sponsor.is_draft = false
-       AND lower(trim(dm_sponsor.deal_member_role)) IN (
-         ${SPONSOR_DEAL_MEMBER_ROLES_SQL}
-       )
-       AND (
-         trim(dm_sponsor.contact_member_id) = adder_u.id::text
-         OR EXISTS (
-           SELECT 1 FROM contact c
-           WHERE c.id::text = trim(both from dm_sponsor.contact_member_id)
-             AND lower(trim(c.email)) = lower(trim(adder_u.email))
-         )
-       )
      WHERE dm_investor.added_by IS NOT NULL
        AND dm_investor.is_draft = false
        AND (
-         trim(dm_investor.contact_member_id) = viewer_u.id::text
+         lower(trim(dm_investor.contact_member_id)) = lower(viewer_u.id::text)
          OR EXISTS (
            SELECT 1 FROM contact c2
            WHERE c2.id::text = trim(both from dm_investor.contact_member_id)
@@ -347,7 +321,7 @@ async function listSponsorUserIdsForInvestorEmail(
              ${SPONSOR_DEAL_MEMBER_ROLES_SQL}
            )
            AND (
-             trim(dm.contact_member_id) = ref_u.id::text
+             lower(trim(dm.contact_member_id)) = lower(ref_u.id::text)
              OR EXISTS (
                SELECT 1 FROM contact c_s
                WHERE c_s.id::text = trim(both from dm.contact_member_id)
@@ -370,7 +344,7 @@ async function listSponsorUserIdsForInvestorEmail(
            ${SPONSOR_DEAL_MEMBER_ROLES_SQL}
          )
          AND (
-           trim(dm.contact_member_id) = creator_u.id::text
+           lower(trim(dm.contact_member_id)) = lower(creator_u.id::text)
            OR EXISTS (
              SELECT 1 FROM contact c_s
              WHERE c_s.id::text = trim(both from dm.contact_member_id)
@@ -405,11 +379,15 @@ async function listDealIdsWhereSponsorUsersOnRoster(
        ${SPONSOR_DEAL_MEMBER_ROLES_SQL}
      )
      AND (
-       trim(dm.contact_member_id) = ANY($1::text[])
+       lower(trim(dm.contact_member_id)) = ANY(
+         SELECT lower(trim(x)) FROM unnest($1::text[]) AS x
+       )
        OR EXISTS (
          SELECT 1 FROM users su
          INNER JOIN contact c ON c.id::text = trim(both from dm.contact_member_id)
-         WHERE su.id::text = ANY($1::text[])
+         WHERE lower(su.id::text) = ANY(
+           SELECT lower(trim(x)) FROM unnest($1::text[]) AS x
+         )
            AND lower(trim(c.email)) = lower(trim(su.email))
        )
      )`,
@@ -423,10 +401,9 @@ async function listDealIdsWhereSponsorUsersOnRoster(
 }
 
 /**
- * Every offering an invited LP may see from sponsor(s) who added or invited
- * them — not organization-wide and not limited to deals they were named on.
- * 506(c) offerings from those sponsors stay visible. Offering visibility
- * only limits 506(b) and other non-506(c) deals in this set.
+ * Every offering of the sponsor who added or invited this contact — any
+ * organization, not only the deal they were named on. Those deals stay
+ * visible. Offering visibility still limits the rest of each company's list.
  */
 export async function listInvestorSponsorScopedDealIdsForUser(
   emailNorm: string,
@@ -623,8 +600,9 @@ export async function isDealInInvestingParticipantListForUser(
 /**
  * Investing dashboard + `/investing/deals`.
  * Offerings from companies where this email is a contact, deals they were
- * added to directly, and every deal where a sponsor who invited them is a
- * sponsor — including that sponsor's deals in another organization.
+ * added to directly, every deal where a sponsor who invited them is a
+ * sponsor, and every other-company deal where any user from this contact's
+ * company is a sponsor.
  */
 export async function listInvestingParticipantDealIdsForUser(params: {
   userId: string;
@@ -641,7 +619,8 @@ export async function listInvestingParticipantDealIdsForUser(params: {
     ? await listContactOrganizationInvestingDealIds(emailNorm)
     : null;
 
-  const [direct, sponsorScoped] = await Promise.all([
+  const [direct, sponsorScoped, companyColleague, crossOrgColleague] =
+    await Promise.all([
     listDirectInvestingParticipantDealIdsForUser({
       userId,
       emailNorm,
@@ -652,10 +631,22 @@ export async function listInvestingParticipantDealIdsForUser(params: {
           applyContactOfferingVisibility,
         })
       : Promise.resolve([] as string[]),
+    emailNorm.includes("@")
+      ? listDealIdsSponsoredByCompanyColleague(emailNorm).then((ids) =>
+          filterDealIdsVisibleToInvestors([...ids]),
+        )
+      : Promise.resolve([] as string[]),
+    listCrossOrgColleagueSponsoredDealIds(userId),
   ]);
 
   return [
-    ...new Set([...(organizationDeals ?? []), ...direct, ...sponsorScoped]),
+    ...new Set([
+      ...(organizationDeals ?? []),
+      ...direct,
+      ...sponsorScoped,
+      ...companyColleague,
+      ...crossOrgColleague,
+    ]),
   ];
 }
 

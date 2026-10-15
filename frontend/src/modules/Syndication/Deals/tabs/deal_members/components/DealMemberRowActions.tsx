@@ -80,6 +80,8 @@ export interface DealMemberRowActionsProps {
   approveFundDisabled?: boolean
   /** Optional tooltip when Approve fund is disabled. */
   approveFundDisabledTitle?: string
+  /** Open the row for reading only. Hides edit, invite, eSign, and delete. */
+  viewOnly?: boolean
 }
 
 export function DealMemberRowActions({
@@ -104,6 +106,7 @@ export function DealMemberRowActions({
   onApproveFund,
   approveFundDisabled = false,
   approveFundDisabledTitle,
+  viewOnly = false,
 }: DealMemberRowActionsProps) {
   const esignWasSent = investorEsignWasSent(row)
   const esignCompleted = investorEsignIsFullyCompletedForRow(row)
@@ -396,7 +399,7 @@ export function DealMemberRowActions({
                 className="deal_member_row_actions_menu um_kebab_menu um_kebab_menu--portal"
                 role="menu"
               >
-                {onApproveFund ? (
+                {onApproveFund && !viewOnly ? (
                   <li role="none">
                     <button
                       type="button"
@@ -441,6 +444,8 @@ export function DealMemberRowActions({
                     </button>
                   </li>
                 ) : null}
+                {viewOnly ? null : (
+                <>
                 <li role="none">
                   <button
                     type="button"
@@ -610,6 +615,8 @@ export function DealMemberRowActions({
                     Delete
                   </button>
                 </li>
+                </>
+                )}
               </ul>,
               document.body,
             )

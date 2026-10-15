@@ -153,6 +153,8 @@ export const addDealForm = pgTable("add_deal_form", {
   extraCompanyUsersPaid: integer("extra_company_users_paid")
     .notNull()
     .default(0),
+  /** Promotion code already redeemed for this deal. One coupon per deal. */
+  saasCouponCode: varchar("saas_coupon_code", { length: 64 }),
   extraCompanyUsersLastPaymentRef: varchar(
     "extra_company_users_last_payment_ref",
     { length: 255 },

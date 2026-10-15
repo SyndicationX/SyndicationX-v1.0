@@ -42,6 +42,11 @@ import {
   resolveViewerDealMemberRoleOnDeal,
 } from "./dealMemberScope.service.js";
 import { resolveInvestNowViewerContactOnDeal } from "./dealInvestNowViewerContact.service.js";
+import {
+  loadStoredInvestorInviteSponsor,
+  retainInviteSponsorOnLpRoster,
+} from "../contact/investorInviteLink.service.js";
+import { resolveInvestNowAddedByUserId } from "./crossOrgColleagueDeal.service.js";
 
 function normalizeContactKey(raw: string): string {
   return String(raw ?? "")
@@ -338,6 +343,9 @@ export function syntheticInvestmentFromDealLpInvestor(
     investorW9FormJson: null,
     fundingMethod: "",
     commitmentAmount: m.committed_amount,
+    commitmentCompletedAt: null,
+    commitmentInvestorEmailSentAt: null,
+    commitmentSponsorEmailSentAt: null,
     extraContributionAmounts: [],
     documentStoragePath: null,
     createdAt: m.createdAt,
@@ -1139,6 +1147,30 @@ export async function mapDealLpInvestorRowToEditApi(
   };
 }
 
+/** Edit/detail payload with co-sponsor investor email redacted for other sponsors. */
+export async function mapDealLpInvestorRowToEditApiForViewer(
+  dealId: string,
+  viewerUserId: string,
+  row: DealLpInvestorRow,
+): Promise<Awaited<ReturnType<typeof mapDealLpInvestorRowToEditApi>>> {
+  const investor = await mapDealLpInvestorRowToEditApi(row);
+  const [redacted] = await redactCoSponsorAddedInvestorEmailsForLeadAdminViewer(
+    dealId,
+    viewerUserId,
+    [
+      {
+        ...investor,
+        contactId: investor.contactId,
+        addedByUserId: row.addedBy ?? undefined,
+      },
+    ],
+  );
+  return {
+    ...investor,
+    userEmail: redacted?.userEmail ?? investor.userEmail,
+  };
+}
+
 export async function deleteDealLpInvestorById(
   dealId: string,
   id: string,
@@ -1399,6 +1431,33 @@ export async function updateMyCommittedAmountForLpDeal(params: {
   }
 
   const viewerUserId = String(params.viewerUserId ?? "").trim();
+  const storedInvite = await loadStoredInvestorInviteSponsor(viewerUserId);
+  const inviteSponsorUserId = storedInvite?.sponsorUserId ?? "";
+  const rosterAddedByUserId = viewerUserId
+    ? await resolveInvestNowAddedByUserId({
+        dealId: params.dealId,
+        investorUserId: viewerUserId,
+      })
+    : viewerUserId;
+  const assignedSponsorUserId =
+    rosterAddedByUserId.toLowerCase() !== viewerUserId.toLowerCase()
+      ? rosterAddedByUserId
+      : "";
+  const keepSameOrgSponsor = async (lpRowId: string | null | undefined) => {
+    if (!assignedSponsorUserId || !lpRowId) return;
+    await db
+      .update(dealLpInvestor)
+      .set({ addedBy: assignedSponsorUserId, updatedAt: new Date() })
+      .where(eq(dealLpInvestor.id, lpRowId));
+  };
+  const keepInviteSponsor = async (lpRowId: string | null | undefined) => {
+    if (!inviteSponsorUserId || !lpRowId) return;
+    await retainInviteSponsorOnLpRoster({
+      lpRowId,
+      viewerUserId,
+      sponsorUserId: inviteSponsorUserId,
+    });
+  };
   const resolvedContact = await resolveInvestNowViewerContactOnDeal({
       dealId: params.dealId,
       viewerEmailNorm: e,
@@ -1483,7 +1542,7 @@ export async function updateMyCommittedAmountForLpDeal(params: {
         profileId: profileOpt,
         investorClass: classRes.storedInvestorClass,
         sendInvitationMail: "no",
-        addedByUserId: viewerUserId,
+        addedByUserId: rosterAddedByUserId,
         emailFromClient: e,
         roleFromClient: LP_INVESTOR_TABLE_ROLE,
       });
@@ -1498,6 +1557,8 @@ export async function updateMyCommittedAmountForLpDeal(params: {
       })
       .where(eq(dealLpInvestor.id, target.id));
 
+    await keepInviteSponsor(target.id);
+    await keepSameOrgSponsor(target.id);
     return { ok: true };
   }
 
@@ -1532,7 +1593,7 @@ export async function updateMyCommittedAmountForLpDeal(params: {
         profileId: rowProfileId,
         investorClass: classRes.storedInvestorClass,
         sendInvitationMail: "no",
-        addedByUserId: viewerUserId,
+        addedByUserId: rosterAddedByUserId,
         emailFromClient: e,
         roleFromClient: LP_INVESTOR_TABLE_ROLE,
       });
@@ -1567,6 +1628,8 @@ export async function updateMyCommittedAmountForLpDeal(params: {
         profileId: rowProfileId,
       })
       .where(eq(dealLpInvestor.id, roster.id));
+    await keepInviteSponsor(roster.id);
+    await keepSameOrgSponsor(roster.id);
     return { ok: true };
   }
 
@@ -1636,7 +1699,7 @@ export async function updateMyCommittedAmountForLpDeal(params: {
       profileId: profileOpt ?? "",
       investorClass: classRes.storedInvestorClass,
       sendInvitationMail: "no",
-      addedByUserId: viewerUserId,
+      addedByUserId: rosterAddedByUserId,
       emailFromClient: e,
       roleFromClient: LP_INVESTOR_TABLE_ROLE,
     });
@@ -1651,5 +1714,7 @@ export async function updateMyCommittedAmountForLpDeal(params: {
     })
     .where(eq(dealLpInvestor.id, target.id));
 
+  await keepInviteSponsor(target.id);
+  await keepSameOrgSponsor(target.id);
   return { ok: true };
 }

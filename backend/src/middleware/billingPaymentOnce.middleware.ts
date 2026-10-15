@@ -8,6 +8,11 @@ import {
   suggestedPlanIdForDeal,
 } from "../services/billing/dealBilling.service.js";
 import {
+  coGpSeatBandIsUpgrade,
+  coGpSeatBandNeedsUpgrade,
+  getDealCompanyUserSnapshot,
+} from "../services/billing/dealExtraCompanyUser.service.js";
+import {
   acquireBillingPaymentHold,
   billingPaymentLockKey,
   finishBillingPaymentHold,
@@ -77,6 +82,21 @@ export async function billingAlreadyPaidMiddleware(
     if (deal.stripeSubscriptionId?.trim() && ALREADY_BILLED.has(status)) {
       const suggested = await suggestedPlanIdForDeal(dealId);
       if (dealPaidPlanNeedsUpgrade(deal.stripePlanId, suggested)) {
+        next();
+        return;
+      }
+      const companyUsers = await getDealCompanyUserSnapshot(dealId);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const requestedSeatBand = bodyString(
+        body.seatBand ?? body.seat_band ?? body.seats,
+      );
+      if (
+        coGpSeatBandNeedsUpgrade(
+          companyUsers?.seatBand,
+          companyUsers?.coGpCount ?? 0,
+        ) ||
+        coGpSeatBandIsUpgrade(companyUsers?.seatBand, requestedSeatBand)
+      ) {
         next();
         return;
       }

@@ -78,7 +78,7 @@ export function DealSaasPaywallModal({
     : "this deal"
   const canPayForDeal = lockedDeal.viewerIsLeadSponsor === true
   const showInvestorCopy =
-    !canPayForDeal && (investorFacing || isLpInvestorSessionUser())
+    investorFacing || (!canPayForDeal && isLpInvestorSessionUser())
   const title = showInvestorCopy
     ? "Contact your sponsor"
     : isPlanUpgrade
@@ -209,7 +209,7 @@ export function DealSaasPaywallModal({
             <X size={16} strokeWidth={2} aria-hidden />
             Close
           </button>
-          {canPayForDeal ? (
+          {!showInvestorCopy && canPayForDeal ? (
             isPlanUpgrade ? (
               <button
                 type="button"

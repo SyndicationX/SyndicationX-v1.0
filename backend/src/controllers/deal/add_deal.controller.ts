@@ -27,6 +27,7 @@ import {
   listDealsForViewerIncludingAssignedParticipation,
   filterDealsVisibleToInvestorParticipants,
   resolveDealViewerScope,
+  withCrossOrgColleagueSponsoredDeals,
   type DealViewerScope,
 } from "../../services/deal/dealAccess.service.js";
 import { filterDealIdsByContactOfferingVisibility } from "../../services/contact/contactOfferingVisibility.service.js";
@@ -55,6 +56,7 @@ import {
   mergeCoSponsorOfferingInvestorPreviewJson,
   scopeOfferingInvestorPreviewJsonForViewer,
 } from "../../services/deal/dealDocumentCoSponsorVisibility.service.js";
+import { resolveCrossOrgColleagueSponsorForDeal } from "../../services/deal/crossOrgColleagueDeal.service.js";
 import { canInvestorAccessPublicOffering } from "../../constants/deal-lifecycle/index.js";
 import { isDealStageDraft } from "../../constants/deal-lifecycle/deal-stage.js";
 import {
@@ -417,13 +419,21 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
             String(id).trim().toLowerCase(),
           ),
         );
+        const crossOrgColleagueIds = new Set(
+          (scope.crossOrgColleagueSponsoredDealIds ?? []).map((id) =>
+            String(id).trim().toLowerCase(),
+          ),
+        );
         const viewerOrg = String(scope.organizationId ?? "").trim();
         rows = scoped.filter((r) => {
           const dealOrg = String(r.organizationId ?? "").trim();
           if (dealOrg === orgParam) return true;
           if (viewerOrg && dealOrg === viewerOrg) return true;
+          const dealKey = String(r.id).trim().toLowerCase();
           // Lead / Admin / Co deals stay visible even when the deal belongs to another company.
-          return rosterDealIds.has(String(r.id).trim().toLowerCase());
+          if (rosterDealIds.has(dealKey)) return true;
+          // A peer in this org sponsors the deal in another company.
+          return crossOrgColleagueIds.has(dealKey);
         });
         // If org filter emptied a valid co-sponsor/LP set (legacy null org_id),
         // keep the viewer-scoped list instead of falling back to all org deals.
@@ -433,6 +443,10 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
       }
     } else {
       rows = await listDealsForViewer(scope);
+    }
+
+    if (includeParticipantDeals) {
+      rows = await withCrossOrgColleagueSponsoredDeals(rows, scope);
     }
 
     if (includeParticipantDeals && rows.length > 0) {
@@ -445,6 +459,14 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
      * every workspace deal.
      */
     if (scope.enforceContactOfferingVisibility && rows.length > 0) {
+      const crossOrgKeep = new Set(
+        (scope.crossOrgColleagueSponsoredDealIds ?? []).map((id) =>
+          String(id).trim().toLowerCase(),
+        ),
+      );
+      const crossOrgRows = rows.filter((row) =>
+        crossOrgKeep.has(String(row.id ?? "").trim().toLowerCase()),
+      );
       const emailNorm =
         includeParticipantViewerEmailNorm ||
         String(
@@ -466,6 +488,15 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
           ),
         );
         rows = rows.filter((r) => allowedIds.has(String(r.id ?? "")));
+        const kept = new Set(
+          rows.map((row) => String(row.id ?? "").trim().toLowerCase()),
+        );
+        for (const row of crossOrgRows) {
+          const key = String(row.id ?? "").trim().toLowerCase();
+          if (!key || kept.has(key)) continue;
+          rows.push(row);
+          kept.add(key);
+        }
       }
     }
 
@@ -551,6 +582,14 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
               };
           const dealKey = id.trim().toLowerCase();
           const viewerIsLeadSponsor = leadSponsorDealIds.has(dealKey);
+          const viewerIsLeadOrAdmin = leadOrAdminSponsorDealIds.has(dealKey);
+          const viewerIsCoSponsor = coSponsorDealIds.has(dealKey);
+          const crossOrgViewOnly =
+            (scope.crossOrgColleagueSponsoredDealIds ?? []).some(
+              (dealId) => dealId.trim().toLowerCase() === dealKey,
+            ) &&
+            !viewerIsLeadOrAdmin &&
+            !viewerIsCoSponsor;
           const withBilling =
             !includeParticipantDeals || viewerIsLeadSponsor
             ? {
@@ -559,13 +598,18 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
                   raiseAmount: raiseAmountByDealId.get(id),
                 })),
                 viewerIsLeadSponsor,
-                viewerCanEditDeal: (() => {
-                  if (leadOrAdminSponsorDealIds.has(dealKey)) return true;
-                  if (coSponsorDealIds.has(dealKey)) return false;
-                  return !includeParticipantDeals;
-                })(),
+                viewerCanEditDeal: viewerIsLeadOrAdmin
+                  ? true
+                  : viewerIsCoSponsor || crossOrgViewOnly
+                    ? false
+                    : !includeParticipantDeals,
+                viewerCanManageDeal: !crossOrgViewOnly,
               }
-            : withRole;
+            : {
+                ...withRole,
+                viewerCanEditDeal: false as const,
+                viewerCanManageDeal: !crossOrgViewOnly,
+              };
           if (!includeParticipantDeals) return withBilling;
           const readable = await assertDealIdReadableOrAssignedParticipant(
             id,
@@ -913,12 +957,23 @@ export async function getDealOfferingInvestorPreview(
     if (await sendDealSaasLockIfNeeded(res, row, scope)) {
       return;
     }
+    const crossOrgViewOnly =
+      !scope.isPlatformAdmin &&
+      (scope.crossOrgColleagueSponsoredDealIds ?? []).some(
+        (id) =>
+          id.trim().toLowerCase() === String(dealId).trim().toLowerCase(),
+      ) &&
+      !(await isPortalUserSponsorOnDeal(dealId, user.id));
+    const documentScopeUserId = crossOrgViewOnly
+      ? await resolveCrossOrgColleagueSponsorForDeal(dealId, user.id)
+      : user.id;
     res.status(200).json({
       offeringInvestorPreviewJson: await scopeOfferingInvestorPreviewJsonForViewer({
         dealId,
-        viewerUserId: user.id,
+        viewerUserId: documentScopeUserId ?? user.id,
         viewerRole: user.userRole,
         json: row.offeringInvestorPreviewJson ?? null,
+        requireSponsorScope: crossOrgViewOnly,
       }),
     });
   } catch (err) {
@@ -1690,12 +1745,23 @@ export async function getDealById(req: Request, res: Response): Promise<void> {
     const withPreview = await ensureDealOfferingPreviewTokenStored(dealId);
     const rowForJson = withPreview ?? row;
     const deal = await mapRowToJsonWithInvestmentCount(rowForJson, scope);
+    const crossOrgViewOnly =
+      !scope.isPlatformAdmin &&
+      (scope.crossOrgColleagueSponsoredDealIds ?? []).some(
+        (id) =>
+          id.trim().toLowerCase() === String(dealId).trim().toLowerCase(),
+      ) &&
+      !(await isPortalUserSponsorOnDeal(dealId, user.id));
+    const documentScopeUserId = crossOrgViewOnly
+      ? await resolveCrossOrgColleagueSponsorForDeal(dealId, user.id)
+      : user.id;
     deal.offeringInvestorPreviewJson =
       await scopeOfferingInvestorPreviewJsonForViewer({
         dealId,
-        viewerUserId: user.id,
+        viewerUserId: documentScopeUserId ?? user.id,
         viewerRole: user.userRole,
         json: deal.offeringInvestorPreviewJson ?? null,
+        requireSponsorScope: crossOrgViewOnly,
       });
     const billing = await dealSaasBillingListFields(rowForJson);
     let viewerIsLeadSponsor = false;
@@ -1721,6 +1787,7 @@ export async function getDealById(req: Request, res: Response): Promise<void> {
         ...billing,
         viewerIsLeadSponsor,
         viewerCanEditDeal: await viewerMayEditDealProfile(dealId, user.id),
+        viewerCanManageDeal: !crossOrgViewOnly,
         ...(listRow ? { listRow } : {}),
       },
     });

@@ -90,8 +90,12 @@ export interface ContactRow {
   invitedByUserId?: string
   /** Portal user id that created the CRM row. */
   createdByUserId?: string
+  /** Company (`companies.id`) this contact belongs to. */
+  organizationId?: string
   /** Company (`companies.name`) this contact belongs to. */
   organizationName?: string
+  /** Company of the user who added this contact. */
+  addedByCompanyName?: string
   /** ISO timestamp when the contact was created (from API) */
   createdAt?: string
   /**
@@ -160,6 +164,13 @@ export function withPlatformContactTag(row: ContactRow): ContactRow {
   const target = PLATFORM_CONTACT_TAG.toLowerCase()
   if (row.tags.some((t) => t.trim().toLowerCase() === target)) return row
   return { ...row, tags: [...row.tags, PLATFORM_CONTACT_TAG] }
+}
+
+/** Company shown in the platform-admin contacts filter, with its contact count. */
+export interface ContactOrganizationOption {
+  organizationId: string
+  name: string
+  contactCount: number
 }
 
 /** Sponsor the viewer may assign as a contact owner (org / role scoped). */

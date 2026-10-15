@@ -312,6 +312,8 @@ interface DealMembersTabProps {
    * email” row actions, matching the add/edit modal’s notify-the-member rule.
    */
   invitationMailBlocked?: boolean
+  /** Another organization's deal: roster is readable, management is hidden. */
+  viewOnly?: boolean
 }
 
 export function DealMembersTab({
@@ -331,6 +333,7 @@ export function DealMembersTab({
   invitationMailStatusByRowId,
   invitationMailSendingByRowId,
   invitationMailBlocked = false,
+  viewOnly = false,
 }: DealMembersTabProps) {
   const navigate = useNavigate()
   const [rows, setRows] = useState<DealInvestorRow[]>([])
@@ -765,6 +768,7 @@ export function DealMembersTab({
             onCopyLink={onCopyMemberOfferingLink}
             onSendInvite={onSendMemberInvitationMail}
             onDelete={onDeleteMember}
+            viewOnly={viewOnly}
           />
         </div>
       ),
@@ -1490,6 +1494,8 @@ export function DealMembersTab({
           <>
             <div className="um_toolbar deal_inv_table_um_toolbar um_toolbar_export_then_search deal_members_table_toolbar">
               <div className="um_toolbar_actions deal_inv_table_toolbar_actions deal_members_toolbar_actions_leading">
+                {viewOnly ? null : (
+                  <>
                 <button
                   type="button"
                   className="um_btn_toolbar"
@@ -1507,6 +1513,8 @@ export function DealMembersTab({
                   <Download size={18} strokeWidth={2} aria-hidden />
                   <span>Export All</span>
                 </button>
+                  </>
+                )}
               </div>
               <div className="um_toolbar_actions deal_inv_table_toolbar_actions deal_members_toolbar_actions_trailing">
                 <div className="um_search_wrap">
@@ -1520,7 +1528,8 @@ export function DealMembersTab({
                     aria-label={copy.searchAriaLabel}
                   />
                 </div>
-                <button
+                {viewOnly ? null : (
+                  <button
                   type="button"
                   className="um_btn_primary deal_members_add_member_btn"
                   onClick={() => onAddMember(rosterKind)}
@@ -1528,6 +1537,7 @@ export function DealMembersTab({
                   <Plus size={18} strokeWidth={2} aria-hidden />
                   {copy.addButton}
                 </button>
+                )}
               </div>
             </div>
 
