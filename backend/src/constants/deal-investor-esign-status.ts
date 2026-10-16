@@ -25,6 +25,8 @@ export interface StoredDealInvestorEsignSend {
   investorPdfVersion?: number;
   /** Fully executed PDF (investor + sponsor). Sponsor workspace only. */
   fullSignedRelativePath?: string;
+  /** Sponsor-only signed PDF when the sponsor signs before the investor. */
+  sponsorSignedRelativePath?: string;
   /** Sponsor notified after investor signed (sequential workflow emails). */
   sponsorNotifiedAtInvestorSigned?: string;
   /** Investor notified after sponsor counter-signed. */
@@ -146,6 +148,9 @@ function parseSendRecord(o: Record<string, unknown>): StoredDealInvestorEsignSen
   const fullSignedRelativePath = String(
     o.fullSignedRelativePath ?? o.full_signed_relative_path ?? "",
   ).trim();
+  const sponsorSignedRelativePath = String(
+    o.sponsorSignedRelativePath ?? o.sponsor_signed_relative_path ?? "",
+  ).trim();
   const sponsorNotifiedAtInvestorSigned = String(
     o.sponsorNotifiedAtInvestorSigned ??
       o.sponsor_notified_at_investor_signed ??
@@ -178,6 +183,7 @@ function parseSendRecord(o: Record<string, unknown>): StoredDealInvestorEsignSen
       ? { investorPdfVersion: investorPdfVersion as number }
       : {}),
     ...(fullSignedRelativePath ? { fullSignedRelativePath } : {}),
+    ...(sponsorSignedRelativePath ? { sponsorSignedRelativePath } : {}),
     ...(sponsorNotifiedAtInvestorSigned
       ? { sponsorNotifiedAtInvestorSigned }
       : {}),

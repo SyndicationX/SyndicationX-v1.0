@@ -40,13 +40,10 @@ import {
   viewerDealNeedsOnboarding,
 } from "@/modules/Investing/utils/investingViewerDealScope"
 import {
-  allInvestorsInvestorPhaseComplete,
   investorRowAwaitingSponsorCounterSign,
   investorRowCommittedNumeric,
-  investorRowInvestorPhaseSigned,
   investorRowLatestEsignSignedAt,
   investorRowMatchesViewerEmail,
-  investorEsignWasSent,
 } from "@/modules/Syndication/Deals/utils/investorEsignStatus"
 import { parseMoneyDigits } from "@/modules/Syndication/Deals/utils/offeringMoneyFormat"
 import { refreshInvestmentDealDocumentsPreview } from "@/modules/Investing/pages/investments/utils/refreshInvestmentDealDocumentsPreview"
@@ -589,36 +586,11 @@ async function collectSponsorNotifications(
     })
     const investors = payload.investors
 
-    const allInvestorsSigned = allInvestorsInvestorPhaseComplete(investors)
-
-    const investorSigned = investors.filter((inv) => {
-      if (investorRowCommittedNumeric(inv) <= 0) return false
-      if (!investorEsignWasSent(inv)) return false
-      return investorRowInvestorPhaseSigned(inv)
-    })
-
-    if (investorSigned.length > 0 && !allInvestorsSigned) {
-      const who = formatInvestorWhoPhrase(investorSigned)
-      const latestSigned = investorSigned
-        .map(investorRowLatestEsignSignedAt)
-        .map((t) => t?.trim())
-        .filter((t): t is string => Boolean(t))
-        .sort((a, b) => Date.parse(b) - Date.parse(a))[0]
-      out.push({
-        id: `esign-investor-signed:${dealId}`,
-        title: "Investor signed eSign documents",
-        message: `${who} signed on ${dealName}. Remaining investors must sign before documents appear for your counter-signature (sequential workflow).`,
-        category: "document",
-        createdAt: isoOrNow(latestSigned),
-        href: `/deals/${encodeURIComponent(dealId)}?tab=investors`,
-      })
-    }
-
     const awaitingCounterSign = investors.filter((inv) => {
       if (investorRowCommittedNumeric(inv) <= 0) return false
       return investorRowAwaitingSponsorCounterSign(inv)
     })
-    if (awaitingCounterSign.length > 0 && allInvestorsSigned) {
+    if (awaitingCounterSign.length > 0) {
       const who = formatInvestorWhoPhrase(awaitingCounterSign)
       const latestSigned = awaitingCounterSign
         .map(investorRowLatestEsignSignedAt)
@@ -628,7 +600,7 @@ async function collectSponsorNotifications(
       out.push({
         id: `esign-counter-sign:${dealId}`,
         title: "Investor signed — your signature needed",
-        message: `${who} signed e-sign documents on ${dealName}. Open Documents to counter-sign.`,
+        message: `${who} signed on ${dealName}. Counter-sign their document in Documents.`,
         category: "document",
         createdAt: isoOrNow(latestSigned),
         href: `/deals/${encodeURIComponent(dealId)}?tab=documents`,

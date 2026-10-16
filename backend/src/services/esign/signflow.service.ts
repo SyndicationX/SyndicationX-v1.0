@@ -378,7 +378,7 @@ export function mapSignFlowEmbedSessionError(
       code: "waiting_for_prior_signer",
       message:
         message ||
-        "Your documents are not ready for signature yet. We will notify you when it is your turn to sign.",
+        "The other party on this document must sign first.",
       waitingFor,
     };
   }
@@ -983,15 +983,14 @@ export function signFlowInvestorSignsBeforeSponsor(
   const minInvestorOrder = Math.min(
     ...investors.map((r) => Number(r.order) || 1),
   );
-  if (minInvestorOrder < sponsorOrder) return true;
-
-  const workflowType = String(
-    doc.workflowType ?? DEFAULT_ESIGN_SIGNFLOW_WORKFLOW_TYPE,
-  )
-    .trim()
-    .toLowerCase();
-  // Legacy parallel sends used order 1 for both parties — still investor-first.
-  return workflowType === "parallel" && minInvestorOrder === sponsorOrder;
+  if (minInvestorOrder < sponsorOrder) {
+    const workflowType = String(doc.workflowType ?? "")
+      .trim()
+      .toLowerCase();
+    // Parallel lets either party sign, even when older sends stored different orders.
+    return workflowType !== "parallel";
+  }
+  return false;
 }
 
 /** True when sponsor must wait for investor signature (investor-first by order). */
@@ -1238,11 +1237,20 @@ export function evaluateSignFlowRecipientSignAccess(
 
   const requesterIsInvestor = matchSignFlowPartyRole(requester, "investor");
   const requesterIsSponsor = matchSignFlowPartyRole(requester, "sponsor");
+  const workflowType = String(doc.workflowType ?? "")
+    .trim()
+    .toLowerCase();
+  // Parallel: investor or sponsor may sign without waiting for the other party.
+  if (workflowType === "parallel") {
+    return { allowed: true };
+  }
+
   const sponsorOrder = Number(sponsor.order) || 2;
   const minInvestorOrder = Math.min(
     ...investors.map((r) => Number(r.order) || 1),
   );
   const sponsorSignsFirst = sponsorOrder < minInvestorOrder;
+  const investorSignsFirst = minInvestorOrder < sponsorOrder;
   const anyInvestorSigned =
     opts?.investorHasCompletedSignature === true ||
     investors.some(recipientHasSigned);
@@ -1258,7 +1266,7 @@ export function evaluateSignFlowRecipientSignAccess(
     };
   }
 
-  if (requesterIsSponsor && !sponsorSignsFirst && !anyInvestorSigned) {
+  if (requesterIsSponsor && investorSignsFirst && !anyInvestorSigned) {
     return {
       allowed: false,
       code: "waiting_for_prior_signer",
@@ -1269,6 +1277,28 @@ export function evaluateSignFlowRecipientSignAccess(
   }
 
   return { allowed: true };
+}
+
+/**
+ * Parallel documents share one signing turn. Older sends stored investor order 1
+ * and sponsor order 2; equalize those so SignFlow lets either party sign.
+ */
+export async function ensureParallelPartiesMaySign(
+  documentId: string,
+  doc: SignFlowDocument,
+): Promise<SignFlowDocument> {
+  const workflowType = String(doc.workflowType ?? "")
+    .trim()
+    .toLowerCase();
+  if (workflowType !== "parallel") return doc;
+  const recipients = doc.recipients ?? [];
+  if (recipients.length < 2) return doc;
+  const orders = recipients.map((r) => Number(r.order) || 1);
+  if (orders.every((order) => order === orders[0])) return doc;
+  return patchSignFlowDocument(documentId, {
+    workflowType: "parallel",
+    recipients: recipients.map((recipient) => ({ ...recipient, order: 1 })),
+  });
 }
 
 export async function patchSignFlowDocument(

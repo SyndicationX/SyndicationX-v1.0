@@ -437,6 +437,7 @@ export async function postCompanyBillingSyncPayment(
     companyId,
     subscriptionId: subscriptionId || undefined,
     paymentIntentId: paymentIntentId || undefined,
+    actorUserId: user.id,
   });
   if (!result.ok) {
     res.status(result.status).json({ message: result.message });
@@ -783,6 +784,7 @@ export async function getCompanyBillingPaymentMethods(
 
   const paymentMethods = await listCompanyPaymentMethods(companyId, {
     includeDetached,
+    userId: user.id,
   });
   res.status(200).json({ paymentMethods });
 }
@@ -811,7 +813,9 @@ export async function postCompanyBillingSyncPaymentMethods(
     return;
   }
 
-  const result = await syncCompanyPaymentMethodsFromStripe(companyId);
+  const result = await syncCompanyPaymentMethodsFromStripe(companyId, {
+    actorUserId: user.id,
+  });
   if (!result.ok) {
     res.status(result.status).json({ message: result.message });
     return;

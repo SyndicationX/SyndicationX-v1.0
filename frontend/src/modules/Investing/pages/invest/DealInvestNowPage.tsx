@@ -633,8 +633,15 @@ export function DealInvestNowPage() {
       }
       if (saved.status?.trim()) setStatus(saved.status.trim())
       setDocSignedDate(parseInvestNowDocSignedCalendarDate(saved.docSignedDate))
-      if (Object.keys(saved.questionnaireAnswers).length > 0) {
-        setQuestionnaireAnswers(saved.questionnaireAnswers)
+      const resumedQuestionnaireAnswers = Object.values(
+        saved.questionnaireAnswers,
+      ).some((value) => value.trim())
+        ? saved.questionnaireAnswers
+        : saved.priorQuestionnaireAnswers
+      if (
+        Object.values(resumedQuestionnaireAnswers).some((value) => value.trim())
+      ) {
+        setQuestionnaireAnswers(resumedQuestionnaireAnswers)
       }
       const profileIdForPrefill = saved.userInvestorProfileId?.trim() ?? ""
       const savedW9Name = String(saved.w9Form?.name ?? "").trim()
@@ -684,7 +691,7 @@ export function DealInvestNowPage() {
               profiles: bookProfileRows,
               addresses: bookAddresses,
               savedUserProfileId: profileIdForPrefill,
-              questionnaireAnswers: saved.questionnaireAnswers,
+              questionnaireAnswers: resumedQuestionnaireAnswers,
             }),
           )
         }
@@ -700,6 +707,8 @@ export function DealInvestNowPage() {
   }, [entryMode, dealId, loading, resumeScope, bookProfileRows, bookAddresses, investorClasses, selectableInvestorClasses])
 
   const w9NameSourceRef = useRef({ profileId: "", appliedName: "" })
+  const questionnaireEditedRef = useRef(false)
+  const priorQuestionnaireProfileRef = useRef("")
   const w9NameLockRef = useRef(false)
   const w9NameUserEditedRef = useRef(false)
   const profileScopeRef = useRef({ savedUserProfileId: "", profileId: "" })
@@ -865,6 +874,42 @@ export function DealInvestNowPage() {
       Object.keys(prev).length === 0 ? prev : {},
     )
   }, [questionnaireInFlow])
+
+  useEffect(() => {
+    if (entryMode === "resume") return
+    if (!dealId || !questionnaireInFlow || !savedUserProfileId.trim()) return
+    const profileId = savedUserProfileId.trim()
+    const profileChanged = priorQuestionnaireProfileRef.current !== profileId
+    if (profileChanged) {
+      priorQuestionnaireProfileRef.current = profileId
+      questionnaireEditedRef.current = false
+      setQuestionnaireAnswers({})
+    }
+    let cancelled = false
+    void (async () => {
+      const res = await fetchMyLpDealInvestNowCommitment(dealId, {
+        userInvestorProfileId: profileId,
+      })
+      if (cancelled) return
+      const current = res.ok ? res.payload.questionnaireAnswers : {}
+      const prior = res.ok
+        ? res.payload.priorQuestionnaireAnswers
+        : res.priorQuestionnaireAnswers
+      const source = Object.values(current).some((value) => value.trim())
+        ? current
+        : (prior ?? {})
+      if (!Object.values(source).some((value) => value.trim())) return
+      setQuestionnaireAnswers((prev) => {
+        if (questionnaireEditedRef.current) {
+          return mergeInvestNowQuestionnaireAnswers(prev, source)
+        }
+        return { ...prev, ...source }
+      })
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [dealId, entryMode, questionnaireInFlow, savedUserProfileId])
 
   useEffect(() => {
     if (sessionDraftRef.current) return
@@ -2165,6 +2210,7 @@ export function DealInvestNowPage() {
           error={error}
           fieldErrors={fieldErrors}
           onAnswersChange={(answers) => {
+            questionnaireEditedRef.current = true
             setQuestionnaireAnswers(answers)
             const changedIds = Object.keys(answers).filter(
               (id) => answers[id] !== questionnaireAnswers[id],

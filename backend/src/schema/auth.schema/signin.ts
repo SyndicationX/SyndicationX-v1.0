@@ -41,6 +41,11 @@ export const users = pgTable("users", {
     .defaultNow()
     .notNull(),
   inviteExpiresAt: timestamp("invite_expires_at", { withTimezone: true }),
+  /**
+   * Stripe customer that holds this user’s saved cards.
+   * Company and deal customers stay separate so a card is not an organization record.
+   */
+  stripeCustomerId: varchar("stripe_customer_id", { length: 255 }),
 });
 
 export type UserRow = typeof users.$inferSelect;

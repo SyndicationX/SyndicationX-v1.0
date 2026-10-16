@@ -776,6 +776,9 @@ function EsignProfileTypeCardsGrid({
                 {card.documents.map((doc) => {
                   const url = doc.url?.trim() || ""
                   const canSign = Boolean(doc.canSign)
+                  const canViewFile =
+                    Boolean(url) &&
+                    (doc.source !== "esign" || doc.esignStatus === "signed")
 
                   return (
                     <li
@@ -802,7 +805,7 @@ function EsignProfileTypeCardsGrid({
                           role="group"
                           aria-label={`${doc.name} actions`}
                         >
-                          {url ? (
+                          {canViewFile ? (
                             <>
                               <a
                                 href={url}

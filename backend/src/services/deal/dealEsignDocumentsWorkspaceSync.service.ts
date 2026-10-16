@@ -3,7 +3,10 @@
  * under a dedicated "Esign template" section (`offering_investor_preview_json.sections`).
  */
 
+import { mkdir, writeFile } from "node:fs/promises";
+import * as path from "node:path";
 import { eq } from "drizzle-orm";
+import { getUploadsPhysicalRoot } from "../../config/uploadPaths.js";
 import {
   commitmentProfileDisplayLabel,
   esignSendReadyForSponsorCounterSign,
@@ -11,9 +14,14 @@ import {
   type StoredDealInvestorEsignSend,
 } from "../../constants/deal-investor-esign-status.js";
 import { getActiveEsignProvider } from "../../config/esignProvider.config.js";
+import { resolveEsignSignflowWorkflowType } from "../../constants/esignSigningWorkflow.js";
 import {
   getSignFlowDocument,
   findSignFlowTemplateRecipient,
+  downloadSignFlowRecipientSignedPdfBuffer,
+  downloadSignFlowSignedPdfBuffer,
+  isSignFlowNotAllSignedError,
+  resolveSignFlowSponsorRecipientId,
   signFlowSponsorSignsBeforeInvestor,
   signFlowInvestorPhaseComplete,
   signFlowTemplateHasSponsorFields,
@@ -28,6 +36,18 @@ import {
   updateDealOfferingInvestorPreviewById,
 } from "./dealForm.service.js";
 import { sequentialWorkflowSponsorDocsGateOpen } from "./dealSequentialEsignWorkflow.service.js";
+import {
+  findEsignTemplateFile,
+  getDealEsignTemplatesState,
+  type EsignTemplatesJson,
+} from "./dealEsignTemplates.service.js";
+import { updateDealInvestorEsignSend } from "./dealMemberEsignStatus.service.js";
+import {
+  DEAL_ESIGN_COMPLETED_FOLDER,
+  dealAssetsRelativePath,
+  resolveDealStorageFolderName,
+  sanitizeStoragePathSegment,
+} from "./dealStoragePaths.service.js";
 
 export const ESIGN_TEMPLATE_DOCUMENTS_SECTION_ID =
   "esign-template-documents-section";
@@ -79,6 +99,128 @@ function listSignedEsignDocumentsForSend(
       url: url || null,
     };
   });
+}
+
+/** Sent packet the sponsor can open before the investor signs (template preview). */
+function listPendingEsignDocumentsForSponsor(
+  send: StoredDealInvestorEsignSend,
+  signatureRequestId: string,
+): Array<{ fileId: string; name: string; url: string | null }> {
+  const sig = signatureRequestId.trim();
+  const docs = send.documents ?? [];
+  if (docs.length === 0) {
+    if (!sig) return [];
+    return [{ fileId: sig, name: "eSign document", url: null }];
+  }
+  return docs.map((d) => {
+    const sponsorPath = send.sponsorSignedRelativePath?.trim() ?? "";
+    const fullPath = send.fullSignedRelativePath?.trim() ?? "";
+    const templatePath = d.templateRelativePath?.trim() ?? "";
+    const viewPath = sponsorPath || fullPath || templatePath;
+    const compositeId = sig && d.fileId ? `${sig}::${d.fileId}` : d.fileId || sig;
+    return {
+      fileId: compositeId,
+      name: d.name?.trim() || "eSign document",
+      url: viewPath ? uploadPublicUrl(viewPath) : null,
+    };
+  });
+}
+
+async function writeStoredEsignPdf(params: {
+  dealId: string;
+  rosterId: string;
+  filePrefix: string;
+  buffer: Buffer;
+}): Promise<string> {
+  const dealFolder = await resolveDealStorageFolderName(params.dealId);
+  const rosterFolder =
+    sanitizeStoragePathSegment(params.rosterId, 64) || "investor";
+  const relativePath = dealAssetsRelativePath(
+    dealFolder,
+    DEAL_ESIGN_COMPLETED_FOLDER,
+    rosterFolder,
+    `${params.filePrefix}-${Date.now()}.pdf`,
+  );
+  const abs = path.join(getUploadsPhysicalRoot(), relativePath);
+  await mkdir(path.dirname(abs), { recursive: true });
+  await writeFile(abs, params.buffer);
+  return relativePath;
+}
+
+/**
+ * After the sponsor signs, Documents → View must open that signed PDF.
+ * Before the investor signs, that is the sponsor copy. Once both have signed,
+ * it is the fully executed PDF.
+ */
+async function ensureSponsorSignedPdfForDocumentsView(params: {
+  dealId: string;
+  rosterId: string;
+  investorRowTable: "investment" | "lp";
+  signatureRequestId: string;
+  send: StoredDealInvestorEsignSend;
+  investorPacketReady: boolean;
+}): Promise<StoredDealInvestorEsignSend> {
+  const existingFull = params.send.fullSignedRelativePath?.trim() ?? "";
+  if (existingFull && params.investorPacketReady) return params.send;
+  const existingSponsor = params.send.sponsorSignedRelativePath?.trim() ?? "";
+  if (existingSponsor && !params.investorPacketReady) return params.send;
+
+  const target = {
+    table: params.investorRowTable,
+    id: params.rosterId,
+  };
+
+  if (params.investorPacketReady && !existingFull) {
+    try {
+      const buffer = await downloadSignFlowSignedPdfBuffer(
+        params.signatureRequestId,
+      );
+      const fullSignedRelativePath = await writeStoredEsignPdf({
+        dealId: params.dealId,
+        rosterId: params.rosterId,
+        filePrefix: "signed-full",
+        buffer,
+      });
+      await updateDealInvestorEsignSend(
+        params.dealId,
+        target,
+        params.signatureRequestId,
+        (current) => ({ ...current, fullSignedRelativePath }),
+      );
+      return { ...params.send, fullSignedRelativePath };
+    } catch (err) {
+      if (!isSignFlowNotAllSignedError(err)) {
+        console.warn("ensureSponsorSignedPdfForDocumentsView (full):", err);
+      }
+    }
+  }
+
+  if (existingSponsor) return params.send;
+
+  try {
+    const doc = await getSignFlowDocument(params.signatureRequestId);
+    const sponsorId = resolveSignFlowSponsorRecipientId(doc);
+    const buffer = await downloadSignFlowRecipientSignedPdfBuffer(
+      params.signatureRequestId,
+      sponsorId,
+    );
+    const sponsorSignedRelativePath = await writeStoredEsignPdf({
+      dealId: params.dealId,
+      rosterId: params.rosterId,
+      filePrefix: "signed-sponsor",
+      buffer,
+    });
+    await updateDealInvestorEsignSend(
+      params.dealId,
+      target,
+      params.signatureRequestId,
+      (current) => ({ ...current, sponsorSignedRelativePath }),
+    );
+    return { ...params.send, sponsorSignedRelativePath };
+  } catch (err) {
+    console.warn("ensureSponsorSignedPdfForDocumentsView (sponsor):", err);
+    return params.send;
+  }
 }
 
 type PreviewParts = {
@@ -263,28 +405,77 @@ export async function resolveEsignSponsorSignState(
 ): Promise<{
   awaitingSponsorSignature: boolean;
   sponsorSigned: boolean;
+  /** Parallel, or sequential sponsor-first: sponsor may sign before the investor. */
+  sponsorMaySignBeforeInvestor: boolean;
 }> {
   const investorSignedLocal = esignSendReadyForSponsorCounterSign(send);
   const fullyCompleted = Boolean(send.completedAt?.trim());
   if (fullyCompleted) {
-    return { awaitingSponsorSignature: false, sponsorSigned: true };
+    return {
+      awaitingSponsorSignature: false,
+      sponsorSigned: true,
+      sponsorMaySignBeforeInvestor: false,
+    };
   }
 
   const sigId = send.signatureRequestId?.trim();
   if (!sigId || getActiveEsignProvider() !== "signflow") {
     if (!investorSignedLocal) {
-      return { awaitingSponsorSignature: false, sponsorSigned: fullyCompleted };
+      return {
+        awaitingSponsorSignature: false,
+        sponsorSigned: fullyCompleted,
+        sponsorMaySignBeforeInvestor: false,
+      };
     }
     return {
       awaitingSponsorSignature: !fullyCompleted,
       sponsorSigned: fullyCompleted,
+      sponsorMaySignBeforeInvestor: false,
     };
   }
 
   try {
     const doc = await getSignFlowDocument(sigId);
+    const workflowType = String(doc.workflowType ?? "")
+      .trim()
+      .toLowerCase();
+    const sponsorRecipient = (doc.recipients ?? []).find((recipient) => {
+      const role = String(recipient.role ?? "").trim().toLowerCase();
+      const id = String(recipient.id ?? "").trim().toLowerCase();
+      return (
+        role.includes("sponsor") ||
+        role.includes("seller") ||
+        id === "rec_sponsor" ||
+        id === "rec_2"
+      );
+    });
+    const investorOrders = (doc.recipients ?? [])
+      .filter((recipient) => {
+        const role = String(recipient.role ?? "").trim().toLowerCase();
+        const id = String(recipient.id ?? "").trim().toLowerCase();
+        return (
+          role.includes("investor") ||
+          role.includes("buyer") ||
+          id === "rec_investor" ||
+          id === "rec_1"
+        );
+      })
+      .map((recipient) => Number(recipient.order) || 1);
+    const sponsorOrder = Number(sponsorRecipient?.order) || 0;
+    const sameSigningTurn =
+      investorOrders.length > 0 &&
+      sponsorOrder > 0 &&
+      investorOrders.every((order) => order === sponsorOrder);
+    const sponsorMaySignBeforeInvestor =
+      workflowType === "parallel" ||
+      sameSigningTurn ||
+      signFlowSponsorSignsBeforeInvestor(doc);
     if (!signFlowTemplateHasSponsorFields(doc)) {
-      return { awaitingSponsorSignature: false, sponsorSigned: true };
+      return {
+        awaitingSponsorSignature: false,
+        sponsorSigned: true,
+        sponsorMaySignBeforeInvestor: false,
+      };
     }
     const sponsor = findSignFlowTemplateRecipient(doc, [
       "seller",
@@ -294,33 +485,57 @@ export async function resolveEsignSponsorSignState(
       "recipient_b",
     ]);
     if (!sponsor) {
-      return { awaitingSponsorSignature: false, sponsorSigned: fullyCompleted };
+      return {
+        awaitingSponsorSignature: false,
+        sponsorSigned: fullyCompleted,
+        sponsorMaySignBeforeInvestor: false,
+      };
     }
     const sponsorSigned = signFlowRecipientHasSigned(sponsor);
     if (sponsorSigned) {
-      return { awaitingSponsorSignature: false, sponsorSigned: true };
+      return {
+        awaitingSponsorSignature: false,
+        sponsorSigned: true,
+        sponsorMaySignBeforeInvestor,
+      };
     }
 
-    const sponsorSignsFirst = signFlowSponsorSignsBeforeInvestor(doc);
     const investorSignedLive =
       investorSignedLocal || signFlowInvestorPhaseComplete(doc);
 
-    if (sponsorSignsFirst) {
-      return { awaitingSponsorSignature: true, sponsorSigned: false };
+    if (sponsorMaySignBeforeInvestor) {
+      return {
+        awaitingSponsorSignature: true,
+        sponsorSigned: false,
+        sponsorMaySignBeforeInvestor: true,
+      };
     }
 
     if (!investorSignedLive) {
-      return { awaitingSponsorSignature: false, sponsorSigned: false };
+      return {
+        awaitingSponsorSignature: false,
+        sponsorSigned: false,
+        sponsorMaySignBeforeInvestor: false,
+      };
     }
 
-    return { awaitingSponsorSignature: true, sponsorSigned: false };
+    return {
+      awaitingSponsorSignature: true,
+      sponsorSigned: false,
+      sponsorMaySignBeforeInvestor: false,
+    };
   } catch {
     if (!investorSignedLocal) {
-      return { awaitingSponsorSignature: false, sponsorSigned: fullyCompleted };
+      return {
+        awaitingSponsorSignature: false,
+        sponsorSigned: fullyCompleted,
+        sponsorMaySignBeforeInvestor: false,
+      };
     }
     return {
       awaitingSponsorSignature: !fullyCompleted,
       sponsorSigned: fullyCompleted,
+      sponsorMaySignBeforeInvestor: false,
     };
   }
 }
@@ -329,6 +544,22 @@ function sendReadyForInvestorEsignDocumentsSection(
   send: StoredDealInvestorEsignSend,
 ): boolean {
   return esignSendReadyForSponsorCounterSign(send);
+}
+
+/** Deal template is parallel, so the sponsor may open this sent copy before the investor. */
+function sendTemplateIsParallel(
+  send: StoredDealInvestorEsignSend,
+  templates: EsignTemplatesJson | null,
+): boolean {
+  if (!templates) return false;
+  for (const doc of send.documents ?? []) {
+    const fileId = doc.fileId?.trim();
+    if (!fileId) continue;
+    const file = findEsignTemplateFile(templates, fileId);
+    if (!file) continue;
+    if (resolveEsignSignflowWorkflowType(file) === "parallel") return true;
+  }
+  return false;
 }
 
 function buildEsignNestedDocument(params: {
@@ -372,6 +603,7 @@ async function collectCompletedEsignNestedDocuments(
   profileId: string | null | undefined,
   esignStatusJson: string | null | undefined,
   sponsorDocsGateOpen: boolean,
+  templates: EsignTemplatesJson | null,
 ): Promise<Record<string, unknown>[]> {
   const bundle = parseEsignStatusBundle(esignStatusJson);
   if (!bundle?.sends.length) return [];
@@ -382,12 +614,37 @@ async function collectCompletedEsignNestedDocuments(
   const out: Record<string, unknown>[] = [];
 
   for (const send of bundle.sends) {
-    if (!sendReadyForInvestorEsignDocumentsSection(send)) continue;
     const sig = send.signatureRequestId?.trim() ?? "";
     const sponsorState = await resolveEsignSponsorSignState(send);
-    const signedDocs = listSignedEsignDocumentsForSend(send, sig, {
-      preferFullSignedCopy: sponsorState.sponsorSigned,
-    });
+    const investorPacketReady = sendReadyForInvestorEsignDocumentsSection(send);
+    const parallelTemplate = sendTemplateIsParallel(send, templates);
+    const sponsorCanOpenNow =
+      sponsorState.sponsorMaySignBeforeInvestor ||
+      (parallelTemplate && !sponsorState.sponsorSigned);
+    if (!investorPacketReady && !sponsorCanOpenNow) {
+      continue;
+    }
+    if (!investorPacketReady && !send.sentAt?.trim()) continue;
+    let sendForView = send;
+    if (
+      sponsorState.sponsorSigned &&
+      sig &&
+      getActiveEsignProvider() === "signflow"
+    ) {
+      sendForView = await ensureSponsorSignedPdfForDocumentsView({
+        dealId,
+        rosterId: investorRowId,
+        investorRowTable,
+        signatureRequestId: sig,
+        send,
+        investorPacketReady,
+      });
+    }
+    const signedDocs = investorPacketReady
+      ? listSignedEsignDocumentsForSend(sendForView, sig, {
+          preferFullSignedCopy: sponsorState.sponsorSigned,
+        })
+      : listPendingEsignDocumentsForSponsor(sendForView, sig);
     const completedAt =
       send.signedAt?.trim() ||
       send.completedAt?.trim() ||
@@ -396,8 +653,8 @@ async function collectCompletedEsignNestedDocuments(
     const dateAdded = formatDdMmmYyyy(completedAt);
 
     for (const doc of signedDocs) {
-      const url = doc.url?.trim();
-      if (!url) continue;
+      const url = doc.url?.trim() ?? "";
+      if (!url && !sponsorCanOpenNow) continue;
       const docId = doc.fileId.trim();
       if (!docId) continue;
       const templateName = doc.name.trim() || "Signed document";
@@ -415,7 +672,9 @@ async function collectCompletedEsignNestedDocuments(
           investorRowTable,
           signatureRequestId: sig,
           templateFileId,
-          awaitingSponsorSignature: sponsorState.awaitingSponsorSignature,
+          awaitingSponsorSignature:
+            sponsorState.awaitingSponsorSignature ||
+            (sponsorCanOpenNow && !sponsorState.sponsorSigned),
           sponsorSigned: sponsorState.sponsorSigned,
         }),
       );
@@ -461,6 +720,7 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
   ]);
 
   const sponsorDocsGateOpen = await sequentialWorkflowSponsorDocsGateOpen(id);
+  const templates = await getDealEsignTemplatesState(id).catch(() => null);
 
   const nestedById = new Map<string, Record<string, unknown>>();
   for (const row of investments) {
@@ -472,6 +732,7 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
       row.profileId,
       row.esignStatusJson,
       sponsorDocsGateOpen,
+      templates,
     );
     for (const doc of docs) {
       const docId = String(doc.id ?? "").trim();
@@ -487,6 +748,7 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
       row.profileId,
       row.esignStatusJson,
       sponsorDocsGateOpen,
+      templates,
     );
     for (const doc of docs) {
       const docId = String(doc.id ?? "").trim();

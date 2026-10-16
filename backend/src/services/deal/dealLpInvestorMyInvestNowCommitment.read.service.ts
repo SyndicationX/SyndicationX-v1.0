@@ -1,6 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../../database/db.js";
 import { dealInvestment } from "../../schema/deal.schema/deal-investment.schema.js";
+import { userInvestorProfiles } from "../../schema/investing.schema/userProfileBook.schema.js";
 import {
   parseInvestorQuestionnaireAnswersJson,
 } from "./investorQuestionnaireAnswers.service.js";
@@ -156,4 +157,61 @@ export async function readMyInvestNowCommitment(
     questionnaireAnswers: answers ?? {},
     w9Form: w9FormForClient(match.investorW9FormJson),
   };
+}
+
+/**
+ * Questionnaire answers from the latest earlier investment on this saved profile.
+ * Empty when the profile has no previous onboarding answers.
+ */
+export async function readPriorQuestionnaireAnswersForProfile(params: {
+  viewerUserId: string;
+  userInvestorProfileId: string;
+  excludeInvestmentId?: string;
+}): Promise<Record<string, string>> {
+  const userId = String(params.viewerUserId ?? "").trim();
+  const profileId = String(params.userInvestorProfileId ?? "").trim();
+  if (!userId || !profileId) return {};
+
+  const [owned] = await db
+    .select({ id: userInvestorProfiles.id })
+    .from(userInvestorProfiles)
+    .where(
+      and(
+        eq(userInvestorProfiles.id, profileId),
+        eq(userInvestorProfiles.userId, userId),
+      ),
+    )
+    .limit(1);
+  if (!owned) return {};
+
+  const rows = await db
+    .select({
+      id: dealInvestment.id,
+      json: dealInvestment.investorQuestionnaireAnswersJson,
+      completedAt: dealInvestment.commitmentCompletedAt,
+      createdAt: dealInvestment.createdAt,
+    })
+    .from(dealInvestment)
+    .where(eq(dealInvestment.userInvestorProfileId, profileId))
+    .orderBy(desc(dealInvestment.createdAt));
+
+  const exclude = String(params.excludeInvestmentId ?? "").trim().toLowerCase();
+  const withAnswers = rows.flatMap((row) => {
+    if (exclude && String(row.id).toLowerCase() === exclude) return [];
+    const answers = parseInvestorQuestionnaireAnswersJson(row.json);
+    if (!answers) return [];
+    if (!Object.values(answers).some((value) => value.trim())) return [];
+    const completedMs = row.completedAt
+      ? new Date(row.completedAt).getTime()
+      : 0;
+    const createdMs = row.createdAt ? new Date(row.createdAt).getTime() : 0;
+    return [{ answers, completedMs, createdMs }];
+  });
+
+  withAnswers.sort((a, b) => {
+    if (a.completedMs !== b.completedMs) return b.completedMs - a.completedMs;
+    return b.createdMs - a.createdMs;
+  });
+
+  return withAnswers[0]?.answers ?? {};
 }

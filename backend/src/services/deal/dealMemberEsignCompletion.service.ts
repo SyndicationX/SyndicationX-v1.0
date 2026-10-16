@@ -113,10 +113,8 @@ import {
   getDealEsignTemplatesState,
 } from "./dealEsignTemplates.service.js";
 import {
-  dealHasSequentialInvestorFirstEsign,
   dealHasInvestorFirstCounterSignEsign,
   evaluateDealSequentialInvestorSignAccess,
-  sequentialWorkflowInvestorPortalDocsGateOpen,
 } from "./dealSequentialEsignWorkflow.service.js";
 import {
   findInvestorEsignTargetBySignatureRequestId,
@@ -1241,11 +1239,8 @@ export async function listMyEsignDocumentsForInvestor(
   if (!bundle?.sends.length) return [];
 
   const templates = await getDealEsignTemplatesState(dealId);
-  const isSequentialQueue = await dealHasSequentialInvestorFirstEsign(dealId);
   const investorFirstCounterSign =
     await dealHasInvestorFirstCounterSignEsign(dealId);
-  const allInvestorsGateOpen =
-    await sequentialWorkflowInvestorPortalDocsGateOpen(dealId);
   const signTurnOpen = target
     ? (await evaluateDealSequentialInvestorSignAccess(dealId, target)).allowed
     : true;
@@ -1293,23 +1288,12 @@ export async function listMyEsignDocumentsForInvestor(
     for (const d of send.documents ?? []) {
       const rawFileId = d.fileId.trim();
       const compositeId = sig && rawFileId ? `${sig}::${rawFileId}` : rawFileId;
-      const template = findEsignTemplateFile(templates, rawFileId);
-      const rel =
-        d.templateRelativePath?.trim() ||
-        template?.relativePath?.trim() ||
-        "";
-      const previewUrl = resolveEsignDocumentListUrl(
-        send,
-        { fileId: compositeId, url: rel ? uploadPublicUrl(rel) : null },
-        templates,
-      );
       const canSignNow = Boolean(sig) && signTurnOpen;
-      if (isSequentialQueue && !allInvestorsGateOpen && !canSignNow) continue;
 
       out.push({
         fileId: compositeId,
         name: d.name,
-        url: isSequentialQueue && !allInvestorsGateOpen ? null : previewUrl,
+        url: null,
         status: "pending",
         ...(categoryId || d.categoryId?.trim()
           ? { categoryId: categoryId || d.categoryId?.trim() }

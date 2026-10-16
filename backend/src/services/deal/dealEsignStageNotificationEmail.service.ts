@@ -9,7 +9,6 @@ import {
 } from "../../functions/dealEsignStageNotification.template.js";
 import {
   findEsignSendBySignatureRequestId,
-  esignSendInvestorActionPending,
   parseEsignStatusBundle,
   type StoredDealInvestorEsignSend,
 } from "../../constants/deal-investor-esign-status.js";
@@ -18,8 +17,6 @@ import { buildDealMemberInviteLandingUrl } from "./dealMemberInviteToken.service
 import { resolveDealInvestorAssociatedSponsor } from "./dealInvestorAssociatedSponsor.service.js";
 import {
   listDealEsignInvestorQueue,
-  evaluateDealSequentialInvestorSignAccess,
-  dealHasSequentialInvestorFirstEsign,
   resolveInvestorDocumentAudienceIds,
   findQueueEntryForEsignTarget,
 } from "./dealSequentialEsignWorkflow.service.js";
@@ -223,61 +220,14 @@ export async function notifyInvestorOfSponsorEsignSigned(params: {
   }
 }
 
-/** Notify investors whose sequential signing turn just opened (after prior signers finish). */
+/**
+ * No investor-to-investor queue. Each investor can sign as soon as their
+ * document is sent; the original send email is the invitation to sign.
+ */
 export async function notifySequentialInvestorsSignTurnAvailable(
-  dealId: string,
+  _dealId: string,
 ): Promise<void> {
-  const id = dealId.trim();
-  if (!id) return;
-  if (!(await dealHasSequentialInvestorFirstEsign(id))) return;
-
-  const queue = await listDealEsignInvestorQueue(id);
-  const deal = await getAddDealFormById(id);
-  const dealName = deal?.dealName?.trim() || "Deal";
-
-  for (const entry of queue) {
-    const access = await evaluateDealSequentialInvestorSignAccess(
-      id,
-      entry.target,
-    );
-    if (!access.allowed) continue;
-
-    const raw = await readInvestorEsignStatusJson(id, entry.target);
-    const bundle = parseEsignStatusBundle(raw);
-    if (!bundle?.sends.length) continue;
-
-    const investor = await resolveInvestorEmailForTarget(id, entry.target);
-    if (!investor?.email) continue;
-
-    const portalUrl =
-      (await buildDealMemberInviteLandingUrl(id, investor.email)) || "";
-
-    for (const send of bundle.sends) {
-      const sigId = send.signatureRequestId?.trim();
-      if (!sigId || !send.sentAt?.trim()) continue;
-      if (!esignSendInvestorActionPending(send)) continue;
-      if (send.investorNotifiedAtSignTurnAvailable?.trim()) continue;
-
-      const docNames = documentNamesFromSend(send);
-      const result = await sendStageEmail({
-        toEmail: investor.email,
-        recipientDisplayName: investor.displayName,
-        dealName,
-        documentNames: docNames,
-        portalDealUrl: portalUrl,
-        stage: "investor_turn_to_sign",
-      });
-
-      if (result.ok) {
-        await updateDealInvestorEsignSend(id, entry.target, sigId, (current) => ({
-          ...current,
-          investorNotifiedAtSignTurnAvailable: new Date().toISOString(),
-        }));
-      } else {
-        console.warn("notifySequentialInvestorsSignTurnAvailable:", result.error);
-      }
-    }
-  }
+  return;
 }
 
 /** Run stage notifications after esign sync for one target. */

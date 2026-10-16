@@ -12,10 +12,10 @@ import {
   resolveDealMemberSignerByRowId,
   type DealMemberSignerOption,
 } from "./dealEsignSigningWorkflow.service.js";
-import { esignSignatureRequestVisibleInDocumentsTab } from "./dealEsignDocumentsWorkspaceSync.service.js";
 import {
   buildSignFlowSignerEmbedUrl,
   createSignFlowSponsorEmbedSigningSession,
+  ensureParallelPartiesMaySign,
   evaluateSignFlowRecipientSignAccess,
   getSignFlowDocument,
   signFlowAnySponsorHasSigned,
@@ -192,12 +192,9 @@ export async function getDealSponsorEsignSignSession(params: {
   const sendBeforeSync = bundleBeforeSync
     ? findEsignSendBySignatureRequestId(bundleBeforeSync, sigId)
     : null;
-  const visibleInDocumentsTab =
-    await esignSignatureRequestVisibleInDocumentsTab(dealId, sigId);
   const portalInvestorSigned =
-    visibleInDocumentsTab ||
-    (sendBeforeSync != null &&
-      esignSendReadyForSponsorCounterSign(sendBeforeSync));
+    sendBeforeSync != null &&
+    esignSendReadyForSponsorCounterSign(sendBeforeSync);
 
   try {
     await syncDealInvestorEsignByTarget(dealId, context.target);
@@ -219,9 +216,7 @@ export async function getDealSponsorEsignSignSession(params: {
   }
 
   const portalReadyForSponsor =
-    portalInvestorSigned ||
-    visibleInDocumentsTab ||
-    esignSendReadyForSponsorCounterSign(send);
+    portalInvestorSigned || esignSendReadyForSponsorCounterSign(send);
 
   let investorSigned = portalReadyForSponsor;
   let requiresInvestorFirst = false;
@@ -351,7 +346,12 @@ export async function getDealSponsorEsignSignSession(params: {
 
   if (provider === "signflow") {
     try {
-      const liveDoc = await getSignFlowDocument(sigId);
+      let liveDoc = await getSignFlowDocument(sigId);
+      try {
+        liveDoc = await ensureParallelPartiesMaySign(sigId, liveDoc);
+      } catch (err) {
+        console.warn("ensureParallelPartiesMaySign (sponsor):", err);
+      }
       if (!signFlowTemplateHasSponsorFields(liveDoc)) {
         return {
           ok: false,
@@ -361,7 +361,8 @@ export async function getDealSponsorEsignSignSession(params: {
       }
 
       const investorHasCompletedSignature =
-        portalReadyForSponsor || investorSigned;
+        esignSendReadyForSponsorCounterSign(send) ||
+        signFlowInvestorPhaseComplete(liveDoc);
 
       const sponsorOnDoc = (liveDoc.recipients ?? []).find((r) => {
         const role = String(r.role ?? "").trim().toLowerCase();

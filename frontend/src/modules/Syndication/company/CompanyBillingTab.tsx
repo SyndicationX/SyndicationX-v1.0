@@ -2059,8 +2059,8 @@ function BillingPaymentMethodsPanel({
         <div>
           <h3 className="cp_billing_payment_methods_title">Payment methods</h3>
           <p className="cp_billing_payment_methods_lead">
-            Add and manage the cards or US bank accounts used for your
-            subscription.
+            Cards and bank accounts you add are saved on your account only.
+            Other people in this company cannot see them.
           </p>
         </div>
         <div className="cp_billing_payment_methods_actions">

@@ -12,6 +12,7 @@ import { dealInvestment } from "../../schema/deal.schema/deal-investment.schema.
 import { getDealEsignDropboxSignPublicConfig } from "./dealEsignDropboxSign.service.js";
 import {
   createSignFlowEmbedSigningSession,
+  ensureParallelPartiesMaySign,
   evaluateSignFlowRecipientSignAccess,
   getSignFlowDocument,
   mapSignFlowEmbedSessionError,
@@ -249,6 +250,12 @@ export async function getDealMyEsignSignSession(params: {
         message: mapped.message,
         ...(mapped.waitingFor ? { waitingFor: mapped.waitingFor } : {}),
       };
+    }
+
+    try {
+      liveDoc = await ensureParallelPartiesMaySign(sigId, liveDoc);
+    } catch (err) {
+      console.warn("ensureParallelPartiesMaySign (investor):", err);
     }
 
     const access = evaluateSignFlowRecipientSignAccess(liveDoc, email);

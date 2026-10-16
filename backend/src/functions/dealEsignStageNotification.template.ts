@@ -60,7 +60,7 @@ function stageLeadHtml(v: DealEsignStageNotificationTemplateVars): string {
   const deal = escHtml(v.dealName.trim() || "this deal");
   const investor = escHtml(v.investorDisplayName?.trim() || "An investor");
   if (v.stage === "investor_signed") {
-    return `<p style="margin:0 0 16px;font-size:16px;line-height:1.6;color:#111827;"><strong>${investor}</strong> completed their investor signature on <strong>${deal}</strong>. Review and counter-sign in the deal Documents tab when all investors have signed (sequential workflow).</p>`;
+    return `<p style="margin:0 0 16px;font-size:16px;line-height:1.6;color:#111827;"><strong>${investor}</strong> completed their investor signature on <strong>${deal}</strong>. Review and counter-sign their document in the deal Documents tab.</p>`;
   }
   if (v.stage === "investor_turn_to_sign") {
     return `<p style="margin:0 0 16px;font-size:16px;line-height:1.6;color:#111827;">Your e-sign documents for <strong>${deal}</strong> are ready for your signature. Sign in to the investor portal to complete your subscription documents.</p>`;
@@ -72,7 +72,7 @@ function stageLeadText(v: DealEsignStageNotificationTemplateVars): string {
   const deal = v.dealName.trim() || "this deal";
   const investor = v.investorDisplayName?.trim() || "An investor";
   if (v.stage === "investor_signed") {
-    return `${investor} completed their investor signature on ${deal}. Review and counter-sign in the deal Documents tab when all investors have signed (sequential workflow).`;
+    return `${investor} completed their investor signature on ${deal}. Review and counter-sign their document in the deal Documents tab.`;
   }
   if (v.stage === "investor_turn_to_sign") {
     return `Your e-sign documents for ${deal} are ready for your signature. Sign in to the investor portal to complete your subscription documents.`;

@@ -743,6 +743,13 @@
       "when": 1895850000000,
       "tag": "0106_deal_stripe_seat_band",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1895900000000,
+      "tag": "0107_user_saved_payment_methods",
+      "breakpoints": true
     }
   ]
 }
