@@ -361,6 +361,7 @@ function pushLeadSponsorBillingAlert(
     billed?: boolean
     billable?: boolean
     needsPlanUpgrade?: boolean
+    needsCoGpUpgrade?: boolean
     planId?: string | null
     billingPlanId?: string | null
     suggestedPlanId?: string | null
@@ -378,11 +379,11 @@ function pushLeadSponsorBillingAlert(
   )
   const nextPlan = billingPlanDisplayName(row.suggestedPlanId)
 
-  if (row.needsPlanUpgrade === true) {
+  if (row.needsPlanUpgrade === true || row.needsCoGpUpgrade === true) {
     out.push({
       id: `deal-billing-upgrade:${dealId}`,
-      title: "Deal plan upgrade needed",
-      message: `The raise for ${dealName} is above ${currentPlan}. SyndicationX selected ${nextPlan}. Upgrade billing for this deal.`,
+      title: "Pay the upgrade difference",
+      message: `The package for ${dealName} changed from ${currentPlan} to ${nextPlan}. Pay the difference so this deal can be opened. It stays closed until that payment is made.`,
       category: "deal",
       createdAt: isoOrNow(row.nextBillingDate),
       href: dealSaasBillingSettingsPath(dealId, row.dealName, {
@@ -502,6 +503,7 @@ async function collectLeadSponsorBillingNotifications(
           billed: row.billed,
           billable: row.billable,
           needsPlanUpgrade: row.needsPlanUpgrade,
+          needsCoGpUpgrade: row.needsCoGpUpgrade,
           planId: row.planId,
           suggestedPlanId: row.suggestedPlanId,
           billingSubscriptionStatus: row.subscriptionStatus,

@@ -36,7 +36,6 @@ import {
   fetchCompanyBillingPaymentMethods,
   fetchCompanyBillingStatus,
   openCompanyBillingPortal,
-  payCompanyBillingWithSavedMethod,
   startCompanyBillingCheckout,
   type BillingCouponPreview,
   startCompanyBillingSetupIntent,
@@ -62,6 +61,7 @@ import { isCompanyAdmin, isPlatformAdmin } from "../../../common/auth/roleUtils"
 import { dealStageLabel } from "../dealsDashboardUtils";
 import { formatDealListDateDisplay } from "../Deals/dealsListDisplay";
 import { dealStageChipCompactClassName } from "../Deals/utils/dealStageChip";
+import { dealSaasBillingSettingsPath } from "../Deals/utils/dealSaasAccess";
 import { DealAvatarIconRing } from "../../../common/components/entity-avatar/EntityAvatarNameCell";
 import { ToolStyleCard } from "../../../common/components/tool-style-card/ToolStyleCard";
 import { cardCompactAmountOrDash } from "../../../common/components/card-compact-amount/CardCompactAmount";
@@ -318,10 +318,8 @@ function coSponsorRangeLabel(seat: SeatBand): string {
 }
 
 function coSponsorPackageCopy(seat: SeatBand): string {
-  const included = includedCoSponsorsForSeat(seat);
-  if (seat === "10plus") {
-    return `Includes up to ${included} co-sponsors. Each co-sponsor beyond 12 is $10.`;
-  }
+  // 10+ co-sponsors use the same 12 co-sponsor price.
+  // Each co-sponsor beyond 12 is $10.
   return `Includes ${coSponsorRangeLabel(seat)}.`;
 }
 
@@ -387,6 +385,58 @@ function invoiceStatusClassName(status: string): string {
   }
   if (normalized === "void") return "cp_billing_invoice_status cp_billing_invoice_status--void";
   return "cp_billing_invoice_status";
+}
+
+function billingTierId(planId: string | null | undefined): DealTier["id"] | null {
+  const id = String(planId ?? "").trim().toLowerCase();
+  if (id === "starter" || id === "running" || id === "growth") return id;
+  if (id.startsWith("starter")) return "starter";
+  if (id.startsWith("running")) return "running";
+  if (id.startsWith("growth")) return "growth";
+  return null;
+}
+
+function knownSeatBand(seat: string | null | undefined): SeatBand | null {
+  if (seat === "5" || seat === "10" || seat === "10plus") return seat;
+  return null;
+}
+
+/** Gap between the package already paid and the package the deal needs now. */
+function upgradeDifferenceDollars(row: CompanyDealBillingRow): {
+  paid: number;
+  next: number;
+  due: number;
+  nextPlan: string;
+} | null {
+  if (!row.billed) return null;
+  const cycle = billingCycleSelectValue(row.billingCycle);
+  if (cycle !== "monthly" && cycle !== "annually") return null;
+  const currentPlan = billingTierId(row.planId);
+  const nextPlan = billingTierId(row.suggestedPlanId) ?? currentPlan;
+  const currentSeat = knownSeatBand(row.seatBand) ?? "5";
+  const nextSeat = knownSeatBand(row.suggestedSeatBand) ?? currentSeat;
+  if (!currentPlan || !nextPlan) return null;
+  const catalogPaid = planPrice(
+    currentPlan,
+    cycle,
+    includedCoSponsorsForSeat(currentSeat),
+  );
+  const next = planPrice(nextPlan, cycle, includedCoSponsorsForSeat(nextSeat));
+  const paidEarlier =
+    typeof row.amountPaidCents === "number" && row.amountPaidCents > 0
+      ? row.amountPaidCents / 100
+      : null;
+  const paid = paidEarlier != null ? paidEarlier : catalogPaid;
+  if (currentPlan === nextPlan && currentSeat === nextSeat && paid >= next) {
+    return null;
+  }
+  if (paid >= next) return null;
+  return {
+    paid,
+    next,
+    due: Math.max(0, next - paid),
+    nextPlan: billingPlanLabel(nextPlan),
+  };
 }
 
 function billingPlanLabel(planId: string | null | undefined): string {
@@ -779,6 +829,13 @@ function catalogSeatBand(row: CompanyDealBillingRow): SeatBand {
   if (row.seatBand === "10" || row.seatBand === "10plus" || row.seatBand === "5") {
     return row.seatBand;
   }
+  if (
+    row.suggestedSeatBand === "10" ||
+    row.suggestedSeatBand === "10plus" ||
+    row.suggestedSeatBand === "5"
+  ) {
+    return row.suggestedSeatBand;
+  }
   return "5";
 }
 
@@ -816,7 +873,9 @@ function latestInvoiceAmountForDeal(
 
 function resolvedIncludedCoGps(deal: CompanyDealBillingRow): number | null {
   const seatBand = catalogSeatBand(deal);
-  if (seatBand === "10plus") return 12;
+  const count = Math.max(0, Number(deal.coGpCount ?? 0) || 0);
+  // 11+ co-sponsors are on the flat 10+ price, even if an older seat was stored.
+  if (seatBand === "10plus" || count >= 11) return null;
   if (seatBand === "10") return 10;
   if (seatBand === "5") return 5;
   const fromApi = Number(deal.includedCoGps);
@@ -835,14 +894,7 @@ function extraCoGpDetail(deal: CompanyDealBillingRow): {
   const count = Math.max(0, Number(deal.coGpCount ?? 0) || 0);
   const paid = Math.max(0, Number(deal.extraCompanyUsersPaid ?? 0) || 0);
   const included = resolvedIncludedCoGps(deal);
-  const extra =
-    included == null
-      ? Math.max(0, Number(deal.extraCompanyUsersDue ?? 0) || 0)
-      : Math.max(0, count - included);
-  const due = Math.max(
-    extra,
-    Math.max(0, Number(deal.extraCompanyUsersDue ?? 0) || 0),
-  );
+  const due = included == null ? 0 : Math.max(0, count - included);
   const annual = /annual|year/i.test(String(deal.billingCycle ?? ""));
   const perExtra = annual
     ? EXTRA_COMPANY_USER_FEE_DOLLARS * EXTRA_CO_GP_ANNUAL_MONTHS
@@ -889,6 +941,12 @@ function dealAmountSearchText(
     ) ?? catalogPlanAmountLabel(row),
     extra.paidLabel,
     extra.dueLabel,
+    (() => {
+      const upgrade = upgradeDifferenceDollars(row);
+      return upgrade
+        ? `${formatBillingDollars(upgrade.due)} difference due`
+        : null;
+    })(),
   ]
     .filter(Boolean)
     .join(" ");
@@ -935,6 +993,29 @@ function DealAmountCell({
 }) {
   if (dealIsNotBilled(row)) {
     return <span>—</span>;
+  }
+  const upgrade = upgradeDifferenceDollars(row);
+  if (upgrade) {
+    const period = /annual|year/i.test(String(row.billingCycle ?? ""))
+      ? "/yr"
+      : "/mo";
+    return (
+      <span className="cp_billing_amount_stack">
+        <span className="cp_billing_amount_total">
+          {formatBillingDollars(upgrade.due)} difference due
+        </span>
+        <span className="cp_billing_amount_extra">
+          <span>
+            Paid {formatBillingDollars(upgrade.paid)}
+            {period}
+          </span>
+          <span>
+            {upgrade.nextPlan} {formatBillingDollars(upgrade.next)}
+            {period}
+          </span>
+        </span>
+      </span>
+    );
   }
   const base = catalogPlanAmountDollars(row);
   const extra = extraCoGpDetail(row);
@@ -1089,7 +1170,6 @@ function BillingPricingPanel({
   initialDealName?: string;
   allowPayment?: boolean;
 }) {
-  const navigate = useNavigate();
   const wizardMode =
     allowPayment && Boolean((initialDealId ?? "").trim());
   const [seatBand, setSeatBand] = useState<SeatBand | null>("5");
@@ -1108,10 +1188,8 @@ function BillingPricingPanel({
   const [payModalPlanId, setPayModalPlanId] = useState<DealTier["id"] | null>(
     null,
   );
-  const [payModalMethods, setPayModalMethods] = useState<
-    CompanyBillingPaymentMethod[]
-  >([]);
-  const [payModalLoading, setPayModalLoading] = useState(false);
+  const payModalMethods: CompanyBillingPaymentMethod[] = [];
+  const payModalLoading = false;
   const [payModalBusy, setPayModalBusy] = useState<"saved" | "stripe" | null>(
     null,
   );
@@ -1212,8 +1290,8 @@ function BillingPricingPanel({
       setExtraCompanyUsers(Math.max(0, count - included));
       return;
     }
-    if (seatBand === "10plus") {
-      setExtraCompanyUsers(Math.max(0, count - 12));
+    if (seatBand === "10plus" || count >= 11) {
+      setExtraCompanyUsers(0);
       return;
     }
     const due = Math.max(0, Number(selectedDeal?.extraCompanyUsersDue ?? 0) || 0);
@@ -1232,7 +1310,7 @@ function BillingPricingPanel({
       setWizardCycle(cycle);
     }
     const count = Number(selectedDeal.coGpCount);
-    if (Number.isFinite(count) && count >= 1) {
+    if (Number.isFinite(count) && count >= 0) {
       setSeatBand(seatBandForCoSponsors(count));
       return;
     }
@@ -1331,22 +1409,24 @@ function BillingPricingPanel({
       );
       return;
     }
-    setBusyPlanId(null);
-    setPayModalPlanId(tierId);
-    setPayModalError("");
-    setPayModalBusy(null);
-    setPayModalOpen(true);
-    setPayModalLoading(true);
-    setPayModalMethods([]);
-    payOnceRef.current = false;
-    void fetchCompanyBillingPaymentMethods(payCompanyId).then((result) => {
-      setPayModalLoading(false);
-      if (!result.ok) {
-        setPayModalMethods([]);
-        return;
-      }
-      setPayModalMethods(result.paymentMethods);
-    });
+    setBusyPlanId(tierId);
+    payOnceRef.current = true;
+    const result = await startCompanyBillingCheckout(
+      payCompanyId,
+      tierId,
+      displayCycle,
+      displaySeat,
+      selectedDealId,
+      extraCompanyUsers,
+      appliedCoupon?.code,
+    );
+    if (!result.ok) {
+      payOnceRef.current = false;
+      setBusyPlanId(null);
+      setActionError(result.message);
+      return;
+    }
+    window.location.assign(result.url);
   };
 
   const closePayModal = () => {
@@ -1379,37 +1459,6 @@ function BillingPricingPanel({
     window.location.assign(result.url);
   };
 
-  const handlePayWithSavedMethod = async (paymentMethodId: string) => {
-    if (!payModalPlanId || payOnceRef.current) return;
-    payOnceRef.current = true;
-    setPayModalError("");
-    setPayModalBusy("saved");
-    const result = await payCompanyBillingWithSavedMethod(
-      payCompanyId,
-      payModalPlanId,
-      displayCycle,
-      displaySeat,
-      selectedDealId,
-      paymentMethodId,
-      extraCompanyUsers,
-      appliedCoupon?.code,
-    );
-    if (!result.ok) {
-      payOnceRef.current = false;
-      setPayModalBusy(null);
-      setPayModalError(result.message);
-      return;
-    }
-    const paidDealId = result.paidDealId || selectedDealId;
-    if (paidDealId) {
-      navigate(`/deals/${encodeURIComponent(paidDealId)}`, { replace: true });
-      return;
-    }
-    setPayModalBusy(null);
-    setPayModalOpen(false);
-    onStatusRefresh();
-  };
-
   const handleManageBilling = async () => {
     setActionError("");
     if (!companyId) {
@@ -1426,6 +1475,8 @@ function BillingPricingPanel({
     window.location.assign(result.url);
   };
 
+  const upgradeDue = selectedDeal ? upgradeDifferenceDollars(selectedDeal) : null;
+
   return (
     <>
       <div className="cp_billing_header">
@@ -1437,7 +1488,8 @@ function BillingPricingPanel({
           <span className="cp_billing_deal_lead_free">
             Draft and Archived are free.
           </span>{" "}
-          Monthly or yearly by card or ACH. Each co-sponsor beyond 12 is $10.
+          Monthly or yearly by card or ACH.{" "}
+          {/* Each co-sponsor beyond 12 is $10. */}
           Contact us for deals over $10M.
         </p>
       </div>
@@ -1663,17 +1715,17 @@ function BillingPricingPanel({
               )
             })}
           </div>
-          <p className="cp_billing_filter_hint" style={{ margin: 0 }}>
-            {!membersEnabled
-              ? "Choose a billing cycle first to pick Co-Sponsors."
-              : seatBand == null
-                ? "Choose how many Co-Sponsors to include."
-                : seatBand === "10plus"
-                  ? "More than 10 co-sponsors use the 12 co-sponsor price. Each co-sponsor past 12 is $10."
+          {seatBand === "10plus" && membersEnabled ? null : (
+            <p className="cp_billing_filter_hint" style={{ margin: 0 }}>
+              {!membersEnabled
+                ? "Choose a billing cycle first to pick Co-Sponsors."
+                : seatBand == null
+                  ? "Choose how many Co-Sponsors to include."
                   : seatBand === "10"
                     ? "6 to 10 co-sponsors use the 10 co-sponsor price."
                     : "1 to 5 co-sponsors use the 5 co-sponsor price."}
-          </p>
+            </p>
+          )}
         </div>
       </div>
 
@@ -1928,9 +1980,29 @@ function BillingPricingPanel({
         loading={payModalLoading}
         busy={payModalBusy}
         error={payModalError}
+        title={upgradeDue ? "Pay the upgrade difference" : undefined}
+        description={
+          upgradeDue ? (
+            <>
+              You already paid ${formatPlanPrice(upgradeDue.paid)} for this deal.{" "}
+              {upgradeDue.nextPlan} is ${formatPlanPrice(upgradeDue.next)}. Pay
+              the ${formatPlanPrice(upgradeDue.due)} difference.
+            </>
+          ) : undefined
+        }
+        savedButtonLabel={
+          upgradeDue
+            ? `Pay $${formatPlanPrice(upgradeDue.due)} difference`
+            : undefined
+        }
+        stripeButtonLabel={
+          upgradeDue
+            ? `Pay $${formatPlanPrice(upgradeDue.due)} difference`
+            : undefined
+        }
         onClose={closePayModal}
-        onPaySaved={(paymentMethodId) => {
-          void handlePayWithSavedMethod(paymentMethodId);
+        onPaySaved={() => {
+          void handlePayInStripe();
         }}
         onPayStripe={() => {
           void handlePayInStripe();
@@ -2108,120 +2180,163 @@ function DealMrrPaymentHistory({
     start: inv.periodStart || inv.invoiceDate,
     end: inv.periodEnd || inv.dueDate || inv.invoiceDate,
     plan: billingPlanLabel(inv.planId || dealPlanId(deal)),
+    paidBy: inv.paidByName?.trim() || "—",
     amount: inv.amount,
   }));
 
+  const includedNote =
+    extra.extra === 0
+      ? extra.included == null
+        ? "10+ co-sponsors are included in this plan. No per-Co-Sponsor add-on."
+        : `The ${extra.included} co-sponsors in this plan are included. No extra Co-Sponsor fee.`
+      : null;
+  const upgrade = upgradeDifferenceDollars(deal);
+  const upgradePeriod = /annual|year/i.test(String(deal.billingCycle ?? ""))
+    ? "/yr"
+    : "/mo";
+
   return (
     <div className="cp_billing_deal_mrr_history">
-      <p className="cp_billing_deal_mrr_history_title">Previous MRR payments</p>
-      {rows.length === 0 ? (
-        <p className="cp_billing_deal_mrr_history_empty">
-          No previous MRR payments for this deal yet.
-        </p>
-      ) : (
-        <table className="cp_billing_deal_mrr_table">
-          <thead>
-            <tr>
-              <th scope="col">Start date</th>
-              <th scope="col">End date</th>
-              <th scope="col">Plan</th>
-              <th scope="col">Amount</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.id}>
-                <td>
-                  {row.start ? formatDealListDateDisplay(row.start) : "—"}
-                </td>
-                <td>{row.end ? formatDealListDateDisplay(row.end) : "—"}</td>
-                <td>{row.plan}</td>
-                <td>{row.amount}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <p className="cp_billing_deal_mrr_history_title">Extra Co-Sponsors</p>
-      <table className="cp_billing_deal_mrr_table">
-        <thead>
-          <tr>
-            <th scope="col">Co-Sponsors</th>
-            <th scope="col">Included</th>
-            <th scope="col">Extra</th>
-            <th scope="col">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>{formatCount(extra.count)}</td>
-            <td>{extra.included == null ? "10+" : extra.included}</td>
-            <td>{extra.extra}</td>
-            <td className="cp_billing_mrr_amount">
-              {extra.extra > 0 && catalogPlanAmountDollars(deal) != null ? (
-                <BillingAmountBreakdown
-                  total={
-                    (catalogPlanAmountDollars(deal) ?? 0) + extra.dueDollars
-                  }
-                  base={catalogPlanAmountDollars(deal)}
-                  extra={extra.dueDollars}
-                  period={
-                    /annual|year/i.test(String(deal.billingCycle ?? ""))
-                      ? "/yr"
-                      : "/mo"
-                  }
-                />
-              ) : extra.extra > 0 ? (
-                <span className="cp_billing_amount_stack">
-                  <span className="cp_billing_amount_total">
-                    {formatBillingDollars(extra.dueDollars)}
-                    {/annual|year/i.test(String(deal.billingCycle ?? ""))
-                      ? "/yr"
-                      : "/mo"}
-                  </span>
-                  <span className="cp_billing_amount_extra">
-                    <span>extra users</span>
-                  </span>
-                </span>
-              ) : extra.paid > 0 ? (
-                `${formatBillingDollars(extra.paidDollars)} paid`
-              ) : (
-                "$0"
-              )}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      {extra.extra === 0 ? (
-        <p className="cp_billing_deal_mrr_history_empty">
-          {extra.included == null
-            ? "10+ co-sponsors are included in this plan. No per-Co-Sponsor add-on."
-            : `The ${extra.included} co-sponsors in this plan are included. No extra Co-Sponsor fee.`}
+      {upgrade ? (
+        <p className="cp_billing_deal_mrr_history_title">
+          Difference due {formatBillingDollars(upgrade.due)}
+          {upgradePeriod}. Paid {formatBillingDollars(upgrade.paid)}
+          {upgradePeriod}. {upgrade.nextPlan} is{" "}
+          {formatBillingDollars(upgrade.next)}
+          {upgradePeriod}.
         </p>
       ) : null}
-      {extraInvoices.length > 0 ? (
+      <section className="cp_billing_deal_mrr_section" aria-label="Previous MRR payments">
+        <h4 className="cp_billing_deal_mrr_history_title">Previous MRR payments</h4>
+        {rows.length === 0 ? (
+          <p className="cp_billing_deal_mrr_history_empty">
+            No previous MRR payments for this deal yet.
+          </p>
+        ) : (
+          <table className="cp_billing_deal_mrr_table">
+            <thead>
+              <tr>
+                <th scope="col">Start date</th>
+                <th scope="col">End date</th>
+                <th scope="col">Plan</th>
+                <th scope="col">Paid by</th>
+                <th scope="col" className="cp_billing_mrr_amount">
+                  Amount
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id}>
+                  <td>
+                    {row.start ? formatDealListDateDisplay(row.start) : "—"}
+                  </td>
+                  <td>{row.end ? formatDealListDateDisplay(row.end) : "—"}</td>
+                  <td>{row.plan}</td>
+                  <td className="cp_billing_mrr_payer" title={row.paidBy}>
+                    {row.paidBy}
+                  </td>
+                  <td className="cp_billing_mrr_amount">{row.amount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section className="cp_billing_deal_mrr_section" aria-label="Extra co-sponsors">
+        <h4 className="cp_billing_deal_mrr_history_title">Extra co-sponsors</h4>
         <table className="cp_billing_deal_mrr_table">
           <thead>
             <tr>
-              <th scope="col">Date</th>
-              <th scope="col">Status</th>
-              <th scope="col">Amount</th>
+              <th scope="col">Co-sponsors</th>
+              <th scope="col">Included</th>
+              <th scope="col">Extra</th>
+              <th scope="col" className="cp_billing_mrr_amount">
+                Amount
+              </th>
             </tr>
           </thead>
           <tbody>
-            {extraInvoices.map((inv) => (
-              <tr key={inv.id}>
-                <td>
-                  {inv.invoiceDate
-                    ? formatDealListDateDisplay(inv.invoiceDate)
-                    : "—"}
-                </td>
-                <td>{inv.status}</td>
-                <td>{inv.amount}</td>
-              </tr>
-            ))}
+            <tr>
+              <td>{formatCount(extra.count)}</td>
+              <td>{extra.included == null ? "10+" : extra.included}</td>
+              <td>{extra.extra}</td>
+              <td className="cp_billing_mrr_amount">
+                {extra.extra > 0 && catalogPlanAmountDollars(deal) != null ? (
+                  <BillingAmountBreakdown
+                    total={
+                      (catalogPlanAmountDollars(deal) ?? 0) + extra.dueDollars
+                    }
+                    base={catalogPlanAmountDollars(deal)}
+                    extra={extra.dueDollars}
+                    period={
+                      /annual|year/i.test(String(deal.billingCycle ?? ""))
+                        ? "/yr"
+                        : "/mo"
+                    }
+                  />
+                ) : extra.extra > 0 ? (
+                  <span className="cp_billing_amount_stack">
+                    <span className="cp_billing_amount_total">
+                      {formatBillingDollars(extra.dueDollars)}
+                      {/annual|year/i.test(String(deal.billingCycle ?? ""))
+                        ? "/yr"
+                        : "/mo"}
+                    </span>
+                    <span className="cp_billing_amount_extra">
+                      <span>extra users</span>
+                    </span>
+                  </span>
+                ) : extra.paid > 0 ? (
+                  `${formatBillingDollars(extra.paidDollars)} paid`
+                ) : (
+                  "$0"
+                )}
+              </td>
+            </tr>
           </tbody>
         </table>
+        {includedNote ? (
+          <p className="cp_billing_deal_mrr_note">{includedNote}</p>
+        ) : null}
+      </section>
+
+      {extraInvoices.length > 0 ? (
+        <section
+          className="cp_billing_deal_mrr_section"
+          aria-label="Co-sponsor charges"
+        >
+          <h4 className="cp_billing_deal_mrr_history_title">Co-sponsor charges</h4>
+          <table className="cp_billing_deal_mrr_table">
+            <thead>
+              <tr>
+                <th scope="col">Date</th>
+                <th scope="col">Status</th>
+                <th scope="col" className="cp_billing_mrr_amount">
+                  Amount
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {extraInvoices.map((inv) => (
+                <tr key={inv.id}>
+                  <td>
+                    {inv.invoiceDate
+                      ? formatDealListDateDisplay(inv.invoiceDate)
+                      : "—"}
+                  </td>
+                  <td>
+                    <span className={invoiceStatusClassName(inv.status)}>
+                      {inv.status}
+                    </span>
+                  </td>
+                  <td className="cp_billing_mrr_amount">{inv.amount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
       ) : null}
     </div>
   );
@@ -2229,12 +2344,15 @@ function DealMrrPaymentHistory({
 
 function BillingDealDetailsPanel({
   companyId,
+  companyIds,
   viewerScope,
   canPay,
   onPaid,
   onSelectOrganization,
 }: {
   companyId: string;
+  /** Lead sponsors may lead deals in more than one company. */
+  companyIds?: string[];
   viewerScope: "all_deals" | "lead_sponsor" | undefined;
   canPay: boolean;
   onPaid?: () => void;
@@ -2260,7 +2378,6 @@ function BillingDealDetailsPanel({
   >(viewerScope);
   const [payBusyId, setPayBusyId] = useState<string | null>(null);
   const [payError, setPayError] = useState("");
-  const [dealsRefresh, setDealsRefresh] = useState(0);
   const [payChoice, setPayChoice] = useState<{
     row: CompanyDealBillingRow;
     companyId: string;
@@ -2268,10 +2385,8 @@ function BillingDealDetailsPanel({
     cycle: "monthly" | "annually";
     seatBand: SeatBand;
   } | null>(null);
-  const [payChoiceMethods, setPayChoiceMethods] = useState<
-    CompanyBillingPaymentMethod[]
-  >([]);
-  const [payChoiceLoading, setPayChoiceLoading] = useState(false);
+  const payChoiceMethods: CompanyBillingPaymentMethod[] = [];
+  const payChoiceLoading = false;
   const [payChoiceBusy, setPayChoiceBusy] = useState<"saved" | "stripe" | null>(
     null,
   );
@@ -2294,9 +2409,22 @@ function BillingDealDetailsPanel({
   const payOnceRef = useRef(false);
   const [expandedDealId, setExpandedDealId] = useState<string | null>(null);
   const [invoices, setInvoices] = useState<CompanyBillingInvoice[]>([]);
+  const companyIdsKey = (companyIds ?? [])
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .join(",");
 
   useEffect(() => {
-    if (!platformAdmin && !companyId) {
+    const leadCompanyIds = [
+      ...new Set(companyIdsKey.split(",").filter(Boolean)),
+    ];
+    const dealCompanyIds =
+      leadCompanyIds.length > 0
+        ? leadCompanyIds
+        : companyId.trim()
+          ? [companyId.trim()]
+          : [];
+    if (!platformAdmin && dealCompanyIds.length === 0) {
       setDeals([]);
       setInvoices([]);
       return;
@@ -2338,29 +2466,56 @@ function BillingDealDetailsPanel({
         return;
       }
 
-      const dealResult = await fetchCompanyBillingDeals(companyId);
+      const dealResults = await Promise.all(
+        dealCompanyIds.map((id) => fetchCompanyBillingDeals(id)),
+      );
       if (cancelled) return;
-      if (!dealResult.ok) {
+      const okDeals = dealResults.filter((result) => result.ok);
+      if (okDeals.length === 0) {
         setLoading(false);
-        setLoadError(dealResult.message);
+        setLoadError(
+          dealResults.find((result) => !result.ok)?.message ??
+            "Could not load deal billing.",
+        );
         setDeals([]);
         setInvoices([]);
         return;
       }
-      setDeals(dealResult.deals);
-      setResolvedScope(dealResult.viewerScope);
+      const seenDealIds = new Set<string>();
+      setDeals(
+        okDeals.flatMap((result) =>
+          result.deals.filter((deal) => {
+            const key = deal.id.trim().toLowerCase();
+            if (!key || seenDealIds.has(key)) return false;
+            seenDealIds.add(key);
+            return true;
+          }),
+        ),
+      );
+      setResolvedScope(okDeals[0].viewerScope);
 
-      const invoiceResult = companyId
-        ? await fetchCompanyBillingInvoices(companyId)
-        : { ok: false as const };
+      const invoiceResults = await Promise.all(
+        dealCompanyIds.map((id) => fetchCompanyBillingInvoices(id)),
+      );
       if (cancelled) return;
-      setInvoices(invoiceResult.ok ? invoiceResult.invoices : []);
+      const seenInvoiceIds = new Set<string>();
+      setInvoices(
+        invoiceResults.flatMap((result) =>
+          result.ok
+            ? result.invoices.filter((invoice) => {
+                if (seenInvoiceIds.has(invoice.id)) return false;
+                seenInvoiceIds.add(invoice.id);
+                return true;
+              })
+            : [],
+        ),
+      );
       setLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [companyId, platformAdmin, dealsRefresh]);
+  }, [companyId, companyIdsKey, platformAdmin]);
 
   useEffect(() => {
     if (!platformAdmin || !expandedOrgId) return;
@@ -2550,20 +2705,52 @@ function BillingDealDetailsPanel({
   };
 
   const openCoGpUpgrade = useCallback((row: CompanyDealBillingRow) => {
-    const params = new URLSearchParams({
-      billing: "upgrade",
-      dealId: row.id,
+    setPayError("");
+    const payCompanyId = dealBillingCompanyId(row, companyId);
+    if (!payCompanyId) {
+      setPayError("No company workspace selected.");
+      return;
+    }
+    const due = upgradeDifferenceDollars(row);
+    if (!due) {
+      setPayError("This deal does not have a difference to pay.");
+      return;
+    }
+    const planId = (row.suggestedPlanId || row.planId || "starter")
+      .trim()
+      .toLowerCase();
+    const rowCycle = billingCycleSelectValue(row.billingCycle);
+    if (!rowCycle) {
+      setPayError("Choose monthly or yearly billing first.");
+      return;
+    }
+    const seat =
+      row.suggestedSeatBand === "5" ||
+      row.suggestedSeatBand === "10" ||
+      row.suggestedSeatBand === "10plus"
+        ? row.suggestedSeatBand
+        : catalogSeatBand(row);
+    payOnceRef.current = false;
+    setPayChoiceError("");
+    setPayChoiceBusy(null);
+    setPayChoice({
+      row,
+      companyId: payCompanyId,
+      planId,
+      cycle: rowCycle,
+      seatBand: seat,
     });
-    const dealName = row.dealName.trim();
-    if (dealName) params.set("dealName", dealName);
-    navigate(`/settings?${params.toString()}`);
-  }, [navigate]);
+  }, [companyId]);
 
   const handlePayDeal = async (row: CompanyDealBillingRow) => {
     setPayError("");
     const payCompanyId = dealBillingCompanyId(row, companyId);
     if (!payCompanyId) {
       setPayError("No company workspace selected.");
+      return;
+    }
+    if ((row.dealStage ?? "").trim().toLowerCase() === "draft") {
+      navigate(dealSaasBillingSettingsPath(row.id, row.dealName));
       return;
     }
     const planId = (
@@ -2586,23 +2773,21 @@ function BillingDealDetailsPanel({
       setComplimentaryNoticeOpen(true);
       return;
     }
-    payOnceRef.current = false;
-    setPayChoice({
-      row,
-      companyId: payCompanyId,
+    setPayBusyId(row.id);
+    const result = await startCompanyBillingCheckout(
+      payCompanyId,
       planId,
-      cycle: rowCycle,
-      seatBand: catalogSeatBand(row),
-    });
-    setPayChoiceError("");
-    setPayChoiceBusy(null);
-    setPayChoiceLoading(true);
-    setPayChoiceMethods([]);
-    const methodsResult = await fetchCompanyBillingPaymentMethods(payCompanyId);
-    setPayChoiceLoading(false);
-    if (methodsResult.ok) {
-      setPayChoiceMethods(methodsResult.paymentMethods);
+      rowCycle,
+      catalogSeatBand(row),
+      row.id,
+    );
+    if (!result.ok) {
+      setPayBusyId(null);
+      setPayError(result.message);
+      toast.error("Could not open Stripe checkout", result.message);
+      return;
     }
+    window.location.assign(result.url);
   };
 
   const closePayChoice = () => {
@@ -2632,34 +2817,6 @@ function BillingDealDetailsPanel({
     }
     onPaid?.();
     window.location.assign(result.url);
-  };
-
-  const handlePayDealWithSavedMethod = async (paymentMethodId: string) => {
-    if (!payChoice || payOnceRef.current) return;
-    payOnceRef.current = true;
-    setPayChoiceError("");
-    setPayChoiceBusy("saved");
-    const result = await payCompanyBillingWithSavedMethod(
-      payChoice.companyId,
-      payChoice.planId,
-      payChoice.cycle,
-      payChoice.seatBand,
-      payChoice.row.id,
-      paymentMethodId,
-    );
-    if (!result.ok) {
-      payOnceRef.current = false;
-      setPayChoiceBusy(null);
-      setPayChoiceError(result.message);
-      return;
-    }
-    const dealName = payChoice.row.dealName.trim() || "this deal";
-    setPayChoice(null);
-    setPayChoiceBusy(null);
-    setPayChoiceError("");
-    onPaid?.();
-    setDealsRefresh((n) => n + 1);
-    toast.success("Payment received", `${dealName} was paid with the selected method.`);
   };
 
   const handleCycleChange = useCallback(
@@ -2922,6 +3079,7 @@ function BillingDealDetailsPanel({
               id: "pay",
               header: "Actions",
               align: "center" as const,
+              colWidth: "17rem",
               thClassName:
                 "deals_th_align_center um_th_actions cp_billing_actions_col",
               tdClassName:
@@ -2943,7 +3101,7 @@ function BillingDealDetailsPanel({
                         type="button"
                         className="um_btn_primary cp_billing_pay_btn"
                         disabled={busy}
-                        aria-label={busy ? "Loading payment options" : undefined}
+                        aria-label={busy ? "Opening Stripe checkout" : undefined}
                         onClick={() => void handlePayDeal(row)}
                       >
                         {busy ? (
@@ -2966,14 +3124,27 @@ function BillingDealDetailsPanel({
                         type="button"
                         className="um_btn_secondary cp_billing_upgrade_btn"
                         disabled={busy}
-                        aria-label={`Upgrade Co-Sponsor package for ${row.dealName.trim() || "this deal"}`}
-                        onClick={() => openCoGpUpgrade(row)}
+                        aria-label={
+                          busy
+                            ? "Opening Stripe checkout"
+                            : `Upgrade Co-Sponsor package for ${row.dealName.trim() || "this deal"}`
+                        }
+                        onClick={() => void openCoGpUpgrade(row)}
                       >
-                        <BadgeDollarSign
-                          size={15}
-                          strokeWidth={2}
-                          aria-hidden
-                        />
+                        {busy ? (
+                          <Loader2
+                            size={15}
+                            strokeWidth={2}
+                            className="deals_create_btn_spin"
+                            aria-hidden
+                          />
+                        ) : (
+                          <BadgeDollarSign
+                            size={15}
+                            strokeWidth={2}
+                            aria-hidden
+                          />
+                        )}
                         Upgrade
                       </button>
                     ) : null}
@@ -3364,14 +3535,42 @@ function BillingDealDetailsPanel({
         busy={payChoiceBusy}
         error={payChoiceError}
         title={
-          payChoice?.row.billed &&
-          (payChoice.row.needsPlanUpgrade || payChoice.row.needsCoGpUpgrade)
-            ? "Choose how to upgrade"
-            : "Choose how to pay"
+          payChoice && upgradeDifferenceDollars(payChoice.row)
+            ? "Pay the upgrade difference"
+            : payChoice?.row.billed &&
+                (payChoice.row.needsPlanUpgrade || payChoice.row.needsCoGpUpgrade)
+              ? "Choose how to upgrade"
+              : "Choose how to pay"
         }
+        description={
+          payChoice && upgradeDifferenceDollars(payChoice.row) ? (
+            <>
+              You already paid $
+              {formatPlanPrice(upgradeDifferenceDollars(payChoice.row)!.paid)}{" "}
+              for this deal. {upgradeDifferenceDollars(payChoice.row)!.nextPlan}{" "}
+              is ${formatPlanPrice(upgradeDifferenceDollars(payChoice.row)!.next)}.
+              Pay the $
+              {formatPlanPrice(upgradeDifferenceDollars(payChoice.row)!.due)}{" "}
+              difference.
+            </>
+          ) : undefined
+        }
+        savedButtonLabel={
+          payChoice && upgradeDifferenceDollars(payChoice.row)
+            ? `Pay $${formatPlanPrice(upgradeDifferenceDollars(payChoice.row)!.due)} difference`
+            : undefined
+        }
+        stripeButtonLabel={
+          payChoice && upgradeDifferenceDollars(payChoice.row)
+            ? `Pay $${formatPlanPrice(upgradeDifferenceDollars(payChoice.row)!.due)} difference`
+            : undefined
+        }
+        checkoutOnly={Boolean(
+          payChoice && upgradeDifferenceDollars(payChoice.row),
+        )}
         onClose={closePayChoice}
-        onPaySaved={(paymentMethodId) => {
-          void handlePayDealWithSavedMethod(paymentMethodId);
+        onPaySaved={() => {
+          void handlePayDealInStripe();
         }}
         onPayStripe={() => {
           void handlePayDealInStripe();
@@ -3748,10 +3947,12 @@ export function BillingPaymentHistoryPanel({ companyId }: { companyId: string })
 
 export function CompanyBillingTab({
   workspaceCompanyId,
+  leadSponsorCompanyIds,
   focusDealId,
   focusDealName,
 }: {
   workspaceCompanyId?: string;
+  leadSponsorCompanyIds?: string[];
   focusDealId?: string;
   focusDealName?: string;
 } = {}) {
@@ -4176,8 +4377,13 @@ export function CompanyBillingTab({
       >
         {billingSubTab === "deals" ? (
           <BillingDealDetailsPanel
-            key={isPlatformAdmin() ? "all-organizations" : companyId}
+            key={
+              isPlatformAdmin()
+                ? "all-organizations"
+                : (leadSponsorCompanyIds ?? []).join(",") || companyId
+            }
             companyId={companyId}
+            companyIds={leadSponsorCompanyIds}
             viewerScope={billingStatus?.viewerScope}
             canPay={canPayBilling}
             onPaid={refreshStatus}

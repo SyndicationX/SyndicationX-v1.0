@@ -736,6 +736,13 @@
       "when": 1895800000000,
       "tag": "0105_deal_saas_coupon_code",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1895850000000,
+      "tag": "0106_deal_stripe_seat_band",
+      "breakpoints": true
     }
   ]
 }

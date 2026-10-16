@@ -64,11 +64,12 @@ export function isDealListRowSaasLocked(row: DealListRow): boolean {
   if (!dealSaasBillingHasStarted(row.saasBillingStartsAt)) return false
   if (!row?.id || row.id === CREATE_DEAL_DRAFT_ROW_ID) return false
   if (isPlatformAdmin() && row.viewerIsLeadSponsor !== true) return false
+  if (row.needsPlanUpgrade === true) return true
+  if (row.billingAccessLocked === true) return true
   const status = String(row.billingSubscriptionStatus ?? "").trim().toLowerCase()
   if (status === "active" || status === "trialing") return false
   // Server evaluation is the source of truth (past due can still have a
   // future period end; complimentary month is unlocked there too).
-  if (row.billingAccessLocked === true) return true
   if (row.billingAccessLocked === false) return false
   if (!stageIsBillable(row)) return false
   // Fallback when list payload has no lock flags: complimentary until nextBillingDate.
@@ -170,6 +171,15 @@ export function parseDealSaasPaymentRequiredBody(
       rec.viewer_is_lead_sponsor === true ||
       rec.viewerIsLeadSponsor === "true" ||
       rec.viewer_is_lead_sponsor === "true",
+    suggestedPlanId:
+      rec.suggestedPlanId != null || rec.suggested_plan_id != null
+        ? String(rec.suggestedPlanId ?? rec.suggested_plan_id)
+        : null,
+    needsPlanUpgrade:
+      rec.needsPlanUpgrade === true ||
+      rec.needs_plan_upgrade === true ||
+      rec.needsPlanUpgrade === "true" ||
+      rec.needs_plan_upgrade === "true",
     message,
   }
 }

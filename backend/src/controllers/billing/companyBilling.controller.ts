@@ -296,6 +296,7 @@ export async function postCompanyBillingPaySaved(
   res.status(200).json({
     ...(result.status ?? {}),
     paidDealId: result.paidDealId,
+    ...(result.checkoutUrl ? { url: result.checkoutUrl } : {}),
   });
 }
 

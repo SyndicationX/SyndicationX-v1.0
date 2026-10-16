@@ -58,6 +58,7 @@ export type CompanyBillingInvoice = {
   dealName?: string | null
   billingScope?: "deal" | "extra_company_user" | null
   comment?: string | null
+  paidByName?: string | null
 }
 
 export type CompanyBillingPaymentMethod = {
@@ -314,7 +315,7 @@ export async function payCompanyBillingWithSavedMethod(
   extraCompanyUsers?: number,
   promotionCode?: string,
 ): Promise<
-  | { ok: true; paidDealId: string | null; status: CompanyBillingStatus }
+  | { ok: true; paidDealId: string | null; status: CompanyBillingStatus; url?: string }
   | { ok: false; message: string; statusCode: number }
 > {
   const base = getApiV1Base()
@@ -356,10 +357,15 @@ export async function payCompanyBillingWithSavedMethod(
         statusCode: res.status,
       }
     }
+    const url =
+      data && typeof data === "object"
+        ? String((data as { url?: unknown }).url ?? "").trim()
+        : ""
     return {
       ok: true,
       paidDealId: paidDealIdFromUnknown(data),
       status: data as CompanyBillingStatus,
+      ...(url ? { url } : {}),
     }
   } catch {
     return {
@@ -505,6 +511,7 @@ export type CompanyDealBillingRow = {
   extraUserFeeCents?: number
   extraUserComment?: string | null
   couponRedeemed?: boolean
+  amountPaidCents?: number | null
 }
 
 export type BillingOrganizationOption = {

@@ -22,6 +22,7 @@ import {
 } from "./esignPdfMerge.service.js";
 import { inferSigningWorkflowFromSignFlowDocument, resolveSigningWorkflowFromTemplateFile } from "./dealEsignSigningWorkflow.service.js";
 import {
+  ESIGN_TEMPLATE_PDF_MISSING_MESSAGE,
   ensureEsignTemplatePdfPrepared,
   findEsignTemplateFile,
   getDealEsignTemplatesState,
@@ -57,6 +58,12 @@ function hasStoredSignflowTemplateFields(file: EsignTemplateFileRecord): boolean
 }
 
 /** Skip auto-placement / preset seeding once the draft was seeded or saved. */
+function isMissingTemplatePdfError(err: unknown): boolean {
+  return (
+    err instanceof Error && err.message === ESIGN_TEMPLATE_PDF_MISSING_MESSAGE
+  );
+}
+
 function shouldSkipTemplateFieldSeeding(file: EsignTemplateFileRecord): boolean {
   return (
     file.signflowStatus === "ready" ||
@@ -364,9 +371,13 @@ export async function startDealEsignSignflowTemplateDraft(params: {
     existingDocId &&
     (file.signflowStatus === "draft" || file.signflowStatus === "ready");
 
-  await ensureEsignTemplatePdfPrepared(params.dealId, file, state);
-  const fileBuffer = await readEsignTemplatePdfBuffer(file.relativePath);
-  const pdfPageCount = await countSignFlowPdfPages(fileBuffer);
+  let localPdfMissing = false;
+  try {
+    await ensureEsignTemplatePdfPrepared(params.dealId, file, state);
+  } catch (err) {
+    if (!canResumeExisting || !isMissingTemplatePdfError(err)) throw err;
+    localPdfMissing = true;
+  }
 
   if (canResumeExisting) {
     await ensureSignFlowEmbedRecipients(existingDocId);
@@ -383,7 +394,9 @@ export async function startDealEsignSignflowTemplateDraft(params: {
       if ((resumeDoc.fields?.length ?? 0) > 0) {
         // Already placed (including legacy drafts before signflowFieldsSeededAt).
         await markSignFlowFieldsSeeded(params.dealId, state, file);
-      } else {
+      } else if (!localPdfMissing) {
+        const fileBuffer = await readEsignTemplatePdfBuffer(file.relativePath);
+        const pdfPageCount = await countSignFlowPdfPages(fileBuffer);
         await ensureSignFlowQuestionnaireSignatureFields(
           existingDocId,
           Boolean(file.includeQuestionnaire),
@@ -415,6 +428,9 @@ export async function startDealEsignSignflowTemplateDraft(params: {
       testMode: publicCfg.testMode,
     };
   }
+
+  const fileBuffer = await readEsignTemplatePdfBuffer(file.relativePath);
+  const pdfPageCount = await countSignFlowPdfPages(fileBuffer);
 
   let documentId = existingDocId;
   if (documentId) {

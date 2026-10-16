@@ -14,7 +14,6 @@ import { getActiveEsignProvider } from "../../config/esignProvider.config.js";
 import {
   getSignFlowDocument,
   findSignFlowTemplateRecipient,
-  signFlowAnyInvestorHasSigned,
   signFlowSponsorSignsBeforeInvestor,
   signFlowInvestorPhaseComplete,
   signFlowTemplateHasSponsorFields,
@@ -28,23 +27,12 @@ import {
   getAddDealFormById,
   updateDealOfferingInvestorPreviewById,
 } from "./dealForm.service.js";
-import {
-  resolveInvestorDocumentAudienceIds,
-  sequentialWorkflowInvestorPortalDocsGateOpen,
-  sequentialWorkflowSponsorDocsGateOpen,
-} from "./dealSequentialEsignWorkflow.service.js";
-import {
-  updateDealInvestorEsignSend,
-  type InvestorEsignRowTarget,
-} from "./dealMemberEsignStatus.service.js";
+import { sequentialWorkflowSponsorDocsGateOpen } from "./dealSequentialEsignWorkflow.service.js";
 
 export const ESIGN_TEMPLATE_DOCUMENTS_SECTION_ID =
   "esign-template-documents-section";
 
 export const ESIGN_TEMPLATE_DOCUMENTS_SECTION_LABEL = "Investor e signatures";
-
-/** Offering Documents section — fully executed eSign PDFs promoted here (LP scoped). */
-export const DEFAULT_OFFERING_DOCUMENTS_SECTION_ID = "default-documents-section";
 
 const LEGACY_ESIGN_TEMPLATE_DOCUMENTS_SECTION_LABEL = "Esign template";
 
@@ -139,7 +127,11 @@ export function stripInvestorEsignDocumentsFromOtherSections(
         ...s,
         nestedDocuments: nested.filter((raw) => {
           if (raw == null || typeof raw !== "object") return true;
-          return !isInvestorEsignNestedDocument(raw as Record<string, unknown>);
+          const doc = raw as Record<string, unknown>;
+          if (String(doc.id ?? "").trim().startsWith("esign-promoted-")) {
+            return false;
+          }
+          return !isInvestorEsignNestedDocument(doc);
         }),
       };
     });
@@ -179,13 +171,61 @@ export function consolidateInvestorEsignDocumentSections(
       sectionLabel: ESIGN_TEMPLATE_DOCUMENTS_SECTION_LABEL,
       documentLabel: ESIGN_TEMPLATE_DOCUMENTS_SECTION_LABEL,
       visibility: "Sponsor workspace only",
-      sharedWithScope: "offering_page",
+      sharedWithScope: "not_visible",
       requireLpReview: false,
       dateAdded: formatDdMmmYyyy(new Date()),
     }),
     nestedDocuments: [...esignDocsById.values()],
   });
   return stripped;
+}
+
+const ESIGN_STORAGE_URL = /\/e-signed(?:-completed|-preview)?\//i;
+
+function nestedDocHiddenFromPublicOffering(
+  doc: Record<string, unknown>,
+): boolean {
+  if (isInvestorEsignNestedDocument(doc)) return true;
+  const id = String(doc.id ?? "").trim();
+  if (id.startsWith("esign-promoted-")) return true;
+  const url = String(doc.url ?? "").trim();
+  return Boolean(url) && ESIGN_STORAGE_URL.test(url);
+}
+
+/**
+ * Shared offering preview must not include eSign templates or signed packets.
+ * Signed copies stay on the investor's own documents when Shared With that investor.
+ */
+export function stripEsignDocumentsFromPublicOfferingPreview(
+  json: string | null | undefined,
+): string | null {
+  if (!json?.trim()) return json ?? null;
+  try {
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    const { visibility, sections } = readPreviewParts(json);
+    const nextSections = sections
+      .filter((section) => !isEsignTemplateSection(section))
+      .map((section) => {
+        const nested = Array.isArray(section.nestedDocuments)
+          ? section.nestedDocuments
+          : [];
+        return {
+          ...section,
+          nestedDocuments: nested.filter((raw) => {
+            if (raw == null || typeof raw !== "object") return true;
+            return !nestedDocHiddenFromPublicOffering(
+              raw as Record<string, unknown>,
+            );
+          }),
+        };
+      });
+    return sanitizeOfferingInvestorPreviewBody({
+      visibility: parsed.visibility ?? visibility,
+      sections: nextSections,
+    });
+  } catch {
+    return json;
+  }
 }
 
 function isEsignTemplateSection(section: Record<string, unknown>): boolean {
@@ -313,7 +353,7 @@ function buildEsignNestedDocument(params: {
     sharedInvestorIds: [],
     sharedWithAllInvestors: false,
     sharedSponsorUserIds: [],
-    sharedWithScope: "offering_page",
+    sharedWithScope: "not_visible",
     requiresProfileInvestment: false,
     esignSignatureRequestId: params.signatureRequestId || undefined,
     esignInvestorRowId: params.investorRowId,
@@ -385,189 +425,9 @@ async function collectCompletedEsignNestedDocuments(
   return out;
 }
 
-function findOrCreateDefaultOfferingSection(
-  sections: Record<string, unknown>[],
-): Record<string, unknown> {
-  const existing = sections.find(
-    (s) =>
-      String(s.id ?? "").trim() === DEFAULT_OFFERING_DOCUMENTS_SECTION_ID,
-  );
-  if (existing) return existing;
-  const created: Record<string, unknown> = {
-    id: DEFAULT_OFFERING_DOCUMENTS_SECTION_ID,
-    sectionLabel: "Offering Documents",
-    documentLabel: "Offering Documents",
-    visibility: "LP portal only",
-    sharedWithScope: "lp_investor",
-    requireLpReview: false,
-    dateAdded: formatDdMmmYyyy(new Date()),
-    nestedDocuments: [],
-  };
-  sections.push(created);
-  return created;
-}
-
-function buildPromotedInvestorOfferingDocument(params: {
-  docId: string;
-  displayName: string;
-  url: string;
-  dateAdded: string;
-  sharedInvestorIds: string[];
-}): Record<string, unknown> {
-  return {
-    id: params.docId,
-    name: params.displayName,
-    url: params.url,
-    dateAdded: params.dateAdded,
-    lpDisplaySectionId: DEFAULT_OFFERING_DOCUMENTS_SECTION_ID,
-    sharedDealClassIds: [],
-    sharedInvestorIds: params.sharedInvestorIds,
-    sharedWithAllInvestors: false,
-    sharedSponsorUserIds: [],
-    sharedWithScope: "lp_investor",
-    requiresProfileInvestment: false,
-  };
-}
-
-function stripEsignPromotedDocumentsFromOfferingSection(
-  sections: Record<string, unknown>[],
-): boolean {
-  const defaultSection = sections.find(
-    (s) =>
-      String(s.id ?? "").trim() === DEFAULT_OFFERING_DOCUMENTS_SECTION_ID,
-  );
-  if (!defaultSection) return false;
-  const nested = Array.isArray(defaultSection.nestedDocuments)
-    ? (defaultSection.nestedDocuments as Record<string, unknown>[])
-    : [];
-  const filtered = nested.filter((doc) => {
-    const docId = String(doc.id ?? "").trim();
-    return !docId.startsWith("esign-promoted-");
-  });
-  if (filtered.length === nested.length) return false;
-  defaultSection.nestedDocuments = filtered;
-  return true;
-}
-
-/** After all investors sign (and sponsor counter-sign), mirror PDFs into LP Offering Documents. */
-async function promoteSponsorSignedDocsToInvestorOfferingSection(
-  dealId: string,
-  sections: Record<string, unknown>[],
-  investments: Array<{
-    id: string;
-    contactDisplayName: string | null;
-    profileId: string | null;
-    esignStatusJson: string | null;
-  }>,
-  roster: Array<{
-    id: string;
-    email: string | null;
-    profileId: string | null;
-    esignStatusJson: string | null;
-  }>,
-  investorPortalGateOpen: boolean,
-): Promise<boolean> {
-  let changed = stripEsignPromotedDocumentsFromOfferingSection(sections);
-
-  if (!investorPortalGateOpen) {
-    return changed;
-  }
-
-  const defaultSection = findOrCreateDefaultOfferingSection(sections);
-  const nested = Array.isArray(defaultSection.nestedDocuments)
-    ? [...(defaultSection.nestedDocuments as Record<string, unknown>[])]
-    : [];
-  const nestedById = new Map(
-    nested.map((d) => [String(d.id ?? "").trim(), d]),
-  );
-
-  const processRow = async (
-    target: InvestorEsignRowTarget,
-    displayName: string,
-    profileId: string | null | undefined,
-    esignStatusJson: string | null | undefined,
-  ) => {
-    const bundle = parseEsignStatusBundle(esignStatusJson);
-    if (!bundle?.sends.length) return;
-
-    for (const send of bundle.sends) {
-      const sig = send.signatureRequestId?.trim() ?? "";
-      if (!sig || !send.signedAt?.trim()) continue;
-
-      const sponsorState = await resolveEsignSponsorSignState(send);
-      if (!sponsorState.sponsorSigned) continue;
-
-      const signedDocs = listSignedEsignDocumentsForSend(send, sig, {
-        preferFullSignedCopy: true,
-      });
-      if (!signedDocs.length) continue;
-
-      const sharedInvestorIds = await resolveInvestorDocumentAudienceIds(
-        dealId,
-        target,
-      );
-      const profileLabel = commitmentProfileDisplayLabel(profileId);
-      const investorLabel = displayName.trim() || "Investor";
-      const completedAt =
-        send.completedAt?.trim() ||
-        send.signedAt?.trim() ||
-        send.sentAt?.trim() ||
-        "";
-      const dateAdded = formatDdMmmYyyy(completedAt);
-
-      for (const doc of signedDocs) {
-        const url = doc.url?.trim();
-        if (!url) continue;
-        const templateName = doc.name.trim() || "Signed document";
-        const displayName = `${templateName} - ${investorLabel} - ${profileLabel}`;
-        const promotedId = `esign-promoted-${sig}::${doc.fileId.includes("::") ? doc.fileId.split("::").pop() : doc.fileId}`;
-        nestedById.set(
-          promotedId,
-          buildPromotedInvestorOfferingDocument({
-            docId: promotedId,
-            displayName,
-            url,
-            dateAdded,
-            sharedInvestorIds,
-          }),
-        );
-        changed = true;
-      }
-
-      if (sponsorState.sponsorSigned && !send.promotedToInvestorDocumentsAt?.trim()) {
-        await updateDealInvestorEsignSend(dealId, target, sig, (current) => ({
-          ...current,
-          promotedToInvestorDocumentsAt: new Date().toISOString(),
-        }));
-      }
-    }
-  };
-
-  for (const row of investments) {
-    await processRow(
-      { table: "investment", id: row.id },
-      row.contactDisplayName ?? "",
-      row.profileId,
-      row.esignStatusJson,
-    );
-  }
-  for (const row of roster) {
-    await processRow(
-      { table: "lp", id: row.id },
-      row.email?.trim() ?? "",
-      row.profileId,
-      row.esignStatusJson,
-    );
-  }
-
-  if (changed) {
-    defaultSection.nestedDocuments = [...nestedById.values()];
-  }
-  return changed;
-}
-
 /**
- * Rebuild the Esign template section from all completed investor eSign rows on the deal.
+ * Rebuild the Investor e signatures section from completed investor eSign rows.
+ * Signed PDFs stay in that section and are not copied into General.
  * Returns true when `offering_investor_preview_json` was updated.
  */
 export async function syncCompletedEsignDocumentsToDocumentsTab(
@@ -601,8 +461,6 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
   ]);
 
   const sponsorDocsGateOpen = await sequentialWorkflowSponsorDocsGateOpen(id);
-  const investorPortalGateOpen =
-    await sequentialWorkflowInvestorPortalDocsGateOpen(id);
 
   const nestedById = new Map<string, Record<string, unknown>>();
   for (const row of investments) {
@@ -643,14 +501,6 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
     existingSections,
   );
 
-  await promoteSponsorSignedDocsToInvestorOfferingSection(
-    id,
-    otherSections,
-    investments,
-    roster,
-    investorPortalGateOpen,
-  );
-
   const esignNested = [...nestedById.values()];
   const hadEsignSection = existingSections.some(isEsignTemplateSection);
 
@@ -661,7 +511,7 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
       sectionLabel: ESIGN_TEMPLATE_DOCUMENTS_SECTION_LABEL,
       documentLabel: ESIGN_TEMPLATE_DOCUMENTS_SECTION_LABEL,
       visibility: "Sponsor workspace only",
-      sharedWithScope: "offering_page",
+      sharedWithScope: "not_visible",
       requireLpReview: false,
       dateAdded: formatDdMmmYyyy(new Date()),
       nestedDocuments: esignNested,

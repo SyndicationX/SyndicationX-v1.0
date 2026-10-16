@@ -17,7 +17,10 @@ import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema
 import { contact } from "../../schema/schema.js";
 import { userInvestorProfiles } from "../../schema/investing.schema/userProfileBook.schema.js";
 import { listDealIdsAssignedToUser } from "../deal/assigningDealUser.service.js";
-import { listEquivalentPortalUserIdsForUser } from "../deal/dealMemberScope.service.js";
+import {
+  listDealIdsWhereViewerIsLeadSponsor,
+  listEquivalentPortalUserIdsForUser,
+} from "../deal/dealMemberScope.service.js";
 import {
   filterDealIdsVisibleToInvestors,
   isAddDealFormIncomplete,
@@ -721,6 +724,25 @@ export async function resolveLpInvestorSessionFlags(emailNorm: string): Promise<
   };
 }
 
+/** Companies whose deals this user leads. Used so Settings can open Billing. */
+async function leadSponsorCompaniesForUser(userId: string): Promise<string[]> {
+  const uid = String(userId ?? "").trim();
+  if (!uid) return [];
+  const dealIds = await listDealIdsWhereViewerIsLeadSponsor(uid);
+  if (dealIds.length === 0) return [];
+  const rows = await db
+    .select({ organizationId: addDealForm.organizationId })
+    .from(addDealForm)
+    .where(inArray(addDealForm.id, dealIds));
+  return [
+    ...new Set(
+      rows
+        .map((row) => String(row.organizationId ?? "").trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
 /**
  * Single writer for `is_lp_investor`, `lp_investor_nav`, and `lp_investor_deal_ids` on sign-in / account.
  * Platform/company admins and anyone on a deal as Lead / Admin / Co-sponsor keep the
@@ -737,10 +759,16 @@ export async function mergeLpInvestorFlagsIntoUserPayload(
   const emailNorm = String(opts.email ?? "").trim().toLowerCase();
   const portalRole = String(opts.portalRole ?? "").trim();
   const userId = String(opts.userId ?? base.id ?? "").trim();
+  const leadSponsorCompanyIds = await leadSponsorCompaniesForUser(userId);
+  const leadSponsorFlags = {
+    is_lead_sponsor: leadSponsorCompanyIds.length > 0,
+    lead_sponsor_company_ids: leadSponsorCompanyIds,
+  };
 
   if (!emailNorm || !emailNorm.includes("@")) {
     return {
       ...base,
+      ...leadSponsorFlags,
       lp_investor_nav: false,
       lp_investor_deal_ids: [],
       lp_investor_role_display: null,
@@ -764,6 +792,7 @@ export async function mergeLpInvestorFlagsIntoUserPayload(
         : lp.lp_investor_deal_ids;
     return {
       ...base,
+      ...leadSponsorFlags,
       lp_investor_nav: true,
       lp_investor_deal_ids: dealIds,
       lp_investor_role_display: "Investor",
@@ -796,5 +825,6 @@ export async function mergeLpInvestorFlagsIntoUserPayload(
         : null,
     is_lp_investor: lpNav || hasInvestingDeals,
     is_deal_sponsor: sponsorOnRoster,
+    ...leadSponsorFlags,
   };
 }

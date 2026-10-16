@@ -69,6 +69,7 @@ export function listWorkspaceDocumentsForOfferingPreview(
     const docId = doc.id.trim()
     if (!docId || seenIds.has(docId)) return
     if (offeringPreviewDocumentExcludedFromInvestorOffering(doc, sections)) return
+    if (isEsignDocumentHiddenFromOfferingPreview(doc)) return
     seenIds.add(docId)
     out.push({ id: doc.id, name: doc.name, url: doc.url })
   }
@@ -76,7 +77,7 @@ export function listWorkspaceDocumentsForOfferingPreview(
   for (const sec of sections) {
     if (isEsignTemplateDocumentsSection(sec)) continue
     for (const d of sec.nestedDocuments) {
-      if (isInvestorEsignWorkspaceDocument(d)) continue
+      if (isEsignDocumentHiddenFromOfferingPreview(d)) continue
       const scope = effectiveDocumentSharedWithScope(d, sec)
       if (!sectionVisibleOnOfferingPreview(scope, ctx)) continue
       tryAdd(d)
@@ -358,16 +359,31 @@ export function isInvestorOfferingDocumentSectionExcluded(
   return isEsignTemplateSectionLabel(sectionLabel)
 }
 
+/** Template and completed-signature files must not appear on the shared offering preview. */
+const ESIGN_STORAGE_URL = /\/e-signed(?:-completed|-preview)?\//i
+
+export function isEsignDocumentHiddenFromOfferingPreview(doc: {
+  id?: string
+  url?: string | null
+  esignSignatureRequestId?: string
+  esignInvestorRowId?: string
+  esignTemplateFileId?: string
+  lpDisplaySectionId?: string
+}): boolean {
+  if (isInvestorEsignWorkspaceDocument(doc)) return true
+  const id = doc.id?.trim() ?? ""
+  if (id.startsWith("esign-promoted-")) return true
+  const url = doc.url?.trim() ?? ""
+  return Boolean(url) && ESIGN_STORAGE_URL.test(url)
+}
+
 /** Auto-synced signed PDFs in the sponsor Documents tab — not LP-offered. */
-export function isInvestorEsignWorkspaceDocument(
-  doc: Pick<
-    NestedPreviewDocument,
-    | "esignSignatureRequestId"
-    | "lpDisplaySectionId"
-    | "esignInvestorRowId"
-    | "esignTemplateFileId"
-  >,
-): boolean {
+export function isInvestorEsignWorkspaceDocument(doc: {
+  esignSignatureRequestId?: string | null
+  lpDisplaySectionId?: string | null
+  esignInvestorRowId?: string | null
+  esignTemplateFileId?: string | null
+}): boolean {
   if (doc.esignSignatureRequestId?.trim()) return true
   if (doc.esignInvestorRowId?.trim()) return true
   if (doc.esignTemplateFileId?.trim()) return true
@@ -613,7 +629,9 @@ export function consolidateInvestorEsignDocumentsIntoAutoSection(
     .map((s) => ({
       ...s,
       nestedDocuments: s.nestedDocuments.filter(
-        (d) => !isInvestorEsignWorkspaceDocument(d),
+        (d) =>
+          !isInvestorEsignWorkspaceDocument(d) &&
+          !d.id.trim().startsWith("esign-promoted-"),
       ),
     }))
 
@@ -978,7 +996,8 @@ export function offeringPreviewDocumentExcludedFromInvestorOffering(
     }
   }
   const nested = findNestedPreviewDocumentById(sections, doc.id)
-  if (nested && isInvestorEsignWorkspaceDocument(nested)) return true
+  if (nested && isEsignDocumentHiddenFromOfferingPreview(nested)) return true
+  if (isEsignDocumentHiddenFromOfferingPreview(doc)) return true
   const { sectionLabel } = parseFlatDocumentDisplayName(doc.name)
   return isEsignTemplateSectionLabel(sectionLabel)
 }

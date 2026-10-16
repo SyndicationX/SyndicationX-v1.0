@@ -31,6 +31,7 @@ import {
   isPlatformAdmin,
   resolveSyndicationSettingsNavPath,
 } from "../auth/roleUtils"
+import { refreshLeadSponsorSessionIfNeeded } from "../auth/refreshLeadSponsorSession"
 import { canAccessSyndicationSidebarPath } from "../config/sideNavAccess.config"
 import { TopNavBar } from "../components/TopNavBar/TopNavBar"
 import {
@@ -339,10 +340,21 @@ function PageLayoutInner() {
   const { mode, setMode, portalSwitchOverlay } = usePortalMode()
   const platformAdmin = isPlatformAdmin()
   const [pendingFeedbackCount, setPendingFeedbackCount] = useState(0)
+  const [leadSponsorSessionRev, setLeadSponsorSessionRev] = useState(0)
   const lpInvestor = isLpInvestorSessionUser()
   const { sidebarLogoSrc: workspaceSidebarLogoSrc } = useAppShellBranding()
   const hasTenantSidebarLogo = Boolean(workspaceSidebarLogoSrc)
   const sidebarHeaderLogoSrc = workspaceSidebarLogoSrc ?? SX_SIDENAV_LOGO
+
+  useEffect(() => {
+    let cancelled = false
+    void refreshLeadSponsorSessionIfNeeded().then((changed) => {
+      if (!cancelled && changed) setLeadSponsorSessionRev((n) => n + 1)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (!portalSwitchOverlay) return
@@ -558,6 +570,7 @@ function PageLayoutInner() {
                   }
 
                   if (label === "Settings") {
+                    void leadSponsorSessionRev
                     const settingsTo = resolveSyndicationSettingsNavPath()
                     const settingsActive =
                       location.pathname === "/settings" ||

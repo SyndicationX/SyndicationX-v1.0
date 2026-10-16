@@ -131,6 +131,10 @@ function documentVisibleToInvestorOnLpPortal(
   sec: OfferingPreviewSection,
   audience: InvestmentDocumentAudienceContext,
 ): boolean {
+  // Signed packets stay with the investor they were shared with, never the whole offering.
+  if (doc.id.trim().startsWith("esign-promoted-") && doc.sharedInvestorIds.length === 0) {
+    return false
+  }
   const scope = effectiveDocumentSharedWithScope(doc, sec)
   if (!sectionVisibleOnOfferingPreview(scope, LP_PORTAL_DOCUMENT_CTX)) return false
   return nestedDocumentVisibleToInvestor(doc, audience)

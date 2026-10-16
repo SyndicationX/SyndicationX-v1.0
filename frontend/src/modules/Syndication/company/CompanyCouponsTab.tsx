@@ -4,6 +4,7 @@ import {
   BadgePercent,
   Ban,
   Building2,
+  Copy,
   DollarSign,
   Loader2,
   Plus,
@@ -72,6 +73,46 @@ function formatDay(iso: string | null): string {
 function codeLabel(row: PlatformCouponRow): string {
   const codes = row.promotionCodes.map((c) => c.code).filter(Boolean)
   return codes.length ? codes.join(", ") : "—"
+}
+
+function couponCodes(row: PlatformCouponRow): string[] {
+  return row.promotionCodes.map((c) => c.code.trim()).filter(Boolean)
+}
+
+async function copyCouponCode(code: string) {
+  const value = code.trim()
+  if (!value) return
+  try {
+    await navigator.clipboard.writeText(value)
+    toast.success("Code copied")
+  } catch {
+    toast.error("Could not copy the code.")
+  }
+}
+
+function CouponCodeCell({ codes }: { codes: string[] }) {
+  const visible = codes.map((code) => code.trim()).filter(Boolean)
+  if (!visible.length) return <span className="cp_coupon_code">—</span>
+  return (
+    <span className="cp_coupon_codes">
+      {visible.map((code) => (
+        <span key={code} className="cp_coupon_code_row">
+          <span className="cp_coupon_code">{code}</span>
+          <button
+            type="button"
+            className="cp_coupon_copy"
+            aria-label={`Copy coupon code ${code}`}
+            onClick={(event) => {
+              event.stopPropagation()
+              void copyCouponCode(code)
+            }}
+          >
+            <Copy size={14} strokeWidth={2} aria-hidden />
+          </button>
+        </span>
+      ))}
+    </span>
+  )
 }
 
 function usdFromCents(cents: number): string {
@@ -303,7 +344,7 @@ export function CompanyCouponsTab() {
         id: "code",
         header: "Code",
         sortValue: (row) => codeLabel(row),
-        cell: (row) => <span className="cp_coupon_code">{codeLabel(row)}</span>,
+        cell: (row) => <CouponCodeCell codes={couponCodes(row)} />,
       },
       {
         id: "name",
@@ -395,7 +436,7 @@ export function CompanyCouponsTab() {
         id: "code",
         header: "Code",
         sortValue: (row) => row.code,
-        cell: (row) => <span className="cp_coupon_code">{row.code}</span>,
+        cell: (row) => <CouponCodeCell codes={[row.code]} />,
       },
       {
         id: "name",

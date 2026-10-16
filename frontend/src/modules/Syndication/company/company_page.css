@@ -3455,7 +3455,16 @@ select.cp_settings_input_pill.um_field_select {
 }
 
 .cp_billing_deal_mrr_history {
-  padding: 0.35rem 0.15rem 0.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  box-sizing: border-box;
+  padding: 0.85rem 0.75rem 0.95rem;
+  background: color-mix(
+    in srgb,
+    var(--portal-table-row-even, #f8fafc) 72%,
+    var(--portal-surface, #fff)
+  );
 }
 
 .cp_billing_amount_stack {
@@ -3501,54 +3510,102 @@ select.cp_settings_input_pill.um_field_select {
   vertical-align: top;
 }
 
-.cp_billing_deal_mrr_table th:last-child,
+.cp_billing_deal_mrr_section {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--portal-table-border, var(--portal-border, #e2e8f0));
+  border-radius: var(--portal-card-radius, 4px);
+  background: var(--portal-table-row-odd, #fff);
+}
+
+.cp_billing_deal_mrr_table td.cp_billing_mrr_payer {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cp_billing_deal_mrr_table th.cp_billing_mrr_amount,
 .cp_billing_deal_mrr_table td.cp_billing_mrr_amount {
-  width: 42%;
-  min-width: 11rem;
+  width: 18%;
+  min-width: 6.5rem;
   text-align: right;
+  font-variant-numeric: tabular-nums;
   white-space: normal;
   overflow: visible;
-  vertical-align: top;
+  vertical-align: middle;
+}
+
+.cp_billing_deal_mrr_table td.cp_billing_mrr_amount {
+  font-weight: 600;
 }
 
 .cp_billing_deal_mrr_history_title {
-  margin: 0 0 0.55rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+  margin: 0;
+  padding: 0.7rem 0.85rem;
+  border-bottom: 1px solid var(--portal-table-border, var(--portal-border, #e2e8f0));
+  font-size: 0.8125rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--portal-text, #0f172a);
+  background: var(--portal-surface, #fff);
+}
+
+.cp_billing_deal_mrr_history_empty,
+.cp_billing_deal_mrr_note {
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
   color: var(--portal-text-muted, #64748b);
 }
 
-.cp_billing_deal_mrr_history_empty {
-  margin: 0;
-  font-size: 0.875rem;
-  color: var(--portal-text-muted, #64748b);
+.cp_billing_deal_mrr_note {
+  border-top: 1px solid var(--portal-table-border, var(--portal-border, #e2e8f0));
+  background: color-mix(
+    in srgb,
+    var(--portal-table-row-even, #f8fafc) 65%,
+    var(--portal-surface, #fff)
+  );
 }
 
 .cp_billing_deal_mrr_table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.8125rem;
+  table-layout: fixed;
+  font-family: var(--portal-font-sans, "Inter", sans-serif);
+  font-size: 0.875rem;
+  line-height: var(--portal-table-line-height, 1.4);
 }
 
 .cp_billing_deal_mrr_table th,
 .cp_billing_deal_mrr_table td {
-  padding: 0.45rem 0.65rem;
+  padding: 0.65em 0.85em;
   text-align: left;
-  border-bottom: 1px solid var(--portal-border, #e2e8f0);
+  border-bottom: 1px solid var(--portal-table-border, var(--portal-border, #e2e8f0));
+  vertical-align: middle;
+}
+
+.cp_billing_deal_mrr_table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .cp_billing_deal_mrr_table th {
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: var(--portal-text-muted, #64748b);
+  color: var(--portal-table-header-text, #475569);
+  background: var(--portal-table-header-bg, #f8fafc);
+  border-bottom-color: var(
+    --portal-table-header-border,
+    var(--portal-table-border, #e2e8f0)
+  );
 }
 
 .cp_billing_deal_mrr_table td {
-  color: var(--portal-text, #0f172a);
+  color: var(--portal-table-body-text, var(--portal-text, #0f172a));
 }
 
 .cp_billing_invoice_status {
@@ -4423,14 +4480,18 @@ select.cp_settings_input_pill.um_field_select {
   color: #ffffff;
 }
 .cp_billing_deal_payment_actions {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
+  width: 100%;
   white-space: nowrap;
 }
 .cp_billing_actions_col {
-  min-width: 13.5rem;
+  width: 17rem;
+  min-width: 17rem;
+  max-width: 17rem;
+  box-sizing: border-box;
 }
 .cp_billing_deal_payment_actions .cp_billing_pay_btn,
 .cp_billing_upgrade_btn {
@@ -4475,7 +4536,7 @@ select.cp_settings_input_pill.um_field_select {
   .data_table_scroll_region
   .um_table.deal_inv_table.cp_billing_detail_table {
   width: 100% !important;
-  min-width: 74rem !important;
+  min-width: 77.5rem !important;
   max-width: none !important;
   table-layout: fixed !important;
 }
@@ -4516,13 +4577,24 @@ select.cp_settings_input_pill.um_field_select {
   :is(th, td):nth-child(7) {
   width: 8rem !important;
 }
+.cp_billing_invoices_table_wrap col.cp_billing_actions_col,
 .cp_billing_detail_table_wrap
   .um_table.cp_billing_detail_table
+  :is(th, td).cp_billing_actions_col,
+.deal_inv_table_panel
+  .cp_billing_org_deals
+  .um_table.cp_billing_org_deals_table
   :is(th, td).cp_billing_actions_col {
-  width: 13.5rem !important;
-  min-width: 13.5rem !important;
-  max-width: 13.5rem !important;
+  width: 17rem !important;
+  min-width: 17rem !important;
+  max-width: 17rem !important;
   overflow: visible;
+  box-sizing: border-box;
+  text-align: center;
+  background-clip: padding-box;
+}
+.cp_billing_invoices_table_wrap thead th.cp_billing_actions_col {
+  background: var(--portal-table-header-bg, #f8fafc);
 }
 .cp_billing_detail_table_wrap
   .um_table.cp_billing_detail_table
@@ -4880,6 +4952,53 @@ select.cp_settings_input_pill.um_field_select {
 
 .cp_coupons_note {
   margin: 0 0 0.85rem;
+}
+
+.cp_coupon_codes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+}
+
+.cp_coupon_code_row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+}
+
+.cp_coupon_code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--portal-text, #0f172a);
+}
+
+.cp_coupon_copy {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--portal-text-muted, #64748b);
+  cursor: pointer;
+}
+
+.cp_coupon_copy:hover {
+  background: color-mix(in srgb, var(--portal-primary, #2563eb) 10%, transparent);
+  color: var(--portal-primary, #2563eb);
+}
+
+.cp_coupon_copy:focus-visible {
+  outline: 2px solid var(--portal-primary, #2563eb);
+  outline-offset: 2px;
 }
 
 .cp_coupons_create {

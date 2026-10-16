@@ -48,6 +48,8 @@ import { getSessionOrganizationCompanyId, getActiveWorkspaceCompanyName } from "
 import {
   canAccessCompanyPage,
   canAccessMembersPage,
+  getLeadSponsorCompanyIdsFromSession,
+  isLeadSponsorSessionUser,
   isPlatformAdmin,
 } from "../../../common/auth/roleUtils";
 // import { CompanyContactAttributesTab } from "./CompanyContactAttributesTab";
@@ -427,7 +429,20 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
       return "";
     }
     const g = getSessionOrganizationCompanyId();
-    return g && COMPANY_ID_UUID_RE.test(g) ? g : "";
+    const sessionId = g && COMPANY_ID_UUID_RE.test(g) ? g : "";
+    if (!canAccessCompanyPage() && isLeadSponsorSessionUser()) {
+      const leadCompanyIds = getLeadSponsorCompanyIdsFromSession().filter((id) =>
+        COMPANY_ID_UUID_RE.test(id),
+      );
+      if (
+        sessionId &&
+        leadCompanyIds.some((id) => id === sessionId.trim().toLowerCase())
+      ) {
+        return sessionId;
+      }
+      if (leadCompanyIds[0]) return leadCompanyIds[0];
+    }
+    return sessionId;
   }, [platformAdmin, platformAdminWorkspaceCompanyId, userDetailsRev]);
 
   /**
@@ -1236,6 +1251,11 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
             >
               <CompanyBillingTab
                 workspaceCompanyId={workspaceCompanyId || undefined}
+                leadSponsorCompanyIds={
+                  !canAccessCompanyPage() && isLeadSponsorSessionUser()
+                    ? getLeadSponsorCompanyIdsFromSession()
+                    : undefined
+                }
                 focusDealId={
                   new URLSearchParams(location.search).get("dealId")?.trim() ||
                   undefined
