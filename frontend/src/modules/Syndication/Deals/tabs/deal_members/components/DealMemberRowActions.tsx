@@ -304,16 +304,13 @@ export function DealMemberRowActions({
             role="presentation"
           >
             <div
-              className="um_modal um_modal_view deals_add_inv_modal_panel add_contact_panel deal_member_delete_modal"
+              className="um_modal um_modal_view deals_add_inv_modal_panel deals_suspend_all_modal_panel deal_member_delete_modal"
               role="alertdialog"
               aria-modal="true"
               aria-labelledby={deleteTitleId}
             >
-              <div className="um_modal_head add_contact_modal_head">
-                <h3
-                  id={deleteTitleId}
-                  className="um_modal_title add_contact_modal_title"
-                >
+              <div className="um_modal_head">
+                <h3 id={deleteTitleId} className="um_modal_title">
                   Remove member from deal?
                 </h3>
                 <button
@@ -326,7 +323,7 @@ export function DealMemberRowActions({
                   <X size={20} strokeWidth={2} aria-hidden />
                 </button>
               </div>
-              <div className="deals_add_inv_modal_scroll">
+              <div className="deals_suspend_all_modal_body">
                 <p className="deals_suspend_all_modal_message">
                   Remove &quot;{memberLabel}&quot; from this deal? This cannot be
                   undone.

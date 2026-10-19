@@ -21,7 +21,6 @@ import {
   findInvestorRowForInvestNowScope,
   isInvestNowDraftInvestorRow,
 } from "@/modules/Investing/pages/invest/investNowDraftUtils"
-import { investNowDraftProgressFromInvestorRow } from "@/modules/Investing/pages/invest/investNowDraftProgress"
 import { fetchDealInvestors } from "@/modules/Syndication/Deals/api/dealsApi"
 import { getSessionUserEmail } from "@/common/auth/sessionUserEmail"
 import { EntityAvatarNameCell } from "@/common/components/entity-avatar/EntityAvatarNameCell"
@@ -686,12 +685,6 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
     (line: InvestmentBreakdownLine) => {
       const id = dealId?.trim()
       if (!id) return
-      const draftRow = dealInvestorRows.find(
-        (row) => row.id === line.investmentRowId,
-      )
-      const phaseId = draftRow
-        ? investNowDraftProgressFromInvestorRow(draftRow).phaseId
-        : undefined
       switchToInvesting()
       navigate(dealInvestNowPath(id), {
         state: {
@@ -700,11 +693,10 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
           investmentId: line.investmentRowId,
           userInvestorProfileId: line.userInvestorProfileId,
           profileId: line.commitmentProfileId,
-          phaseId,
         } satisfies InvestNowLocationState,
       })
     },
-    [dealId, d.id, dealInvestorRows, navigate, switchToInvesting],
+    [dealId, d.id, navigate, switchToInvesting],
   )
 
   const profileBreakdownColumnsWithActions: DataTableColumn<InvestmentBreakdownLine>[] =

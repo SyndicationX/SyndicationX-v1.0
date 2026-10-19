@@ -16,8 +16,15 @@ import {
   evaluateSignFlowRecipientSignAccess,
   getSignFlowDocument,
   mapSignFlowEmbedSessionError,
+  normalizeSignFlowFieldsForApi,
+  patchSignFlowDocument,
   resolveSignFlowInvestorRecipientId,
 } from "../esign/signflow.service.js";
+import { applyEditableSigningDatePrefill } from "./investorQuestionnaireEsignPrefill.service.js";
+import { choiceFieldSourcesForDealFiles } from "./dealEsignSignflow.service.js";
+import { restoreFlattenedChoiceFields } from "./esignPdfMerge.service.js";
+import { limitAlternateSignatureFieldsForSigner } from "./esignAlternateSignature.service.js";
+import type { SignFlowField } from "../esign/signflow.service.js";
 import {
   findInvestorEsignTargetForInvestNowCommitment,
   investorEsignTargetHasPositiveCommitment,
@@ -256,6 +263,39 @@ export async function getDealMyEsignSignSession(params: {
       liveDoc = await ensureParallelPartiesMaySign(sigId, liveDoc);
     } catch (err) {
       console.warn("ensureParallelPartiesMaySign (investor):", err);
+    }
+
+    try {
+      const investorRecipientId = resolveSignFlowInvestorRecipientId(liveDoc);
+      const investorName =
+        (liveDoc.recipients ?? []).find(
+          (recipient) => recipient.id?.trim() === investorRecipientId,
+        )?.name ?? "";
+      const sources = await choiceFieldSourcesForDealFiles(
+        dealId,
+        (send.documents ?? []).map((doc) => doc.fileId),
+      );
+      const restored = restoreFlattenedChoiceFields(
+        (liveDoc.fields ?? []) as SignFlowField[],
+        sources,
+      );
+      const limited = await limitAlternateSignatureFieldsForSigner({
+        doc: liveDoc,
+        fields: restored.fields,
+        recipientId: investorRecipientId,
+        signerName: investorName,
+      });
+      const refreshed = applyEditableSigningDatePrefill(
+        limited.fields,
+        investorRecipientId,
+      );
+      if (restored.changed || limited.changed || refreshed.changed) {
+        liveDoc = await patchSignFlowDocument(sigId, {
+          fields: normalizeSignFlowFieldsForApi(refreshed.fields),
+        });
+      }
+    } catch (err) {
+      console.warn("refresh investor signing fields:", err);
     }
 
     const access = evaluateSignFlowRecipientSignAccess(liveDoc, email);

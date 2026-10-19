@@ -217,8 +217,9 @@ export async function startCompanyBillingCheckout(
   dealId?: string,
   extraCompanyUsers?: number,
   promotionCode?: string,
+  upgradeMode?: "difference" | "plan",
 ): Promise<
-  | { ok: true; url: string }
+  | { ok: true; url: string; upgraded?: boolean }
   | { ok: false; message: string; statusCode: number }
 > {
   const base = getApiV1Base()
@@ -248,6 +249,7 @@ export async function startCompanyBillingCheckout(
             ? { extraCompanyUsers }
             : {}),
           ...(promotionCode?.trim() ? { promotionCode: promotionCode.trim() } : {}),
+          ...(upgradeMode ? { upgradeMode } : {}),
         }),
       },
     )
@@ -263,14 +265,18 @@ export async function startCompanyBillingCheckout(
       data && typeof data === "object"
         ? String((data as { url?: unknown }).url ?? "").trim()
         : ""
-    if (!url) {
+    const upgraded =
+      data &&
+      typeof data === "object" &&
+      (data as { upgraded?: unknown }).upgraded === true
+    if (!url && !upgraded) {
       return {
         ok: false,
         message: "Checkout did not return a Stripe URL.",
         statusCode: res.status,
       }
     }
-    return { ok: true, url }
+    return { ok: true, url, upgraded }
   } catch {
     return {
       ok: false,
@@ -486,6 +492,9 @@ export type CompanyDealBillingRow = {
   id: string
   companyId?: string | null
   companyName?: string | null
+  /** Platform admin grouping when the deal has no company. */
+  displayGroupId?: string | null
+  displayGroupName?: string | null
   dealName: string
   dealStage: string
   archived: boolean

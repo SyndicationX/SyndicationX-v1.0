@@ -28,6 +28,8 @@ import {
   type EsignTemplateFileRecord,
 } from "./dealEsignTemplates.service.js";
 import { resolveDealLeadSponsorSigner } from "./dealEsignSigningWorkflow.service.js";
+import { notifySponsorDocumentsReadyToSign } from "./dealEsignStageNotificationEmail.service.js";
+import { esignTemplateDisplayNameForFile } from "./dealMemberSendEsignDropbox.service.js";
 import { isEsignProviderUnreachableError } from "../esign/esignProviderErrors.js";
 
 import type { InvestorEsignRowTarget } from "./dealMemberEsignStatus.service.js";
@@ -35,6 +37,7 @@ import type { InvestorEsignRowTarget } from "./dealMemberEsignStatus.service.js"
 import type { InvestorQuestionnaireAnswersMap } from "./investorQuestionnaireAnswers.service.js";
 import { getDealInvestorQuestionnaireState } from "./dealInvestorQuestionnaire.service.js";
 import {
+  applyEditableSigningDatePrefill,
   applyQuestionnairePrefillToSignFlowFields,
   maskSsnInQuestionnaireAnswers,
   maskSsnValuesOnSignFlowFields,
@@ -48,6 +51,7 @@ import {
   alignSignFlowTextFieldHeightsToDocument,
   getInvestorQuestionnaireSignatureSignFlowFields,
   isQuestionnaireSignatureFieldLabel,
+  keepChoiceFieldsThroughPrefill,
   normalizeSignFlowChoiceFieldOptionNumbers,
 } from "./esignPdfMerge.service.js";
 
@@ -376,6 +380,7 @@ export async function createInvestorSignatureRequestSignflow(params: {
   }
 
   let investorFields = [...questionnaireFields, ...templateFields];
+  const investorFieldsBeforePrefill = investorFields;
 
   const questionnaireAnswers = await resolveQuestionnaireAnswersForEsign({
     dealId: params.dealId,
@@ -416,6 +421,9 @@ export async function createInvestorSignatureRequestSignflow(params: {
         member_display_name: prefillContext.memberDisplayName,
         member_email: prefillContext.memberEmail,
         investment_amount: prefillContext.investmentAmount,
+        subscription_amount: prefillContext.subscriptionAmount,
+        unit_amount: prefillContext.unitAmount,
+        unit_count: prefillContext.unitCount,
         address_line: prefillContext.addressLine,
         mailing_address_line: prefillContext.mailingAddressLine,
         street_line: prefillContext.streetLine,
@@ -429,6 +437,11 @@ export async function createInvestorSignatureRequestSignflow(params: {
 
   // Always remask after any prefill path (Python may overwrite with raw answers).
   investorFields = maskSsnValuesOnSignFlowFields(investorFields);
+  investorFields = keepChoiceFieldsThroughPrefill(
+    investorFields,
+    investorFieldsBeforePrefill,
+  );
+  investorFields = applyEditableSigningDatePrefill(investorFields).fields;
   investorFields = alignSignFlowTextFieldHeightsToDocument(investorFields);
   investorFields = alignSignFlowRadioFieldSizeToChoiceBox(investorFields);
   investorFields = normalizeSignFlowChoiceFieldOptionNumbers(investorFields);
@@ -449,6 +462,7 @@ export async function createInvestorSignatureRequestSignflow(params: {
     );
     // Sponsors must never see full SSN on their signing fields.
     sponsorFields = maskSsnValuesOnSignFlowFields(sponsorFields);
+    sponsorFields = applyEditableSigningDatePrefill(sponsorFields).fields;
     sponsorFields = alignSignFlowRadioFieldSizeToChoiceBox(sponsorFields);
     sponsorFields = normalizeSignFlowChoiceFieldOptionNumbers(sponsorFields);
   }
@@ -485,8 +499,9 @@ export async function createInvestorSignatureRequestSignflow(params: {
 
 
 
+  let sponsorSigner: { email: string; name: string } | null = null;
   if (includeSponsorOnSend) {
-    const sponsorSigner = await resolveDealLeadSponsorSigner(params.dealId);
+    sponsorSigner = await resolveDealLeadSponsorSigner(params.dealId);
     if (!sponsorSigner) {
       console.warn(
         "SignFlow send: sponsor signature fields exist but no lead sponsor email; sending investor-only.",
@@ -528,15 +543,31 @@ export async function createInvestorSignatureRequestSignflow(params: {
 
     fields,
 
-    emailSubject: `Please sign — ${dealLabel}`,
-
-    emailMessage: `<p>Please review and sign the documents for ${dealLabel}.</p>`,
+    // Tells SignFlow not to email its own signing link. SyndicationX sends the portal email.
+    emailSubject: "__sx_portal_signing__",
 
     workflowType,
 
   });
 
-
+  const sponsorCanSignNow =
+    includeSponsorOnSend &&
+    sponsorSigner != null &&
+    (workflowType === "parallel" || signingOrder === "sponsor_first");
+  if (sponsorCanSignNow && sponsorSigner) {
+    try {
+      const docName = esignTemplateDisplayNameForFile(file);
+      await notifySponsorDocumentsReadyToSign({
+        dealId: params.dealId,
+        sponsorEmail: sponsorSigner.email,
+        sponsorName: sponsorSigner.name,
+        dealName: dealLabel,
+        documentNames: docName ? [docName] : [],
+      });
+    } catch (err) {
+      console.warn("notifySponsorDocumentsReadyToSign:", err);
+    }
+  }
 
   return {
 

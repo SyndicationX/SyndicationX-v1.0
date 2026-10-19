@@ -87,6 +87,82 @@ export function priceGapCents(
   return Math.max(0, Math.round(nextCents) - Math.round(paidCents));
 }
 
+/** Difference after a percent or amount coupon. The coupon applies only to the gap. */
+export function discountedDifferenceCents(
+  differenceCents: number,
+  percentOff: number | null | undefined,
+  amountOffCents: number | null | undefined,
+): number {
+  const amount = Math.max(0, Math.round(differenceCents));
+  if (percentOff != null && Number.isFinite(percentOff)) {
+    const percent = Math.min(100, Math.max(0, percentOff));
+    return Math.max(0, Math.round((amount * (100 - percent)) / 100));
+  }
+  if (
+    amountOffCents != null &&
+    Number.isFinite(amountOffCents) &&
+    amountOffCents > 0
+  ) {
+    return Math.max(0, amount - Math.round(amountOffCents));
+  }
+  return amount;
+}
+
+/**
+ * Coupon on a difference payment.
+ * The discount is taken from the full package price. The amount due now is
+ * that discounted price minus what was already paid.
+ * $49 paid toward a $149 package with 50% off is $25.50 due now, and the
+ * deal bills $74.50 while the coupon repeats.
+ */
+export function differenceRepeatPriceCents(params: {
+  paidCents: number;
+  differenceCents: number;
+  percentOff?: number | null;
+  amountOffCents?: number | null;
+}): { discountedDifferenceCents: number; repeatPriceCents: number } {
+  const paid = Math.max(0, Math.round(params.paidCents));
+  const full = paid + Math.max(0, Math.round(params.differenceCents));
+  const discountedFull = discountedDifferenceCents(
+    full,
+    params.percentOff,
+    params.amountOffCents,
+  );
+  return {
+    discountedDifferenceCents: Math.max(0, discountedFull - paid),
+    repeatPriceCents: discountedFull,
+  };
+}
+
+/**
+ * Checkout line before Stripe applies the same coupon, so the customer pays
+ * the difference due after the coupon on the full package price.
+ */
+export function couponCheckoutLineCents(params: {
+  dueCents: number;
+  percentOff?: number | null;
+  amountOffCents?: number | null;
+}): number {
+  const due = Math.max(0, Math.round(params.dueCents));
+  const percent = params.percentOff;
+  if (percent != null && Number.isFinite(percent) && percent > 0 && percent < 100) {
+    const estimate = Math.round(due / (1 - percent / 100));
+    for (let line = Math.max(due, estimate - 5); line <= estimate + 5; line += 1) {
+      const discount = Math.round((line * percent) / 100);
+      if (line - discount === due) return line;
+    }
+    return estimate;
+  }
+  if (
+    params.amountOffCents != null &&
+    Number.isFinite(params.amountOffCents) &&
+    params.amountOffCents > 0
+  ) {
+    return due + Math.round(params.amountOffCents);
+  }
+  return due;
+}
+
 const platformPriceIds = new Map<string, string>();
 
 /**

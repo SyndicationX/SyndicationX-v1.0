@@ -33,12 +33,16 @@ import { releaseBillingPaymentHold } from "../../middleware/billingPaymentLock.j
 import {
   createDealStripeSubscription,
   periodEndFromSubscription,
+  billingPlanRank,
   suggestedPlanIdForDeal,
   upgradeDealStripeSubscription,
+  restoreSubscriptionToSnapshot,
 } from "./dealBilling.service.js";
 import {
   catalogPackagePriceCents,
   countDealCoGps,
+  couponCheckoutLineCents,
+  differenceRepeatPriceCents,
   priceGapCents,
   stripePriceIdForPlatformAmount,
   suggestedSeatBandForDeal,
@@ -909,7 +913,7 @@ export async function syncDealPayerProfileToCurrentLead(
 }
 
 export type CheckoutResult =
-  | { ok: true; url: string }
+  | { ok: true; url: string; upgraded?: boolean }
   | { ok: false; status: number; message: string };
 
 /** Show the customer's saved card and bank account on the Stripe Checkout page. */
@@ -1019,24 +1023,22 @@ async function customerIdShowingSavedCards(
 
 async function promotionCodeIdFromInput(
   raw: string | undefined,
-  dealId?: string,
 ): Promise<
-  | { ok: true; id?: string; code?: string }
+  | {
+      ok: true;
+      id?: string;
+      code?: string;
+      preview?: {
+        percentOff: number | null;
+        amountOffCents: number | null;
+        duration: string;
+        durationInMonths: number | null;
+      };
+    }
   | { ok: false; status: number; message: string }
 > {
   const code = String(raw ?? "").trim();
   if (!code) return { ok: true };
-  const deal = String(dealId ?? "").trim();
-  if (deal) {
-    const { dealHasRedeemedSaasCoupon } = await import("./dealBilling.service.js");
-    if (await dealHasRedeemedSaasCoupon(deal)) {
-      return {
-        ok: false,
-        status: 400,
-        message: "This deal has already used a coupon.",
-      };
-    }
-  }
   const { lookupActivePromotionCode } = await import("./platformCoupon.service.js");
   const looked = await lookupActivePromotionCode(code);
   if (!looked.ok) return { ok: false, status: 400, message: looked.message };
@@ -1044,7 +1046,111 @@ async function promotionCodeIdFromInput(
     ok: true,
     id: looked.preview.promotionCodeId,
     code: looked.preview.code,
+    preview: {
+      percentOff: looked.preview.percentOff,
+      amountOffCents: looked.preview.amountOffCents,
+      duration: looked.preview.duration,
+      durationInMonths: looked.preview.durationInMonths,
+    },
   };
+}
+
+async function redeemCoveredDifferenceCoupon(params: {
+  stripe: Stripe;
+  customerId: string;
+  amountCents: number;
+  promotionCodeId: string;
+  description: string;
+  metadata: Record<string, string>;
+  /** Subtracted after the coupon, so a covered package invoices at $0. */
+  creditCents?: number;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  const item = await params.stripe.invoiceItems.create({
+    customer: params.customerId,
+    amount: params.amountCents,
+    currency: "usd",
+    description: params.description,
+    metadata: params.metadata,
+    discounts: [{ promotion_code: params.promotionCodeId }],
+  });
+  let creditId = "";
+  if (params.creditCents != null && params.creditCents > 0) {
+    const credit = await params.stripe.invoiceItems.create({
+      customer: params.customerId,
+      amount: -Math.round(params.creditCents),
+      currency: "usd",
+      description: "Amount already covered",
+      metadata: params.metadata,
+    });
+    creditId = credit.id;
+  }
+  try {
+    let invoice = await params.stripe.invoices.create({
+      customer: params.customerId,
+      collection_method: "charge_automatically",
+      auto_advance: false,
+      pending_invoice_items_behavior: "include",
+      metadata: params.metadata,
+    });
+    invoice = await params.stripe.invoices.finalizeInvoice(invoice.id);
+    if ((invoice.amount_due ?? 0) > 0) {
+      if (invoice.status === "open") {
+        await params.stripe.invoices.voidInvoice(invoice.id);
+      }
+      return { ok: false, message: "Coupon did not cover the difference." };
+    }
+    return { ok: true };
+  } catch (err) {
+    try {
+      await params.stripe.invoiceItems.del(item.id);
+      if (creditId) await params.stripe.invoiceItems.del(creditId);
+    } catch (deleteErr) {
+      console.warn("redeemCoveredDifferenceCoupon cleanup:", deleteErr);
+    }
+    const message =
+      err instanceof Error ? err.message : "Could not apply that coupon.";
+    return { ok: false, message: couponFailureMessage(message) };
+  }
+}
+
+function couponHoldFromMetadata(
+  meta: Stripe.Metadata | null | undefined,
+): {
+  couponCode?: string;
+  couponDuration?: string;
+  couponDurationMonths?: number;
+  repeatPriceCents?: number;
+} {
+  const couponCode = String(meta?.couponCode ?? "").trim();
+  const couponDuration = String(meta?.couponDuration ?? "").trim();
+  const months = Number(meta?.couponDurationMonths ?? "");
+  const repeat = Number(meta?.repeatPriceCents ?? "");
+  return {
+    ...(couponCode ? { couponCode } : {}),
+    ...(couponDuration ? { couponDuration } : {}),
+    ...(Number.isFinite(months) && months > 0
+      ? { couponDurationMonths: months }
+      : {}),
+    ...(meta?.repeatPriceCents != null &&
+    String(meta.repeatPriceCents).trim() !== "" &&
+    Number.isFinite(repeat)
+      ? { repeatPriceCents: repeat }
+      : {}),
+  };
+}
+
+function couponFailureMessage(message: string): string {
+  const text = message.toLowerCase();
+  if (text.includes("already used a coupon")) return "Coupon redeemed";
+  if (text.includes("expired")) return "Expired";
+  if (
+    text.includes("redeemed") ||
+    text.includes("redemption limit") ||
+    text.includes("maximum number of times")
+  ) {
+    return "Coupon redeemed";
+  }
+  return message;
 }
 
 export async function createCompanyCheckoutSession(params: {
@@ -1058,6 +1164,11 @@ export async function createCompanyCheckoutSession(params: {
   dealId?: string;
   extraCompanyUsers?: number;
   promotionCode?: string;
+  /**
+   * `difference` charges only the catalog gap, then the subscription renews at the new package.
+   * `plan` charges that same gap and moves the deal onto the package it needs now.
+   */
+  upgradeMode?: "difference" | "plan";
   /** `null` = org admin (all deals); otherwise only these deal ids. */
   allowedDealIds?: string[] | null;
 }): Promise<CheckoutResult> {
@@ -1121,7 +1232,7 @@ export async function createCompanyCheckoutSession(params: {
     };
   }
 
-  const cid = normalizeCompanyId(params.companyId);
+  let cid = normalizeCompanyId(params.companyId);
   if (!cid) {
     return { ok: false, status: 400, message: "Invalid company id" };
   }
@@ -1162,6 +1273,7 @@ export async function createCompanyCheckoutSession(params: {
       companyId: cid,
       dealId,
       allowedDealIds: params.allowedDealIds ?? null,
+      actorUserId: params.actorUserId,
       requestedSeatBand: resolvedSeat,
     });
     if (!payable.ok) {
@@ -1172,20 +1284,35 @@ export async function createCompanyCheckoutSession(params: {
       };
     }
     const deal = payable.deal;
+    const dealCompanyId = normalizeCompanyId(String(deal.organizationId ?? ""));
+    if (dealCompanyId) cid = dealCompanyId;
     const {
       assertCheckoutPlanMatchesDeal,
       clearDealSaasSubscription,
     } = await import("./dealBilling.service.js");
-    const planMatch = await assertCheckoutPlanMatchesDeal({
-      dealId: String(deal.id),
-      planId: resolvedPlan,
-    });
-    if (!planMatch.ok) {
-      return {
-        ok: false,
-        status: planMatch.status,
-        message: planMatch.message,
-      };
+    if (params.upgradeMode === "plan") {
+      const minimumPlan = await suggestedPlanIdForDeal(String(deal.id));
+      if (billingPlanRank(resolvedPlan) < billingPlanRank(minimumPlan)) {
+        const label =
+          minimumPlan.charAt(0).toUpperCase() + minimumPlan.slice(1);
+        return {
+          ok: false,
+          status: 400,
+          message: `${label} is the plan for this deal.`,
+        };
+      }
+    } else {
+      const planMatch = await assertCheckoutPlanMatchesDeal({
+        dealId: String(deal.id),
+        planId: resolvedPlan,
+      });
+      if (!planMatch.ok) {
+        return {
+          ok: false,
+          status: planMatch.status,
+          message: planMatch.message,
+        };
+      }
     }
     const customerId = await ensureDealPayerStripeCustomer({
       companyId: cid,
@@ -1193,10 +1320,7 @@ export async function createCompanyCheckoutSession(params: {
       actorUserId: params.actorUserId,
     });
     const stripe = getStripeClient();
-    const promotion = await promotionCodeIdFromInput(
-      params.promotionCode,
-      String(deal.id),
-    );
+    const promotion = await promotionCodeIdFromInput(params.promotionCode);
     if (!promotion.ok) return promotion;
     const promotionCodeId = promotion.id;
     const couponCode = promotion.code;
@@ -1230,12 +1354,18 @@ export async function createCompanyCheckoutSession(params: {
         normalizeBillingSeatBand(deal.stripeSeatBand) ??
         paidPackage.seatBand ??
         "5";
-      const upgradePlan = await suggestedPlanIdForDeal(String(deal.id));
-      const upgradeSeat = suggestedSeatBandForDeal(
-        upgradePlan,
+      const suggestedPlan = await suggestedPlanIdForDeal(String(deal.id));
+      const suggestedSeat = suggestedSeatBandForDeal(
+        suggestedPlan,
         await countDealCoGps(String(deal.id)),
       );
-      const upgradeCycle = paidPackage.cycle ?? cycle;
+      const upgradePlan =
+        params.upgradeMode === "plan" ? resolvedPlan : suggestedPlan;
+      const upgradeSeat =
+        params.upgradeMode === "plan" ? resolvedSeat : suggestedSeat;
+      // The cycle chosen for this payment, not the cycle already on Stripe.
+      const upgradeCycle = cycle;
+      const sameCycle = !paidPackage.cycle || paidPackage.cycle === upgradeCycle;
       const paidCatalog = catalogPackagePriceCents(
         paidPackage.planId ?? deal.stripePlanId,
         upgradeCycle,
@@ -1251,10 +1381,38 @@ export async function createCompanyCheckoutSession(params: {
           ? currentPrice.unit_amount
           : null;
       const paidCents =
-        typeof paidOnStripe === "number" && paidOnStripe > 0
+        sameCycle && typeof paidOnStripe === "number" && paidOnStripe > 0
           ? paidOnStripe
           : paidCatalog;
       const differenceCents = priceGapCents(paidCents, nextCatalog);
+      if (params.upgradeMode === "plan" && differenceCents <= 0) {
+        const { upgradeDealStripeSubscription } = await import(
+          "./dealBilling.service.js"
+        );
+        const upgraded = await upgradeDealStripeSubscription({
+          deal,
+          planId: upgradePlan,
+          cycle: upgradeCycle,
+          seatBand: upgradeSeat,
+          collectDifference: false,
+          ...(promotionCodeId ? { promotionCodeId } : {}),
+          ...(couponCode ? { couponCode } : {}),
+        });
+        if (!upgraded.ok) {
+          return {
+            ok: false,
+            status: upgraded.status,
+            message: upgraded.message,
+          };
+        }
+        if (upgraded.hostedInvoiceUrl && !upgraded.paid) {
+          return { ok: true, url: upgraded.hostedInvoiceUrl };
+        }
+        await applySubscriptionToCompany(cid, upgraded.subscription, {
+          dealId: String(deal.id),
+        });
+        return { ok: true, url: "", upgraded: true };
+      }
       if (differenceCents <= 0) {
         return {
           ok: false,
@@ -1262,7 +1420,19 @@ export async function createCompanyCheckoutSession(params: {
           message: "This deal is already on the package selected.",
         };
       }
-      const upgradeMetadata = {
+      const couponDuration = promotion.preview?.duration ?? "";
+      const couponMonths = promotion.preview?.durationInMonths ?? null;
+      const repeats =
+        couponDuration === "repeating" || couponDuration === "forever";
+      const priced = promotion.preview
+        ? differenceRepeatPriceCents({
+            paidCents: paidCents ?? 0,
+            differenceCents,
+            percentOff: promotion.preview.percentOff,
+            amountOffCents: promotion.preview.amountOffCents,
+          })
+        : null;
+      const upgradeMetadata: Record<string, string> = {
         companyId: cid,
         dealId: String(deal.id),
         dealName: deal.dealName ?? "",
@@ -1272,7 +1442,20 @@ export async function createCompanyCheckoutSession(params: {
         billingScope: "deal_upgrade",
         payerUserId: params.actorUserId,
         ...(couponCode ? { couponCode } : {}),
+        ...(couponDuration ? { couponDuration } : {}),
+        ...(repeats && couponMonths
+          ? { couponDurationMonths: String(couponMonths) }
+          : {}),
+        ...(repeats && priced
+          ? { repeatPriceCents: String(priced.repeatPriceCents) }
+          : {}),
       };
+      const holdDescription =
+        repeats && priced
+          ? couponDuration === "forever"
+            ? `Pays the difference from the amount already paid. This deal then bills $${(priced.repeatPriceCents / 100).toFixed(2)}.`
+            : `Pays the difference from the amount already paid. This deal then bills $${(priced.repeatPriceCents / 100).toFixed(2)} for ${couponMonths ?? 0} months, then the new package price.`
+          : "Pays the difference from the amount already paid. The subscription then renews at the new package price.";
       const subCustomerId =
         typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? "";
       const checkoutCustomerId = await customerIdShowingSavedCards(
@@ -1281,6 +1464,68 @@ export async function createCompanyCheckoutSession(params: {
         cid,
         params.actorUserId,
       );
+      if (
+        promotionCodeId &&
+        priced &&
+        priced.discountedDifferenceCents === 0
+      ) {
+        const beforeUpgrade = existingDealSub
+          ? await stripe.subscriptions.retrieve(existingDealSub, {
+              expand: ["items.data.price"],
+            })
+          : null;
+        const upgraded = await upgradeDealStripeSubscription({
+          deal,
+          planId: upgradePlan,
+          cycle: upgradeCycle,
+          seatBand: upgradeSeat,
+          collectDifference: false,
+          ...(couponCode ? { couponCode } : {}),
+          ...(couponDuration ? { couponDuration } : {}),
+          ...(couponMonths ? { couponDurationMonths: couponMonths } : {}),
+          ...(repeats ? { repeatPriceCents: priced.repeatPriceCents } : {}),
+        });
+        if (!upgraded.ok && upgraded.status !== 409) {
+          return {
+            ok: false,
+            status: upgraded.status,
+            message: upgraded.message,
+          };
+        }
+        const redeemed = await redeemCoveredDifferenceCoupon({
+          stripe,
+          customerId: checkoutCustomerId,
+          amountCents: (paidCents ?? 0) + differenceCents,
+          creditCents: priced.repeatPriceCents,
+          promotionCodeId,
+          description: `Upgrade difference for ${deal.dealName?.trim() || "this deal"}`,
+          metadata: upgradeMetadata,
+        });
+        if (!redeemed.ok) {
+          if (beforeUpgrade && upgraded.ok) {
+            try {
+              await restoreSubscriptionToSnapshot(beforeUpgrade);
+            } catch (restoreErr) {
+              console.warn("restore subscription after coupon redeem:", restoreErr);
+            }
+          }
+          return { ok: false, status: 400, message: redeemed.message };
+        }
+        if (upgraded.ok) {
+          await applySubscriptionToCompany(cid, upgraded.subscription, {
+            dealId: String(deal.id),
+          });
+        }
+        return { ok: true, url: "", upgraded: true };
+      }
+      const netDue = priced?.discountedDifferenceCents ?? differenceCents;
+      const lineAmount = promotion.preview
+        ? couponCheckoutLineCents({
+            dueCents: netDue,
+            percentOff: promotion.preview.percentOff,
+            amountOffCents: promotion.preview.amountOffCents,
+          })
+        : differenceCents;
       const session = await stripe.checkout.sessions.create({
         mode: "payment",
         customer: checkoutCustomerId,
@@ -1291,11 +1536,10 @@ export async function createCompanyCheckoutSession(params: {
             quantity: 1,
             price_data: {
               currency: "usd",
-              unit_amount: differenceCents,
+              unit_amount: lineAmount,
               product_data: {
                 name: `Upgrade difference for ${deal.dealName?.trim() || "this deal"}`,
-                description:
-                  "Pays the difference from the amount already paid. The subscription then renews at the new package price.",
+                description: holdDescription,
               },
             },
           },
@@ -1426,7 +1670,7 @@ export async function createCompanyCheckoutSession(params: {
         status: missingPrice ? 400 : 502,
         message: missingPrice
           ? `Stripe does not recognize this Price ID in the account for STRIPE_SECRET_KEY (${err.message}). Create the product/price in that same Stripe account (Dashboard → Products) and update backend/.env.local.`
-          : err.message || "Stripe rejected the checkout request.",
+          : couponFailureMessage(err.message || "Stripe rejected the checkout request."),
       };
     }
     const msg =
@@ -1546,7 +1790,7 @@ export async function payCompanyDealWithSavedMethod(params: {
   const selection = resolveBillingSelection(params);
   if (!selection.ok) return selection;
 
-  const cid = normalizeCompanyId(params.companyId);
+  let cid = normalizeCompanyId(params.companyId);
   if (!cid) {
     return { ok: false, status: 400, message: "Invalid company id" };
   }
@@ -1576,6 +1820,7 @@ export async function payCompanyDealWithSavedMethod(params: {
       companyId: cid,
       dealId,
       allowedDealIds: params.allowedDealIds ?? null,
+      actorUserId: params.actorUserId,
       requestedSeatBand: selection.seatBand,
     });
     if (!payable.ok) {
@@ -1586,6 +1831,8 @@ export async function payCompanyDealWithSavedMethod(params: {
       };
     }
     const deal = payable.deal;
+    const dealCompanyId = normalizeCompanyId(String(deal.organizationId ?? ""));
+    if (dealCompanyId) cid = dealCompanyId;
     const planMatch = await assertCheckoutPlanMatchesDeal({
       dealId: String(deal.id),
       planId: selection.planId,
@@ -1639,10 +1886,7 @@ export async function payCompanyDealWithSavedMethod(params: {
     const customerId = payerPayment.customerId;
     const payerPaymentMethodId = payerPayment.paymentMethodId;
 
-    const promotion = await promotionCodeIdFromInput(
-      params.promotionCode,
-      String(deal.id),
-    );
+    const promotion = await promotionCodeIdFromInput(params.promotionCode);
     if (!promotion.ok) return promotion;
     const promotionCodeId = promotion.id;
     const couponCode = promotion.code;
@@ -1669,6 +1913,16 @@ export async function payCompanyDealWithSavedMethod(params: {
           : {}),
         ...(promotionCodeId ? { promotionCodeId } : {}),
         ...(couponCode ? { couponCode } : {}),
+        ...(promotion.preview
+          ? {
+              couponDuration: promotion.preview.duration,
+              percentOff: promotion.preview.percentOff,
+              amountOffCents: promotion.preview.amountOffCents,
+              ...(promotion.preview.durationInMonths
+                ? { couponDurationMonths: promotion.preview.durationInMonths }
+                : {}),
+            }
+          : {}),
       });
       if (!upgraded.ok) {
         return {
@@ -1769,14 +2023,16 @@ export async function payCompanyDealWithSavedMethod(params: {
       return {
         ok: false,
         status: 402,
-        message: err.message || "The card was declined. Pay in Stripe or try another method.",
+        message: couponFailureMessage(
+          err.message || "The card was declined. Pay in Stripe or try another method.",
+        ),
       };
     }
     if (err instanceof Stripe.errors.StripeInvalidRequestError) {
       return {
         ok: false,
         status: 502,
-        message: err.message || "Stripe rejected the payment.",
+        message: couponFailureMessage(err.message || "Stripe rejected the payment."),
       };
     }
     const msg =
@@ -1917,7 +2173,7 @@ export async function createCompanySubscriptionPaymentElement(params: {
   const selection = resolveBillingSelection(params);
   if (!selection.ok) return selection;
 
-  const cid = normalizeCompanyId(params.companyId);
+  let cid = normalizeCompanyId(params.companyId);
   if (!cid) {
     return { ok: false, status: 400, message: "Invalid company id" };
   }
@@ -1949,6 +2205,7 @@ export async function createCompanySubscriptionPaymentElement(params: {
       companyId: cid,
       dealId,
       allowedDealIds: params.allowedDealIds ?? null,
+      actorUserId: params.actorUserId,
       requestedSeatBand: selection.seatBand,
     });
     if (!payable.ok) {
@@ -1959,6 +2216,8 @@ export async function createCompanySubscriptionPaymentElement(params: {
       };
     }
     const deal = payable.deal;
+    const dealCompanyId = normalizeCompanyId(String(deal.organizationId ?? ""));
+    if (dealCompanyId) cid = dealCompanyId;
     const planMatch = await assertCheckoutPlanMatchesDeal({
       dealId: String(deal.id),
       planId: selection.planId,
@@ -3286,9 +3545,7 @@ async function syncDealUpgradeCheckoutSession(params: {
     cycle,
     seatBand,
     collectDifference: false,
-    ...(session.metadata?.couponCode
-      ? { couponCode: String(session.metadata.couponCode) }
-      : {}),
+    ...couponHoldFromMetadata(session.metadata),
   });
   if (!upgraded.ok && upgraded.status !== 409) {
     return { ok: false, status: upgraded.status, message: upgraded.message };
@@ -4782,6 +5039,7 @@ async function processStripeWebhookEvent(event: Stripe.Event): Promise<void> {
               cycle,
               seatBand,
               collectDifference: false,
+              ...couponHoldFromMetadata(inv.metadata),
             });
             if (upgraded.ok) {
               await applySubscriptionToCompany(companyId, upgraded.subscription, {

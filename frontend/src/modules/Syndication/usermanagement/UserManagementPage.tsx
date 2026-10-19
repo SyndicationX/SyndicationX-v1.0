@@ -37,6 +37,7 @@ import {
   Upload,
   User,
   UserCog,
+  UserMinus,
   UserPlus,
   Users,
   X,
@@ -57,6 +58,8 @@ import { DataTablePagination } from "../../../common/components/DataTablePaginat
 import { TableHScrollShell } from "../../../common/components/data-table/TableHScrollShell";
 import { ViewReadonlyField } from "../../../common/components/ViewReadonlyField";
 import { toast } from "../../../common/components/Toast";
+import { MemberInvitationSection } from "./MemberInvitationSection";
+import { MemberRemoveConfirmModal } from "./MemberRemoveConfirmModal";
 import { MemberRoleBadge } from "./MemberRoleBadge";
 import {
   COMPANY_EDIT_ROLE_OPTIONS,
@@ -629,6 +632,9 @@ export default function UserManagementPage({
     null,
   );
   const [viewRow, setViewRow] = useState<Record<string, unknown> | null>(null);
+  const [removeRow, setRemoveRow] = useState<Record<string, unknown> | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeErr, setRemoveErr] = useState("");
   const [reinviteBusyId, setReinviteBusyId] = useState<string | null>(null);
   const [editRow, setEditRow] = useState<Record<string, unknown> | null>(null);
   const [editOrganizationId, setEditOrganizationId] = useState("");
@@ -1488,6 +1494,58 @@ export default function UserManagementPage({
     };
   }, [inviteOpen, editRow, showCompanyColumn, token, apiV1]);
 
+  function openRemoveMember(row: Record<string, unknown>) {
+    if (memberRowIsCurrentUser(row, currentUserId)) {
+      toast.error("Cannot remove", "You cannot remove your own account.");
+      return;
+    }
+    setRemoveErr("");
+    setRemoveRow(row);
+  }
+
+  async function confirmRemoveMember() {
+    if (!removeRow || !token || !apiV1 || removeBusy) return;
+    const id = String(removeRow.id ?? "").trim();
+    const orgFromScope =
+      typeof membersListScope === "string" && ORG_UUID_RE.test(membersListScope)
+        ? membersListScope
+        : "";
+    const orgId = orgFromScope || (rowOrganizationId(removeRow) ?? "");
+    if (!id || !ORG_UUID_RE.test(orgId)) {
+      setRemoveErr("This member is not tied to an organization.");
+      return;
+    }
+    setRemoveBusy(true);
+    setRemoveErr("");
+    try {
+      const res = await fetch(`${apiV1}/users/${encodeURIComponent(id)}/remove`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ organizationId: orgId }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { message?: string };
+      if (!res.ok) {
+        const msg = data.message || "Could not remove member.";
+        setRemoveErr(msg);
+        toast.error("Could not remove member", msg);
+        return;
+      }
+      setMemberRows((prev) => prev.filter((r) => String(r.id ?? "") !== id));
+      if (viewRow && String(viewRow.id ?? "") === id) setViewRow(null);
+      setRemoveRow(null);
+      toast.success("Member removed", "They are back on All Contacts.");
+    } catch {
+      const msg = "Unable to connect. Try again later.";
+      setRemoveErr(msg);
+      toast.error("Could not remove member", msg);
+    } finally {
+      setRemoveBusy(false);
+    }
+  }
+
   async function submitInvite(e: React.FormEvent) {
     e.preventDefault();
     if (!token || !apiV1) return;
@@ -1847,15 +1905,17 @@ export default function UserManagementPage({
                             </span>
                           </div>
                           <div className="um_user_meta">
-                            <span
-                              className={`um_user_meta_username${
+                            <button
+                              type="button"
+                              className={`um_user_meta_username um_user_meta_name_btn${
                                 displayName === "—"
                                   ? " um_user_meta_username--placeholder"
                                   : ""
                               }`}
+                              onClick={() => setViewRow(row)}
                             >
                               {displayName}
-                            </span>
+                            </button>
                             {isDisplayableEmail(rawEmail) ? (
                               <a
                                 href={`mailto:${encodeURIComponent(rawEmail)}`}
@@ -2074,6 +2134,34 @@ export default function UserManagementPage({
                 <button
                   type="button"
                   role="menuitem"
+                  className="um_kebab_menuitem deals_kebab_menuitem_danger"
+                  disabled={memberRowIsCurrentUser(
+                    openMenuContext.row,
+                    currentUserId,
+                  )}
+                  title={
+                    memberRowIsCurrentUser(openMenuContext.row, currentUserId)
+                      ? "You cannot remove your own account."
+                      : undefined
+                  }
+                  onClick={() => {
+                    closeActionMenu();
+                    openRemoveMember(openMenuContext.row);
+                  }}
+                >
+                  <UserMinus
+                    className="um_kebab_menuitem_icon"
+                    size={16}
+                    strokeWidth={2}
+                    aria-hidden
+                  />
+                  Remove
+                </button>
+              </li>
+              <li role="none">
+                <button
+                  type="button"
+                  role="menuitem"
                   className="um_kebab_menuitem"
                   onClick={() => exportRowCsv(openMenuContext.row)}
                 >
@@ -2085,6 +2173,20 @@ export default function UserManagementPage({
             document.body,
           )
         : null}
+
+      {removeRow ? (
+        <MemberRemoveConfirmModal
+          memberName={memberUserCellPrimaryLabel(removeRow)}
+          busy={removeBusy}
+          error={removeErr}
+          onClose={() => {
+            if (removeBusy) return;
+            setRemoveRow(null);
+            setRemoveErr("");
+          }}
+          onConfirm={() => void confirmRemoveMember()}
+        />
+      ) : null}
 
       {viewRow ? (
         <div
@@ -2163,6 +2265,7 @@ export default function UserManagementPage({
                 value={<StatusWithDot {...accountStatusForUi(viewRow)} />}
               />
             </div>
+            <MemberInvitationSection row={viewRow} />
             <div className="um_modal_actions um_modal_actions_view">
               <button
                 type="button"

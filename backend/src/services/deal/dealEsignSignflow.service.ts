@@ -57,6 +57,46 @@ function hasStoredSignflowTemplateFields(file: EsignTemplateFileRecord): boolean
   return (file.signflowTemplateFields?.length ?? 0) > 0;
 }
 
+function templateFileId(raw: string): string {
+  const id = raw.trim();
+  const parts = id.split("::");
+  return (parts[parts.length - 1] ?? id).trim();
+}
+
+/** Radio/checkbox fields from the deal template, used to repair a sent copy. */
+export async function choiceFieldSourcesForDealFiles(
+  dealId: string,
+  fileIds: string[],
+): Promise<SignFlowField[]> {
+  const wanted = new Set(fileIds.map(templateFileId).filter(Boolean));
+  const state = await getDealEsignTemplatesState(dealId);
+  const files = state.files.filter(
+    (file) => wanted.size === 0 || wanted.has(file.id),
+  );
+  const snapshot = files.flatMap((file) => file.signflowTemplateFields ?? []);
+  if (
+    snapshot.some((field) => {
+      const type = String(field.type ?? "").trim().toLowerCase();
+      return type === "radio" || type === "checkbox";
+    })
+  ) {
+    return snapshot;
+  }
+
+  const live: SignFlowField[] = [];
+  for (const file of files) {
+    const documentId = file.signflowDocumentId?.trim();
+    if (!documentId) continue;
+    try {
+      const doc = await getSignFlowDocument(documentId);
+      live.push(...((doc.fields ?? []) as SignFlowField[]));
+    } catch (err) {
+      console.warn("choiceFieldSourcesForDealFiles:", err);
+    }
+  }
+  return live;
+}
+
 /** Skip auto-placement / preset seeding once the draft was seeded or saved. */
 function isMissingTemplatePdfError(err: unknown): boolean {
   return (

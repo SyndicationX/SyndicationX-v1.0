@@ -38,7 +38,11 @@ async function sendStageEmail(params: {
   documentNames: string[];
   investorDisplayName?: string;
   portalDealUrl?: string;
-  stage: "investor_signed" | "sponsor_signed" | "investor_turn_to_sign";
+  stage:
+    | "investor_signed"
+    | "sponsor_signed"
+    | "investor_turn_to_sign"
+    | "sponsor_turn_to_sign";
 }): Promise<{ ok: true } | { ok: false; error: unknown }> {
   const to = params.toEmail.trim().toLowerCase();
   if (!to.includes("@")) {
@@ -113,6 +117,37 @@ async function resolveInvestorEmailForTarget(
   return null;
 }
 
+function sponsorDealDocumentsUrl(dealId: string): string {
+  const origin = (
+    process.env.FRONTEND_URL?.trim() ||
+    process.env.BASE_URL?.trim() ||
+    ""
+  ).replace(/\/$/, "");
+  if (!origin) return "";
+  return `${origin}/deals/${encodeURIComponent(dealId)}?tab=documents`;
+}
+
+/** Email the lead sponsor from SyndicationX when they can sign now. */
+export async function notifySponsorDocumentsReadyToSign(params: {
+  dealId: string;
+  sponsorEmail: string;
+  sponsorName: string;
+  dealName: string;
+  documentNames: string[];
+}): Promise<void> {
+  const result = await sendStageEmail({
+    toEmail: params.sponsorEmail,
+    recipientDisplayName: params.sponsorName,
+    dealName: params.dealName,
+    documentNames: params.documentNames,
+    portalDealUrl: sponsorDealDocumentsUrl(params.dealId),
+    stage: "sponsor_turn_to_sign",
+  });
+  if (!result.ok) {
+    console.warn("notifySponsorDocumentsReadyToSign:", result.error);
+  }
+}
+
 /** Notify this investor's deal-associated sponsor when the investor signs. */
 export async function notifySponsorsOfInvestorEsignSigned(params: {
   dealId: string;
@@ -153,8 +188,7 @@ export async function notifySponsorsOfInvestorEsignSigned(params: {
     investorEmail: entry?.email,
   });
   if (!sponsor) return;
-  const portalUrl =
-    (await buildDealMemberInviteLandingUrl(dealId, sponsor.email)) || "";
+  const portalUrl = sponsorDealDocumentsUrl(dealId);
   const result = await sendStageEmail({
     toEmail: sponsor.email,
     recipientDisplayName: sponsor.name,

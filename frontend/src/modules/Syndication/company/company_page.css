@@ -2608,6 +2608,8 @@ select.cp_settings_input_pill.um_field_select {
   gap: 1.15rem;
   max-width: 100%;
   min-width: 0;
+  /* Firefox scroll anchoring jumps to the top when an organization row expands. */
+  overflow-anchor: none;
 }
 
 .cp_billing_payment_history_head {
@@ -4003,6 +4005,13 @@ select.cp_settings_input_pill.um_field_select {
   cursor: no-drop;
 }
 
+.cp_billing_plan_card_locked .cp_billing_coupon_link,
+.cp_billing_plan_card_locked .cp_billing_coupon_applied,
+.cp_billing_plan_card_locked .cp_billing_coupon_remove {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
 .cp_billing_plan_card_locked:hover {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   transform: none;
@@ -4263,6 +4272,66 @@ select.cp_settings_input_pill.um_field_select {
   text-decoration: line-through;
 }
 
+.cp_upgrade_choice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+.cp_upgrade_choice_btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  width: 100%;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--font-color-title, #0f172a);
+  text-align: left;
+  cursor: pointer;
+}
+.cp_upgrade_choice_btn strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.95rem;
+}
+.cp_upgrade_choice_btn span {
+  color: #64748b;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+.cp_upgrade_choice_btn:hover:not(:disabled) {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+.cp_upgrade_choice_btn:disabled {
+  opacity: 0.55;
+  cursor: no-drop;
+}
+.cp_pay_coupon_amount {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0.9rem 0 0;
+  font-size: 1.35rem;
+  font-weight: 650;
+  color: var(--font-color-title, #0f172a);
+}
+.cp_pay_coupon_amount_was {
+  color: #94a3b8;
+  font-size: 0.95rem;
+  font-weight: 500;
+  text-decoration: line-through;
+}
+.cp_pay_coupon_form {
+  margin-top: 0.85rem;
+}
+.cp_pay_coupon_form .cp_coupon_apply_field {
+  margin-top: 0;
+}
 .cp_coupon_apply_field {
   display: flex;
   flex-direction: column;
@@ -4940,6 +5009,10 @@ select.cp_settings_input_pill.um_field_select {
   box-shadow: 0 1px 3px rgb(15 23 42 / 5%);
 }
 
+.cp_coupons_panel {
+  margin-top: 1.5rem;
+}
+
 .cp_coupons_panel .cp_billing_payment_methods_head,
 .cp_coupons_history .cp_billing_payment_methods_head {
   margin-bottom: 1rem;
@@ -5009,6 +5082,13 @@ select.cp_settings_input_pill.um_field_select {
   margin: 0;
 }
 
+.cp_coupons_duration {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.85rem 1rem;
+  align-items: end;
+}
+
 .cp_coupons_field {
   display: flex;
   flex-direction: column;
@@ -5021,10 +5101,36 @@ select.cp_settings_input_pill.um_field_select {
   color: var(--portal-text-muted, #64748b);
 }
 
-.cp_coupons_discount {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 0.4rem;
+.cp_coupons_field_label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.cp_coupons_field_label .form_tooltip_trigger svg {
+  width: 14px;
+  height: 14px;
+}
+
+.cp_coupons_info_tip {
+  margin: 0;
+  font-weight: 450;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.cp_coupons_info_tip p {
+  margin: 0;
+}
+
+.cp_coupons_info_tip p + p {
+  margin-top: 0.4rem;
+}
+
+.cp_coupons_required {
+  margin-left: 0.15rem;
+  color: #b91c1c;
+  text-transform: none;
 }
 
 .cp_coupons_input {
@@ -5041,6 +5147,12 @@ select.cp_settings_input_pill.um_field_select {
   font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
+}
+
+.cp_coupons_input:disabled {
+  background: #f1f5f9;
+  color: #94a3b8;
+  cursor: not-allowed;
 }
 
 .cp_coupons_submit {

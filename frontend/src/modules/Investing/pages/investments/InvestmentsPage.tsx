@@ -41,7 +41,6 @@ import {
 } from "./investmentOnboardingBucket"
 import type { InvestNowLocationState } from "@/modules/Investing/pages/invest/investNowLocationState"
 import type { InvestNowDraftProgress } from "@/modules/Investing/pages/invest/investNowDraftProgress"
-import type { InvestNowStepperPhase } from "@/modules/Investing/pages/invest/investNowFlowSteps"
 import { getMergedInvestmentListRows } from "./investmentsRuntimeData"
 import type { InvestmentListRow } from "./investments.types"
 import {
@@ -500,11 +499,7 @@ export default function InvestmentsPage() {
   )
 
   const openInvestNowResume = useCallback(
-    (
-      dealId: string,
-      scope?: InvestmentListRow["investNowResumeScope"],
-      phaseId?: InvestNowStepperPhase["id"],
-    ) => {
+    (dealId: string, scope?: InvestmentListRow["investNowResumeScope"]) => {
       const id = dealId.trim()
       if (!id) return
       switchToInvesting()
@@ -515,7 +510,6 @@ export default function InvestmentsPage() {
           investmentId: scope?.investmentId,
           userInvestorProfileId: scope?.userInvestorProfileId,
           profileId: scope?.profileId,
-          phaseId,
         } satisfies InvestNowLocationState,
       })
     },
@@ -745,11 +739,7 @@ export default function InvestmentsPage() {
                 onResumeInvesting={
                   showResume
                     ? () =>
-                        openInvestNowResume(
-                          dealId,
-                          r.investNowResumeScope,
-                          r.investNowDraftProgress?.phaseId,
-                        )
+                        openInvestNowResume(dealId, r.investNowResumeScope)
                     : undefined
                 }
               />

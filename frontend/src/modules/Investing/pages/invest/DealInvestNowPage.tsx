@@ -69,7 +69,10 @@ import { parseInvestNowDocSignedCalendarDate } from "@/modules/Syndication/Deals
 import { recordRecentlyViewedDeal } from "@/modules/Investing/pages/dashboard/recentlyViewedDeals"
 import { readInvestNowLocationState } from "./investNowLocationState"
 import { investNowStepIndexFromSavedProgress } from "./investNowSavedStep"
-import { investNowStepIndexForPhaseId } from "./investNowFlowSteps"
+import {
+  investNowFlowStepKey,
+  investNowStepIndexForPhaseId,
+} from "./investNowFlowSteps"
 import {
   findInvestorRowForInvestNowScope,
 } from "./investNowDraftUtils"
@@ -205,7 +208,8 @@ export function DealInvestNowPage() {
   const resumeSavedRef = useRef<
     import("@/modules/Syndication/Deals/api/lpInvestNowCommitmentApi").MyLpDealInvestNowCommitmentPayload | null
   >(null)
-  const resumeStepAppliedRef = useRef(false)
+  const resumeStepAppliedRef = useRef("")
+  const [documentsReadyProfileId, setDocumentsReadyProfileId] = useState("")
   const [dealInvestors, setDealInvestors] = useState<DealInvestorRow[]>([])
   const [submitting, setSubmitting] = useState(false)
   const pendingAutoFinishRef = useRef(false)
@@ -372,9 +376,12 @@ export function DealInvestNowPage() {
   )
 
   useEffect(() => {
-    if (entryMode !== "resume" || resumeStepAppliedRef.current) return
+    if (entryMode !== "resume") return
     if (resumeLoading || resumeLoadError || !resumeSavedRef.current) return
-    if (questionnaireInFlow && documentsLoading) return
+    if (profileId.trim() && documentsReadyProfileId !== profileId.trim()) return
+    if (documentsLoading) return
+    const flowKey = flowSteps.map(investNowFlowStepKey).join("\n")
+    if (!flowKey || resumeStepAppliedRef.current === flowKey) return
     const saved = resumeSavedRef.current
     const em = getSessionUserEmail()?.trim().toLowerCase() ?? ""
     const draftRow = em
@@ -395,11 +402,13 @@ export function DealInvestNowPage() {
           esignWasSent: draftRow ? investorEsignWasSent(draftRow) : false,
         })
     setStepIndex(idx)
-    resumeStepAppliedRef.current = true
+    resumeStepAppliedRef.current = flowKey
   }, [
     entryMode,
     resumeLoading,
     resumeLoadError,
+    profileId,
+    documentsReadyProfileId,
     questionnaireInFlow,
     documentsLoading,
     visibleQuestionnaireSections,
@@ -933,7 +942,9 @@ export function DealInvestNowPage() {
 
   useEffect(() => {
     if (!dealId || !profileId.trim()) return
+    const readyFor = profileId.trim()
     let cancelled = false
+    setDocumentsReadyProfileId("")
     setDocumentsLoading(true)
     void (async () => {
       const [esignRes, questionnaireRes] = await Promise.all([
@@ -944,6 +955,7 @@ export function DealInvestNowPage() {
       if (esignRes.ok) setEsignFilesByCategory(esignRes.filesByCategory)
       if (questionnaireRes.ok) setQuestionnaireConfig(questionnaireRes.config)
       setDocumentsLoading(false)
+      setDocumentsReadyProfileId(readyFor)
     })()
     return () => {
       cancelled = true
@@ -1667,6 +1679,94 @@ export function DealInvestNowPage() {
     esignCompleted,
     webhookSignStatus,
   ])
+
+  const investorSignatureStillRequired = useMemo(() => {
+    if (esignLoading || esignCompleted) return false
+    if (!esignTemplate || !isDealEsignTemplateReady(esignTemplate)) return false
+    if (esignFailureAllowsSoftCommitment(esignSendError)) return false
+    const webhookSig = webhookSignStatus?.signature_request_id?.trim() ?? ""
+    const activeSig = esignSignatureRequestId?.trim() ?? ""
+    const webhookComplete =
+      webhookSignStatus?.status === "Completed" &&
+      (!activeSig || !webhookSig || webhookSig === activeSig)
+    return !webhookComplete
+  }, [
+    esignLoading,
+    esignCompleted,
+    esignTemplate,
+    esignSendError,
+    webhookSignStatus,
+    esignSignatureRequestId,
+  ])
+
+  const saveOnboardingDraft = useCallback(async (): Promise<boolean> => {
+    if (!selectedCommitmentProfileId.trim() && !savedUserProfileId.trim()) {
+      return true
+    }
+    const n = parseMoneyDigits(String(amount).trim())
+    const hasAmount = Number.isFinite(n) && n > 0
+    const err = await persistInvestNowProgress({
+      committedAmount: hasAmount ? String(n) : undefined,
+      skipCommittedAmount: !hasAmount,
+      progressOnly: !hasAmount,
+      w9Form: investNowW9FormApiPayload(w9Values),
+      ...(Object.keys(questionnaireAnswers).length > 0
+        ? { questionnaireAnswers }
+        : {}),
+    })
+    if (err) {
+      setError(err)
+      focusFirstFormErrorAfterUpdate({ container: investNowFormRef.current })
+      return false
+    }
+    upsertRuntimeInvestmentRow({
+      dealId,
+      investmentName: dealName,
+      offeringName: dealName,
+      investmentProfile: investorProfileLabel(profileId.trim()),
+      commitmentProfileId: profileId.trim() || undefined,
+      userInvestorProfileId: savedUserProfileId.trim() || undefined,
+      investedAmount: hasAmount ? n : 0,
+      distributedAmount: 0,
+      currentValuation: offeringSize || "—",
+      dealCloseDate: formatDealCloseDateForInvestments(closeDate?.trim()),
+      status: status.trim() || "Open to investment",
+      actionRequired: "Resume investing",
+      onboardingBucket: "pending",
+      hasInvestNowDraft: true,
+    })
+    return true
+  }, [
+    selectedCommitmentProfileId,
+    savedUserProfileId,
+    amount,
+    w9Values,
+    questionnaireAnswers,
+    persistInvestNowProgress,
+    dealId,
+    dealName,
+    profileId,
+    offeringSize,
+    closeDate,
+    status,
+  ])
+
+  const onLeaveInvestNow = useCallback(
+    async (options?: { replace?: boolean }) => {
+      const saved = await saveOnboardingDraft()
+      if (!saved) return
+      exitInvestNowFlow(options)
+    },
+    [saveOnboardingDraft, exitInvestNowFlow],
+  )
+
+  const onBackInvestNowStep = useCallback(async () => {
+    setError("")
+    clearInvestNowFieldErrors()
+    const saved = await saveOnboardingDraft()
+    if (!saved) return
+    setStepIndex((index) => Math.max(0, index - 1))
+  }, [clearInvestNowFieldErrors, saveOnboardingDraft])
 
   const saveCommitment = useCallback(async (): Promise<string | null> => {
     const n = parseMoneyDigits(String(amount).trim())
@@ -2438,7 +2538,7 @@ export function DealInvestNowPage() {
             <button
               type="button"
               className="deals_list_back_circle"
-              onClick={() => exitInvestNowFlow()}
+              onClick={() => void onLeaveInvestNow()}
               aria-label={
                 backTo === "/investing/investments"
                   ? "Back to investments"
@@ -2479,7 +2579,7 @@ export function DealInvestNowPage() {
               type="button"
               className="um_btn_secondary"
               disabled={submitting}
-              onClick={() => exitInvestNowFlow()}
+              onClick={() => void onLeaveInvestNow()}
             >
               <X size={16} strokeWidth={2} aria-hidden />
               Close
@@ -2490,11 +2590,7 @@ export function DealInvestNowPage() {
                   type="button"
                   className="um_btn_secondary"
                   disabled={submitting}
-                  onClick={() => {
-                    setError("")
-                    clearInvestNowFieldErrors()
-                    setStepIndex((index) => Math.max(0, index - 1))
-                  }}
+                  onClick={() => void onBackInvestNowStep()}
                 >
                   <ArrowLeft size={16} strokeWidth={2} aria-hidden />
                   Back
@@ -2537,7 +2633,14 @@ export function DealInvestNowPage() {
                 <button
                   type="button"
                   className="um_btn_primary"
-                  disabled={submitting || esignLoading}
+                  disabled={
+                    submitting || esignLoading || investorSignatureStillRequired
+                  }
+                  title={
+                    investorSignatureStillRequired
+                      ? "Sign the documents before finishing"
+                      : undefined
+                  }
                   onClick={() => void onFinish()}
                 >
                   {submitting ? (

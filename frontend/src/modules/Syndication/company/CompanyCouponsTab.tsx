@@ -19,6 +19,7 @@ import {
 import { TabsScrollStrip } from "../../../common/components/tabs-scroll-strip/TabsScrollStrip"
 import { cardCompactAmountOrDash } from "../../../common/components/card-compact-amount/CardCompactAmount"
 import { ToolStyleCard } from "../../../common/components/tool-style-card/ToolStyleCard"
+import { FormTooltip } from "../../../common/components/form-tooltip/FormTooltip"
 import { toast } from "../../../common/components/Toast"
 import { formatCount } from "@/common/utils/formatCount"
 import "../Deals/components/deal-stage-change-modal.css"
@@ -39,7 +40,13 @@ function moneyLabel(
   amountOffCents: number | null,
   currency: string | null,
 ): string {
-  if (percentOff != null) return `${percentOff}% off`
+  if (percentOff != null) {
+    const percent = percentOff.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
+    return `${percent}% off`
+  }
   if (amountOffCents != null) {
     const amount = (amountOffCents / 100).toLocaleString(undefined, {
       style: "currency",
@@ -53,8 +60,15 @@ function moneyLabel(
 function durationLabel(row: PlatformCouponRow): string {
   if (row.duration === "forever") return "Forever"
   if (row.duration === "repeating") {
-    const months = row.durationInMonths ?? 0
-    return months === 1 ? "1 month" : `${months} months`
+    const total = row.durationInMonths ?? 0
+    const years = Math.floor(total / 12)
+    const months = total % 12
+    const parts: string[] = []
+    if (years === 1) parts.push("1 year")
+    else if (years > 1) parts.push(`${years} years`)
+    if (months === 1) parts.push("1 month")
+    else if (months > 1) parts.push(`${months} months`)
+    return parts.length ? parts.join(", ") : "Repeating"
   }
   return "Once"
 }
@@ -212,6 +226,8 @@ function DeactivateCouponModal({
 }
 
 export function CompanyCouponsTab() {
+  const durationId = useId()
+  const maxRedemptionsId = useId()
   const [section, setSection] = useState<CouponSection>("created")
   const [rows, setRows] = useState<PlatformCouponRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -221,10 +237,10 @@ export function CompanyCouponsTab() {
   const [deactivateTarget, setDeactivateTarget] = useState<PlatformCouponRow | null>(null)
   const [name, setName] = useState("")
   const [code, setCode] = useState("")
-  const [discountType, setDiscountType] = useState<"percent" | "amount">("percent")
   const [discountValue, setDiscountValue] = useState("")
   const [duration, setDuration] = useState<"once" | "repeating" | "forever">("once")
-  const [durationInMonths, setDurationInMonths] = useState("3")
+  const [durationMonths, setDurationMonths] = useState("")
+  const [durationYears, setDurationYears] = useState("")
   const [maxRedemptions, setMaxRedemptions] = useState("")
   const [redeemBy, setRedeemBy] = useState("")
 
@@ -275,21 +291,33 @@ export function CompanyCouponsTab() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault()
-    const value = Number(discountValue)
+    const value = Math.round(Number(discountValue) * 100) / 100
     if (!name.trim() || !code.trim() || !Number.isFinite(value) || value <= 0) {
       toast.error("Enter a name, code, and discount.")
+      return
+    }
+    if (value > 100) {
+      toast.error("Percent off can be from 0.01% to 100%.")
+      return
+    }
+    const repeatMonths = Number(durationMonths || "0")
+    const repeatYears = Number(durationYears || "0")
+    const durationInMonths = repeatYears * 12 + repeatMonths
+    if (
+      duration === "repeating" &&
+      (!Number.isInteger(durationInMonths) || durationInMonths < 1)
+    ) {
+      toast.error("Enter how many months or years the discount repeats.")
       return
     }
     setSaving(true)
     const result = await createPlatformCoupon({
       name: name.trim(),
       code: code.trim(),
-      discountType,
-      percentOff: discountType === "percent" ? value : undefined,
-      amountOff: discountType === "amount" ? value : undefined,
+      discountType: "percent",
+      percentOff: value,
       duration,
-      durationInMonths:
-        duration === "repeating" ? Number(durationInMonths) : undefined,
+      durationInMonths: duration === "repeating" ? durationInMonths : undefined,
       maxRedemptions: maxRedemptions.trim() ? Number(maxRedemptions) : undefined,
       redeemBy: redeemBy.trim() || undefined,
     })
@@ -302,6 +330,8 @@ export function CompanyCouponsTab() {
     setName("")
     setCode("")
     setDiscountValue("")
+    setDurationMonths("")
+    setDurationYears("")
     setMaxRedemptions("")
     setRedeemBy("")
     setRows((prev) => [result.coupon, ...prev.filter((row) => row.id !== result.coupon.id)])
@@ -622,7 +652,12 @@ export function CompanyCouponsTab() {
           </header>
           <form className="cp_coupons_create" onSubmit={(e) => void onCreate(e)}>
             <label className="cp_coupons_field">
-              Name
+              <span>
+                Name
+                <span className="cp_coupons_required" aria-hidden>
+                  *
+                </span>
+              </span>
               <input
                 className="cp_coupons_input"
                 value={name}
@@ -633,7 +668,12 @@ export function CompanyCouponsTab() {
               />
             </label>
             <label className="cp_coupons_field">
-              Code
+              <span>
+                Code
+                <span className="cp_coupons_required" aria-hidden>
+                  *
+                </span>
+              </span>
               <input
                 className="cp_coupons_input"
                 value={code}
@@ -644,31 +684,69 @@ export function CompanyCouponsTab() {
               />
             </label>
             <label className="cp_coupons_field">
-              Discount
-              <span className="cp_coupons_discount">
-                <select
-                  className="cp_coupons_input"
-                  value={discountType}
-                  onChange={(e) =>
-                    setDiscountType(e.target.value === "amount" ? "amount" : "percent")
+              <span>
+                Discount (%)
+                <span className="cp_coupons_required" aria-hidden>
+                  *
+                </span>
+              </span>
+              <input
+                className="cp_coupons_input"
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                value={discountValue}
+                onChange={(e) => {
+                  const cleaned = e.target.value.replace(/[^\d.]/g, "")
+                  if (!cleaned) {
+                    setDiscountValue("")
+                    return
                   }
-                >
-                  <option value="percent">Percent</option>
-                  <option value="amount">Amount (USD)</option>
-                </select>
-                <input
-                  className="cp_coupons_input"
-                  inputMode="decimal"
-                  value={discountValue}
-                  onChange={(e) => setDiscountValue(e.target.value)}
-                  placeholder={discountType === "percent" ? "20" : "50"}
-                  required
+                  const dot = cleaned.indexOf(".")
+                  const normalized =
+                    dot === -1
+                      ? cleaned
+                      : `${cleaned.slice(0, dot)}.${cleaned.slice(dot + 1).replace(/\./g, "")}`
+                  const [whole = "", fraction = ""] = normalized.split(".")
+                  const hasDot = normalized.includes(".")
+                  const next = hasDot
+                    ? `${whole}.${fraction.slice(0, 2)}`
+                    : whole
+                  const numeric = Number(next)
+                  if (!Number.isFinite(numeric) || numeric > 100) {
+                    setDiscountValue("100")
+                    return
+                  }
+                  setDiscountValue(next)
+                }}
+                placeholder="10.00"
+                required
+              />
+            </label>
+            <div className="cp_coupons_field">
+              <span className="cp_coupons_field_label">
+                <label htmlFor={durationId}>
+                  Duration
+                  <span className="cp_coupons_required" aria-hidden>
+                    *
+                  </span>
+                </label>
+                <FormTooltip
+                  label="What duration means"
+                  content={
+                    <div className="cp_coupons_info_tip">
+                      <p>Once applies the discount to a single payment.</p>
+                      <p>
+                        Repeating keeps it for the months you enter, then the
+                        deal bills the full price.
+                      </p>
+                      <p>Forever keeps the discount in place.</p>
+                    </div>
+                  }
                 />
               </span>
-            </label>
-            <label className="cp_coupons_field">
-              Duration
               <select
+                id={durationId}
                 className="cp_coupons_input"
                 value={duration}
                 onChange={(e) =>
@@ -683,29 +761,78 @@ export function CompanyCouponsTab() {
                 <option value="repeating">Repeating</option>
                 <option value="forever">Forever</option>
               </select>
-            </label>
-            {duration === "repeating" ? (
+            </div>
+            <div className="cp_coupons_duration">
+              {/*
               <label className="cp_coupons_field">
-                Months
+                <span>
+                  Years
+                  {duration === "repeating" ? (
+                    <span className="cp_coupons_required" aria-hidden>
+                      *
+                    </span>
+                  ) : null}
+                </span>
                 <input
                   className="cp_coupons_input"
+                  type="text"
                   inputMode="numeric"
-                  value={durationInMonths}
-                  onChange={(e) => setDurationInMonths(e.target.value)}
-                  required
+                  autoComplete="off"
+                  value={durationYears}
+                  disabled={duration !== "repeating"}
+                  onChange={(e) =>
+                    setDurationYears(e.target.value.replace(/\D/g, "").slice(0, 2))
+                  }
+                  placeholder="0"
                 />
               </label>
-            ) : null}
-            <label className="cp_coupons_field">
-              Max redemptions
+              */}
+              <label className="cp_coupons_field">
+                <span>
+                  Months
+                  {duration === "repeating" ? (
+                    <span className="cp_coupons_required" aria-hidden>
+                      *
+                    </span>
+                  ) : null}
+                </span>
+                <input
+                  className="cp_coupons_input"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  value={durationMonths}
+                  disabled={duration !== "repeating"}
+                  onChange={(e) =>
+                    setDurationMonths(e.target.value.replace(/\D/g, "").slice(0, 3))
+                  }
+                  placeholder="0"
+                />
+              </label>
+            </div>
+            <div className="cp_coupons_field">
+              <span className="cp_coupons_field_label">
+                <label htmlFor={maxRedemptionsId}>Max redemptions</label>
+                <FormTooltip
+                  label="What max redemptions means"
+                  content={
+                    <p className="cp_coupons_info_tip">
+                      The most times this coupon can be used. Leave it empty
+                      for unlimited uses. After that number is reached, the
+                      coupon can no longer be applied.
+                    </p>
+                  }
+                />
+              </span>
               <input
+                id={maxRedemptionsId}
                 className="cp_coupons_input"
                 inputMode="numeric"
                 value={maxRedemptions}
                 onChange={(e) => setMaxRedemptions(e.target.value)}
                 placeholder="Unlimited"
               />
-            </label>
+            </div>
             <label className="cp_coupons_field">
               Redeem by
               <input

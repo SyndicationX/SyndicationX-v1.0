@@ -17,7 +17,6 @@ import {
   syncCompanyPaymentMethodsFromStripe,
   syncCompanySubscriptionPayment,
   syncExtraCompanyUserFromCheckoutSession,
-  userCanManageCompanyBilling,
 } from "../../services/billing/companyBilling.service.js";
 import {
   listDealBillingForAllOrganizations,
@@ -26,7 +25,6 @@ import {
   updateDealBillingCycle,
   updateDealSaasBillingStartsAt,
   getPlatformSaasBillingStartAlert,
-  dealHasRedeemedSaasCoupon,
 } from "../../services/billing/dealBilling.service.js";
 import { getStripePublicConfig } from "../../config/stripe.config.js";
 import { releaseBillingPaymentHold } from "../../middleware/billingPaymentLock.js";
@@ -188,6 +186,11 @@ export async function postCompanyBillingCheckout(
   const dealId = bodyString(body.dealId ?? body.deal_id);
   const extraCompanyUsers = extraCompanyUsersFromBody(body);
   const promotionCode = bodyString(body.promotionCode ?? body.promotion_code);
+  const upgradeModeRaw = bodyString(body.upgradeMode ?? body.upgrade_mode);
+  const upgradeMode =
+    upgradeModeRaw === "difference" || upgradeModeRaw === "plan"
+      ? upgradeModeRaw
+      : undefined;
 
   const result = await createCompanyCheckoutSession({
     companyId,
@@ -198,13 +201,17 @@ export async function postCompanyBillingCheckout(
     dealId,
     extraCompanyUsers,
     promotionCode: promotionCode || undefined,
+    upgradeMode,
     allowedDealIds: access.dealIds,
   });
   if (!result.ok) {
     res.status(result.status).json({ message: result.message });
     return;
   }
-  res.status(200).json({ url: result.url });
+  res.status(200).json({
+    url: result.url,
+    upgraded: result.upgraded === true,
+  });
 }
 
 /**
@@ -375,12 +382,12 @@ export async function postCompanyBillingSetupIntent(
     return;
   }
   const companyId = paramStr(req.params.companyId);
-  const can = await userCanManageCompanyBilling(
+  const access = await resolveCompanyBillingAccess(
     user.id,
     user.userRole,
     companyId,
   );
-  if (!can) {
+  if (!access.canPay && !access.canManage) {
     res.status(403).json({ message: "Forbidden" });
     return;
   }
@@ -803,12 +810,12 @@ export async function postCompanyBillingSyncPaymentMethods(
     return;
   }
   const companyId = paramStr(req.params.companyId);
-  const can = await userCanManageCompanyBilling(
+  const access = await resolveCompanyBillingAccess(
     user.id,
     user.userRole,
     companyId,
   );
-  if (!can) {
+  if (!access.canPay && !access.canManage) {
     res.status(403).json({ message: "Forbidden" });
     return;
   }
@@ -961,10 +968,23 @@ function optionalPositiveInt(raw: unknown): number | undefined {
 }
 
 function stripeErrorMessage(err: unknown, fallback: string): string {
-  if (err instanceof Stripe.errors.StripeInvalidRequestError) {
-    return err.message || fallback;
+  const raw =
+    err instanceof Stripe.errors.StripeInvalidRequestError
+      ? err.message || fallback
+      : err instanceof Error
+        ? err.message
+        : fallback;
+  const text = raw.toLowerCase();
+  if (text.includes("already used a coupon")) return fallback;
+  if (text.includes("expired")) return "Expired";
+  if (
+    text.includes("redeemed") ||
+    text.includes("redemption limit") ||
+    text.includes("maximum number of times")
+  ) {
+    return "Coupon redeemed";
   }
-  return err instanceof Error ? err.message : fallback;
+  return raw;
 }
 
 async function requirePlatformAdmin(
@@ -995,12 +1015,7 @@ export async function postPreviewPlatformCoupon(
   }
   const body = (req.body ?? {}) as Record<string, unknown>;
   const code = bodyString(body.code ?? body.promotionCode ?? body.promotion_code);
-  const dealId = bodyString(body.dealId ?? body.deal_id);
   try {
-    if (dealId && (await dealHasRedeemedSaasCoupon(dealId))) {
-      res.status(400).json({ message: "This deal has already used a coupon." });
-      return;
-    }
     const looked = await lookupActivePromotionCode(code);
     if (!looked.ok) {
       res.status(400).json({ message: looked.message });
@@ -1071,7 +1086,9 @@ export async function postPlatformCoupon(
     body.durationInMonths ?? body.duration_in_months,
   );
   if (duration === "repeating" && !durationInMonths) {
-    res.status(400).json({ message: "Enter how many months the discount repeats." });
+    res.status(400).json({
+      message: "Enter how many months or years the discount repeats.",
+    });
     return;
   }
 
@@ -1087,10 +1104,15 @@ export async function postPlatformCoupon(
   } else {
     const pct = Number(body.percentOff ?? body.percent_off);
     if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
-      res.status(400).json({ message: "Percent off must be between 1 and 100." });
+      res.status(400).json({ message: "Percent off must be between 0.01 and 100." });
       return;
     }
-    percentOff = pct;
+    const decimals = (String(body.percentOff ?? body.percent_off).split(".")[1] ?? "").length;
+    if (decimals > 2) {
+      res.status(400).json({ message: "Percent off can have at most 2 decimal places." });
+      return;
+    }
+    percentOff = Math.round(pct * 100) / 100;
   }
 
   let redeemBy: number | undefined;

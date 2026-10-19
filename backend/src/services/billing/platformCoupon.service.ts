@@ -246,6 +246,31 @@ export type PromotionCodePreview = {
   durationInMonths: number | null;
 };
 
+function couponCannotBeAppliedMessage(
+  promo: Stripe.PromotionCode,
+  coupon: Stripe.Coupon,
+): string | null {
+  const now = Math.floor(Date.now() / 1000);
+  const expired =
+    (promo.expires_at != null && promo.expires_at <= now) ||
+    (coupon.redeem_by != null && coupon.redeem_by <= now);
+  if (expired) return "Expired";
+  const promoRedeemed =
+    promo.max_redemptions != null &&
+    (promo.times_redeemed ?? 0) >= promo.max_redemptions;
+  const couponRedeemed =
+    coupon.max_redemptions != null &&
+    (coupon.times_redeemed ?? 0) >= coupon.max_redemptions;
+  if (promoRedeemed || couponRedeemed) return "Coupon redeemed";
+  if (!promo.active || !coupon.valid || coupon.metadata?.status === "inactive") {
+    if ((promo.times_redeemed ?? 0) > 0 || (coupon.times_redeemed ?? 0) > 0) {
+      return "Coupon redeemed";
+    }
+    return "That coupon code is not valid.";
+  }
+  return null;
+}
+
 /** Active customer-facing code, for pricing preview and checkout. */
 export async function lookupActivePromotionCode(
   rawCode: string,
@@ -259,15 +284,26 @@ export async function lookupActivePromotionCode(
   const stripe = getStripeClient();
   const list = await stripe.promotionCodes.list({
     code,
-    active: true,
-    limit: 1,
+    limit: 10,
     expand: ["data.promotion.coupon"],
   });
-  const promo = list.data[0];
-  const coupon = promo ? couponFromPromo(promo) : null;
-  if (!promo || !coupon || !coupon.valid || coupon.metadata?.status === "inactive") {
+  const matches = list.data.filter(
+    (promo) => promo.code.trim().toLowerCase() === code.toLowerCase(),
+  );
+  if (matches.length === 0) {
     return { ok: false, message: "That coupon code is not valid." };
   }
+  const usable = matches.find((promo) => {
+    const coupon = couponFromPromo(promo);
+    return coupon != null && couponCannotBeAppliedMessage(promo, coupon) == null;
+  });
+  const promo = usable ?? matches[0];
+  const coupon = promo ? couponFromPromo(promo) : null;
+  if (!promo || !coupon) {
+    return { ok: false, message: "That coupon code is not valid." };
+  }
+  const blocked = couponCannotBeAppliedMessage(promo, coupon);
+  if (blocked) return { ok: false, message: blocked };
   return {
     ok: true,
     preview: {

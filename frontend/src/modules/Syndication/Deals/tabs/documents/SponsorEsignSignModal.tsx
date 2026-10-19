@@ -13,7 +13,6 @@ import {
   fetchDealSponsorEsignSignSession,
   postDealSponsorEsignSync,
   syncCompletedEsignDocumentsToDocumentsTab,
-  type DealSponsorEsignSignerOption,
 } from "../../api/dealsApi"
 import "../../deal-esign-ui.css"
 
@@ -57,9 +56,7 @@ export function SponsorEsignSignModal({
   const sigId = signatureRequestId.trim()
   const [phase, setPhase] = useState<SponsorEsignSignPhase>("idle")
   const [error, setError] = useState<string | null>(null)
-  const [signerOptions, setSignerOptions] = useState<
-    DealSponsorEsignSignerOption[]
-  >([])
+  const [, setSignerOptions] = useState<{ rowId: string }[]>([])
   const [selectedSignerRowId, setSelectedSignerRowId] = useState("")
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null)
   const [embedKey, setEmbedKey] = useState(0)
@@ -251,6 +248,10 @@ export function SponsorEsignSignModal({
         <div className="deal_esign_modal_body deal_esign_modal_body--signing">
           <p className="deal_esign_modal_doc_name">{docLabel}</p>
 
+          {/*
+            Who will sign for the sponsor?
+            Commented out: only the sponsor who opened the document can sign,
+            so there is no need to choose another signer.
           {phase === "picker" ? (
             <div className="deal_esign_sponsor_picker">
               <label className="deal_esign_sponsor_picker_label" htmlFor="sponsor-signer-select">
@@ -280,6 +281,7 @@ export function SponsorEsignSignModal({
               </div>
             </div>
           ) : null}
+          */}
 
           {phase === "loading" && !showEmbed ? (
             <p className="deal_esign_status_row deal_esign_sign_loading" role="status">

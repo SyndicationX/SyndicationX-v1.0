@@ -750,6 +750,13 @@
       "when": 1895900000000,
       "tag": "0107_user_saved_payment_methods",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1895950000000,
+      "tag": "0108_user_invited_by",
+      "breakpoints": true
     }
   ]
 }

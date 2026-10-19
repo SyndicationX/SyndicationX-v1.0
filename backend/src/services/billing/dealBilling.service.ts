@@ -1,6 +1,6 @@
 import Stripe from "stripe";
 import { and, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
-import { db } from "../../database/db.js";
+import { db, pool } from "../../database/db.js";
 import {
   addDealForm,
   companies,
@@ -8,7 +8,10 @@ import {
   dealInvestorClass,
   type AddDealFormRow,
 } from "../../schema/schema.js";
-import { listDealIdsWhereViewerIsLeadSponsor } from "../deal/dealMemberScope.service.js";
+import {
+  isPortalUserLeadSponsorOnDeal,
+  listDealIdsWhereViewerIsLeadSponsor,
+} from "../deal/dealMemberScope.service.js";
 import { normalizeDealStageCanonical } from "../../constants/deal-lifecycle/deal-stage.js";
 import { resolveOfferingStatusForStageChange } from "../../constants/deal-lifecycle/deal-status-rules.js";
 import {
@@ -35,6 +38,8 @@ import {
   extraCompanyUserChargeDescription,
   extraCompanyUsersToCharge,
   catalogPackagePriceCents,
+  couponCheckoutLineCents,
+  differenceRepeatPriceCents,
   getDealCompanyUserSnapshot,
   priceGapCents,
   stripePriceIdForPlatformAmount,
@@ -248,6 +253,15 @@ export async function dealSubscriptionPriceGapCents(params: {
     normalizeBillingSeatBand(params.nextSeatBand) ?? currentSeat;
   const currentPlan = params.stripePlanId ?? mapped.planId;
   const nextPlan = params.nextPlanId ?? currentPlan;
+  if (
+    params.couponRedeemed &&
+    currentPlan &&
+    nextPlan &&
+    currentPlan === nextPlan &&
+    currentSeat === nextSeat
+  ) {
+    return 0;
+  }
   let paidCents = catalogPackagePriceCents(currentPlan, cycle, currentSeat);
   const priceId = String(params.stripePriceId ?? "").trim();
   let readStripePrice = false;
@@ -1372,6 +1386,8 @@ async function chargePaidPlanDifference(params: {
   cycle?: string;
   seatBand?: string;
   companyId?: string;
+  promotionCodeId?: string;
+  extraMetadata?: Record<string, string>;
 }): Promise<
   | { ok: true }
   | { ok: false; message: string; hostedInvoiceUrl?: string }
@@ -1395,6 +1411,9 @@ async function chargePaidPlanDifference(params: {
     ...(params.paymentMethodId
       ? { default_payment_method: params.paymentMethodId }
       : {}),
+    ...(params.promotionCodeId
+      ? { discounts: [{ promotion_code: params.promotionCodeId }] }
+      : {}),
     metadata: {
       dealId: params.dealId,
       dealName: params.dealName,
@@ -1403,6 +1422,7 @@ async function chargePaidPlanDifference(params: {
       ...(params.planId ? { planId: params.planId } : {}),
       ...(params.cycle ? { billingCycle: params.cycle } : {}),
       ...(params.seatBand ? { seatBand: params.seatBand } : {}),
+      ...(params.extraMetadata ?? {}),
     },
   });
   invoice = await params.stripe.invoices.finalizeInvoice(invoice.id);
@@ -1446,9 +1466,167 @@ async function chargePaidPlanDifference(params: {
   return { ok: true };
 }
 
+function addUtcMonths(unixSeconds: number, months: number): number {
+  const date = new Date(unixSeconds * 1000);
+  const day = date.getUTCDate();
+  date.setUTCMonth(date.getUTCMonth() + months);
+  if (date.getUTCDate() < day) date.setUTCDate(0);
+  return Math.floor(date.getTime() / 1000);
+}
+
+function scheduleIdFromSubscription(sub: Stripe.Subscription): string {
+  const schedule = sub.schedule;
+  if (!schedule) return "";
+  return typeof schedule === "string" ? schedule : schedule.id;
+}
+
+async function recurringPriceForAmount(params: {
+  stripe: Stripe;
+  productId: string;
+  currency: string;
+  amountCents: number;
+  cycle: StripeBillingCycle;
+  planId: string;
+  seatBand: string;
+}): Promise<string> {
+  const lookupKey = `sx_hold_${params.planId}_${params.seatBand}_${params.cycle}_${params.amountCents}`;
+  const listed = await params.stripe.prices.list({
+    lookup_keys: [lookupKey],
+    limit: 1,
+  });
+  const existingId = listed.data[0]?.id;
+  if (existingId) return existingId;
+  const created = await params.stripe.prices.create({
+    product: params.productId,
+    currency: params.currency || "usd",
+    unit_amount: params.amountCents,
+    recurring: { interval: params.cycle === "annual" ? "year" : "month" },
+    lookup_key: lookupKey,
+    transfer_lookup_key: true,
+    nickname: `${params.planId} ${params.seatBand} coupon hold`,
+    metadata: {
+      planId: params.planId,
+      seatBand: params.seatBand,
+      billingCycle: params.cycle,
+      billingScope: "coupon_hold",
+      platformAmountCents: String(params.amountCents),
+    },
+  });
+  return created.id;
+}
+
+async function releaseSubscriptionSchedule(
+  stripe: Stripe,
+  sub: Stripe.Subscription,
+): Promise<void> {
+  const scheduleId = scheduleIdFromSubscription(sub);
+  if (!scheduleId) return;
+  try {
+    await stripe.subscriptionSchedules.release(scheduleId);
+  } catch (err) {
+    console.warn("release coupon schedule:", err);
+  }
+}
+
+/** Put the subscription back if the coupon charge fails after the price schedule was created. */
+export async function restoreSubscriptionToSnapshot(
+  snapshot: Stripe.Subscription,
+): Promise<void> {
+  const stripe = getStripeClient();
+  const fresh = await stripe.subscriptions.retrieve(snapshot.id);
+  if (scheduleIdFromSubscription(fresh)) {
+    await releaseSubscriptionSchedule(stripe, fresh);
+  }
+  const current = await stripe.subscriptions.retrieve(snapshot.id);
+  const additions = snapshot.items.data.flatMap((item) => {
+    const price = typeof item.price === "string" ? item.price : item.price?.id;
+    if (!price) return [];
+    return [{ price, quantity: item.quantity ?? 1 }];
+  });
+  if (additions.length === 0) return;
+  await stripe.subscriptions.update(snapshot.id, {
+    items: [
+      ...current.items.data.map((item) => ({ id: item.id, deleted: true as const })),
+      ...additions,
+    ],
+    proration_behavior: "none",
+    metadata: snapshot.metadata,
+  });
+}
+
+/**
+ * Bill `holdPriceId` until `untilUnix`, then the catalog price.
+ * The coupon already reduced the one-time difference, so this does not discount again.
+ */
+async function scheduleCouponHoldPrice(params: {
+  stripe: Stripe;
+  subscription: Stripe.Subscription;
+  holdPriceId: string;
+  fullPriceId: string;
+  extraItems: Array<{ price: string; quantity: number }>;
+  untilUnix: number;
+  metadata: Stripe.MetadataParam;
+}): Promise<void> {
+  let scheduleId = scheduleIdFromSubscription(params.subscription);
+  if (!scheduleId) {
+    try {
+      const created = await params.stripe.subscriptionSchedules.create({
+        from_subscription: params.subscription.id,
+      });
+      scheduleId = created.id;
+    } catch (err) {
+      const fresh = await params.stripe.subscriptions.retrieve(
+        params.subscription.id,
+      );
+      scheduleId = scheduleIdFromSubscription(fresh);
+      if (!scheduleId) throw err;
+    }
+  }
+  const schedule = await params.stripe.subscriptionSchedules.retrieve(scheduleId);
+  const start =
+    schedule.current_phase?.start_date ?? schedule.phases[0]?.start_date;
+  if (!start) {
+    throw new Error("Could not read the current subscription period.");
+  }
+  const end = Math.max(params.untilUnix, start + 60);
+  const holdItems = [
+    { price: params.holdPriceId, quantity: 1 },
+    ...params.extraItems,
+  ];
+  const fullItems = [
+    { price: params.fullPriceId, quantity: 1 },
+    ...params.extraItems,
+  ];
+  await params.stripe.subscriptionSchedules.update(scheduleId, {
+    end_behavior: "release",
+    proration_behavior: "none",
+    phases: [
+      {
+        items: holdItems,
+        start_date: start,
+        end_date: end,
+        proration_behavior: "none",
+        discounts: "",
+        metadata: params.metadata,
+      },
+      {
+        items: fullItems,
+        proration_behavior: "none",
+        discounts: "",
+        metadata: {
+          ...params.metadata,
+          couponRepeatPriceCents: "",
+          couponRepeatUntil: "",
+        },
+      },
+    ],
+  });
+}
+
 /**
  * Move an existing deal subscription to the plan required by the offering and co-sponsors.
  * The lead pays the difference from the amount already paid, then the subscription renews at the new price.
+ * A repeating coupon keeps the deal at the price already paid, plus any gap the coupon did not cover, for that coupon's months.
  */
 export async function upgradeDealStripeSubscription(params: {
   deal: AddDealFormRow;
@@ -1458,6 +1636,12 @@ export async function upgradeDealStripeSubscription(params: {
   paymentMethodId?: string;
   promotionCodeId?: string;
   couponCode?: string;
+  couponDuration?: string;
+  couponDurationMonths?: number | null;
+  /** Price to bill while a repeating or forever coupon is active. */
+  repeatPriceCents?: number;
+  percentOff?: number | null;
+  amountOffCents?: number | null;
   /** False when Stripe Checkout already collected the difference. */
   collectDifference?: boolean;
 }): Promise<UpgradeDealSubscriptionResult> {
@@ -1470,11 +1654,16 @@ export async function upgradeDealStripeSubscription(params: {
     };
   }
 
-  const match = await assertCheckoutPlanMatchesDeal({
-    dealId: String(params.deal.id),
-    planId: params.planId,
-  });
-  if (!match.ok) return match;
+  const suggestedPlanId = await suggestedPlanIdForDeal(String(params.deal.id));
+  if (billingPlanRank(params.planId) < billingPlanRank(suggestedPlanId)) {
+    const label =
+      suggestedPlanId.charAt(0).toUpperCase() + suggestedPlanId.slice(1);
+    return {
+      ok: false,
+      status: 400,
+      message: `${label} is the plan for this deal.`,
+    };
+  }
   const currentCompanyUsers = await getDealCompanyUserSnapshot(
     String(params.deal.id),
   );
@@ -1482,17 +1671,14 @@ export async function upgradeDealStripeSubscription(params: {
     coGpSeatBandNeedsUpgrade(
       currentCompanyUsers?.seatBand,
       currentCompanyUsers?.coGpCount ?? 0,
-      match.suggestedPlanId,
+      suggestedPlanId,
     ) ||
     coGpSeatBandIsUpgrade(
-      currentCompanyUsers?.seatBand,
+      currentCompanyUsers?.seatBand ?? params.deal.stripeSeatBand,
       params.seatBand,
     );
   if (
-    !dealPaidPlanNeedsUpgrade(
-      params.deal.stripePlanId,
-      match.suggestedPlanId,
-    ) &&
+    !dealPaidPlanNeedsUpgrade(params.deal.stripePlanId, params.planId) &&
     !seatUpgrade
   ) {
     return {
@@ -1595,17 +1781,85 @@ export async function upgradeDealStripeSubscription(params: {
         ? sub.default_payment_method
         : sub.default_payment_method?.id) ||
       null;
-    if (
+    const couponDuration = String(params.couponDuration ?? "").trim();
+    const repeatingCoupon =
+      couponDuration === "repeating" || couponDuration === "forever";
+    const pricedGap =
+      repeatingCoupon && differenceCents != null && paidCents != null
+        ? differenceRepeatPriceCents({
+            paidCents,
+            differenceCents,
+            percentOff: params.percentOff,
+            amountOffCents: params.amountOffCents,
+          })
+        : null;
+    const requestedHold =
+      params.repeatPriceCents != null && Number.isFinite(params.repeatPriceCents)
+        ? Math.max(0, Math.round(params.repeatPriceCents))
+        : pricedGap?.repeatPriceCents;
+    const holdCents =
+      repeatingCoupon && requestedHold != null ? requestedHold : null;
+    const holdMonths =
+      couponDuration === "repeating" &&
+      params.couponDurationMonths != null &&
+      params.couponDurationMonths > 0
+        ? Math.round(params.couponDurationMonths)
+        : null;
+    const useHold =
+      holdCents != null &&
+      nextAmount != null &&
+      holdCents !== nextAmount &&
+      (couponDuration === "forever" || holdMonths != null);
+    const nowUnix = Math.floor(Date.now() / 1000);
+    const storedUntil = Number(sub.metadata?.couponRepeatUntil ?? "");
+    const sameWindow =
+      useHold &&
+      String(sub.metadata?.couponCode ?? "") === String(params.couponCode ?? "") &&
+      Number(sub.metadata?.couponRepeatPriceCents ?? "") === holdCents &&
+      Number.isFinite(storedUntil) &&
+      storedUntil > nowUnix;
+    const holdUntil =
+      useHold && couponDuration === "repeating" && holdMonths
+        ? sameWindow
+          ? storedUntil
+          : addUtcMonths(nowUnix, holdMonths)
+        : null;
+    const couponMetadata: Stripe.MetadataParam = {
+      couponRepeatPriceCents:
+        useHold && holdCents != null ? String(holdCents) : "",
+      couponRepeatUntil:
+        couponDuration === "forever" && useHold
+          ? "forever"
+          : holdUntil
+            ? String(holdUntil)
+            : "",
+    };
+    const chargeDifference =
       params.collectDifference !== false &&
       differenceCents != null &&
       differenceCents > 0 &&
-      customerId
-    ) {
+      Boolean(customerId);
+    const couponChargeCents =
+      !params.promotionCodeId || differenceCents == null
+        ? differenceCents
+        : params.percentOff === 100
+          ? differenceCents
+          : couponCheckoutLineCents({
+              dueCents: differenceRepeatPriceCents({
+                paidCents: paidCents ?? 0,
+                differenceCents,
+                percentOff: params.percentOff,
+                amountOffCents: params.amountOffCents,
+              }).discountedDifferenceCents,
+              percentOff: params.percentOff,
+              amountOffCents: params.amountOffCents,
+            });
+    if (chargeDifference && !useHold && couponChargeCents != null) {
       const charged = await chargePaidPlanDifference({
         stripe,
         customerId,
         paymentMethodId,
-        amountCents: differenceCents,
+        amountCents: couponChargeCents,
         dealId: String(params.deal.id),
         dealName: params.deal.dealName ?? "",
         description: `Upgrade difference for ${params.deal.dealName ?? "this deal"}`,
@@ -1613,6 +1867,17 @@ export async function upgradeDealStripeSubscription(params: {
         cycle: params.cycle,
         seatBand: params.seatBand,
         companyId: String(params.deal.organizationId ?? ""),
+        ...(params.promotionCodeId
+          ? { promotionCodeId: params.promotionCodeId }
+          : {}),
+        extraMetadata: {
+          ...(couponDuration ? { couponDuration } : {}),
+          ...(holdMonths ? { couponDurationMonths: String(holdMonths) } : {}),
+          ...(useHold && holdCents != null
+            ? { repeatPriceCents: String(holdCents) }
+            : {}),
+          ...(params.couponCode ? { couponCode: params.couponCode } : {}),
+        },
       });
       if (!charged.ok) {
         if (charged.hostedInvoiceUrl) {
@@ -1627,27 +1892,129 @@ export async function upgradeDealStripeSubscription(params: {
       }
     }
 
-    const updated = await stripe.subscriptions.update(sub.id, {
-      items: subscriptionItems,
-      proration_behavior: differenceCents == null ? "always_invoice" : "none",
-      payment_behavior: "pending_if_incomplete",
-      ...(params.promotionCodeId
-        ? { discounts: [{ promotion_code: params.promotionCodeId }] }
-        : {}),
-      metadata: {
-        ...sub.metadata,
+    let billedPriceId = priceId;
+    if (useHold && holdCents != null) {
+      const productRef = nextPrice.product;
+      const productId =
+        typeof productRef === "string"
+          ? productRef
+          : productRef && "id" in productRef
+            ? productRef.id
+            : "";
+      if (productId) {
+        billedPriceId = await recurringPriceForAmount({
+          stripe,
+          productId,
+          currency: nextPrice.currency || "usd",
+          amountCents: holdCents,
+          cycle: params.cycle,
+          planId: params.planId,
+          seatBand: params.seatBand,
+        });
+        subscriptionItems[0] = { id: itemId, price: billedPriceId };
+      }
+    }
+    const couponAppliesToDifference = Boolean(
+      params.promotionCodeId || params.couponCode || params.couponDuration,
+    );
+    const keepCouponOffSubscription =
+      useHold ||
+      (couponAppliesToDifference &&
+        differenceCents != null &&
+        differenceCents > 0);
+    const subscriptionMetadata: Stripe.MetadataParam = {
+      ...sub.metadata,
+      dealId: String(params.deal.id),
+      dealName: params.deal.dealName ?? "",
+      planId: params.planId,
+      billingCycle: params.cycle,
+      seatBand: params.seatBand,
+      billingScope: "deal",
+      extraCompanyUsers: String(extraUsers),
+      extraUserComment: extraUserComment.slice(0, 500),
+      ...(params.couponCode ? { couponCode: params.couponCode } : {}),
+      ...couponMetadata,
+    };
+    const extraPhaseItems = subscriptionItems.flatMap((item) => {
+      if (!("price" in item) || !item.price || item.price === billedPriceId) {
+        return [];
+      }
+      const quantity = "quantity" in item && item.quantity ? item.quantity : 1;
+      return [{ price: item.price, quantity }];
+    });
+    let updated: Stripe.Subscription;
+    if (useHold && holdUntil && billedPriceId !== priceId) {
+      await scheduleCouponHoldPrice({
+        stripe,
+        subscription: sub,
+        holdPriceId: billedPriceId,
+        fullPriceId: priceId,
+        extraItems: extraPhaseItems,
+        untilUnix: holdUntil,
+        metadata: subscriptionMetadata,
+      });
+      updated = await stripe.subscriptions.update(sub.id, {
+        metadata: subscriptionMetadata,
+        expand: ["latest_invoice"],
+      });
+    } else {
+      if (scheduleIdFromSubscription(sub)) {
+        await releaseSubscriptionSchedule(stripe, sub);
+      }
+      updated = await stripe.subscriptions.update(sub.id, {
+        items: subscriptionItems,
+        proration_behavior: differenceCents == null ? "always_invoice" : "none",
+        payment_behavior: "pending_if_incomplete",
+        ...(keepCouponOffSubscription
+          ? { discounts: "" }
+          : params.promotionCodeId
+            ? { discounts: [{ promotion_code: params.promotionCodeId }] }
+            : {}),
+        metadata: subscriptionMetadata,
+        expand: ["latest_invoice"],
+      });
+    }
+
+  if (chargeDifference && useHold && differenceCents != null && customerId && couponChargeCents != null) {
+      const charged = await chargePaidPlanDifference({
+        stripe,
+        customerId,
+        paymentMethodId,
+        amountCents: couponChargeCents,
         dealId: String(params.deal.id),
         dealName: params.deal.dealName ?? "",
+        description: `Upgrade difference for ${params.deal.dealName ?? "this deal"}`,
         planId: params.planId,
-        billingCycle: params.cycle,
+        cycle: params.cycle,
         seatBand: params.seatBand,
-        billingScope: "deal",
-        extraCompanyUsers: String(extraUsers),
-        extraUserComment: extraUserComment.slice(0, 500),
-        ...(params.couponCode ? { couponCode: params.couponCode } : {}),
-      },
-      expand: ["latest_invoice"],
-    });
+        companyId: String(params.deal.organizationId ?? ""),
+        ...(params.promotionCodeId
+          ? { promotionCodeId: params.promotionCodeId }
+          : {}),
+        extraMetadata: {
+          ...(couponDuration ? { couponDuration } : {}),
+          ...(holdMonths ? { couponDurationMonths: String(holdMonths) } : {}),
+          ...(holdCents != null ? { repeatPriceCents: String(holdCents) } : {}),
+          ...(params.couponCode ? { couponCode: params.couponCode } : {}),
+        },
+      });
+      if (!charged.ok) {
+        try {
+          await restoreSubscriptionToSnapshot(sub);
+        } catch (restoreErr) {
+          console.warn("restore subscription after coupon charge:", restoreErr);
+        }
+        if (charged.hostedInvoiceUrl) {
+          return {
+            ok: true,
+            subscription: sub,
+            hostedInvoiceUrl: charged.hostedInvoiceUrl,
+            paid: false,
+          };
+        }
+        return { ok: false, status: 402, message: charged.message };
+      }
+    }
 
     let invoice: Stripe.Invoice | null =
       updated.latest_invoice && typeof updated.latest_invoice === "object"
@@ -2322,17 +2689,20 @@ async function mapDealBillingQueryRows(
       normalizeDealBillingCycle(row.stripeBillingCycle),
       currentSeatBand,
     );
-    const amountPaidCents =
-      paidByPriceId.get(priceId) ??
-      (couponRedeemed
-        ? subscribedCatalog ?? paidBySubscription.get(subscriptionId)
-        : paidBySubscription.get(subscriptionId)) ??
-      null;
     const nextPackageCents = catalogPackagePriceCents(
       suggestedPlanId ?? row.stripePlanId,
       normalizeDealBillingCycle(row.stripeBillingCycle),
       suggestedSeatBand,
     );
+    const onTargetPackage =
+      normalizeBillingPlanId(row.stripePlanId) === suggestedPlanId &&
+      currentSeatBand === suggestedSeatBand;
+    const amountPaidCents =
+      couponRedeemed && onTargetPackage
+        ? subscribedCatalog ?? nextPackageCents
+        : paidByPriceId.get(priceId) ??
+          paidBySubscription.get(subscriptionId) ??
+          null;
     const owesPriceGap = priceGapCents(amountPaidCents, nextPackageCents) > 0;
     list.push({
       id: String(row.id),
@@ -2445,6 +2815,79 @@ export type PlatformOrganizationBillingRow = {
   deals: DealBillingListRow[];
 };
 
+/** Lead sponsor label for deals that are not on a company. */
+async function leadSponsorLabelsForDeals(
+  dealIds: string[],
+): Promise<Map<string, { personId: string; name: string }>> {
+  const labels = new Map<string, { personId: string; name: string }>();
+  const ids = [
+    ...new Set(
+      dealIds
+        .map((id) => String(id ?? "").trim().toLowerCase())
+        .filter((id) => DEAL_UUID_RE.test(id)),
+    ),
+  ];
+  if (ids.length === 0) return labels;
+  const res = await pool.query<{
+    deal_id: string;
+    user_id: string | null;
+    matched_user_id: string | null;
+    contact_id: string | null;
+    user_name: string | null;
+    user_email: string | null;
+    matched_name: string | null;
+    matched_email: string | null;
+    contact_name: string | null;
+    contact_email: string | null;
+  }>(
+    `SELECT DISTINCT ON (dm.deal_id)
+       dm.deal_id::text AS deal_id,
+       u.id::text AS user_id,
+       u2.id::text AS matched_user_id,
+       c.id::text AS contact_id,
+       trim(concat_ws(' ', nullif(trim(u.first_name), ''), nullif(trim(u.last_name), ''))) AS user_name,
+       u.email AS user_email,
+       trim(concat_ws(' ', nullif(trim(u2.first_name), ''), nullif(trim(u2.last_name), ''))) AS matched_name,
+       u2.email AS matched_email,
+       nullif(trim(c.full_name), '') AS contact_name,
+       c.email AS contact_email
+     FROM deal_member dm
+     LEFT JOIN users u ON u.id::text = trim(dm.contact_member_id)
+     LEFT JOIN contact c ON c.id::text = trim(both from dm.contact_member_id)
+     LEFT JOIN users u2 ON lower(trim(u2.email)) = lower(trim(c.email))
+     WHERE dm.deal_id = ANY($1::uuid[])
+       AND dm.is_draft = false
+       AND (
+         lower(trim(dm.deal_member_role)) IN ('lead sponsor', 'lead_sponsor')
+         OR (
+           position('lead' in lower(trim(dm.deal_member_role))) > 0
+           AND position('sponsor' in lower(trim(dm.deal_member_role))) > 0
+           AND position('admin' in lower(trim(dm.deal_member_role))) = 0
+         )
+       )
+     ORDER BY dm.deal_id, dm.created_at`,
+    [ids],
+  );
+  for (const row of res.rows) {
+    const dealId = String(row.deal_id ?? "").trim().toLowerCase();
+    if (!dealId) continue;
+    const personId =
+      String(row.user_id ?? row.matched_user_id ?? row.contact_id ?? "")
+        .trim()
+        .toLowerCase() || dealId;
+    const name =
+      String(row.user_name ?? "").trim() ||
+      String(row.user_email ?? "").trim() ||
+      String(row.matched_name ?? "").trim() ||
+      String(row.matched_email ?? "").trim() ||
+      String(row.contact_name ?? "").trim() ||
+      String(row.contact_email ?? "").trim() ||
+      "Lead sponsor";
+    labels.set(dealId, { personId, name });
+  }
+  return labels;
+}
+
 /** Platform admin: every organization with deals and total paid. */
 export async function listPlatformOrganizationBilling(): Promise<
   PlatformOrganizationBillingRow[]
@@ -2469,6 +2912,30 @@ export async function listPlatformOrganizationBilling(): Promise<
     const list = dealsByOrg.get(id);
     if (list) list.push(deal);
     else dealsByOrg.set(id, [deal]);
+  }
+
+  const unassigned = deals.filter(
+    (deal) => !String(deal.companyId ?? "").trim(),
+  );
+  if (unassigned.length > 0) {
+    const sponsors = await leadSponsorLabelsForDeals(
+      unassigned.map((deal) => deal.id),
+    );
+    const grouped = new Map<string, DealBillingListRow[]>();
+    for (const deal of unassigned) {
+      const sponsor = sponsors.get(deal.id.trim().toLowerCase());
+      const groupId = sponsor
+        ? `lead:${sponsor.personId}`
+        : "lead:unassigned";
+      const label = sponsor?.name || "No lead sponsor";
+      deal.companyName = label;
+      const list = grouped.get(groupId);
+      if (list) list.push(deal);
+      else grouped.set(groupId, [deal]);
+    }
+    for (const [groupId, groupDeals] of grouped) {
+      dealsByOrg.set(groupId, groupDeals);
+    }
   }
 
   const paidByOrg = new Map<string, number>();
@@ -2692,23 +3159,12 @@ export async function updateDealSaasBillingStartsAt(params: {
   }
 
   const [deal] = await db
-    .select({
-      id: addDealForm.id,
-      stripeSubscriptionStatus: addDealForm.stripeSubscriptionStatus,
-      stripeCurrentPeriodEnd: addDealForm.stripeCurrentPeriodEnd,
-    })
+    .select({ id: addDealForm.id })
     .from(addDealForm)
     .where(and(eq(addDealForm.id, dealId), eq(addDealForm.organizationId, cid)))
     .limit(1);
   if (!deal) {
     return { ok: false, status: 404, message: "Deal not found." };
-  }
-  if (paidBillingPeriodIsLocked(deal)) {
-    return {
-      ok: false,
-      status: 409,
-      message: paidBillingPeriodLockedMessage(deal),
-    };
   }
 
   await db
@@ -2736,6 +3192,8 @@ export async function loadPayableDeal(params: {
   companyId: string;
   dealId: string;
   allowedDealIds: string[] | null;
+  /** Signed-in user. A lead sponsor may pay their deal even when the company allow-list missed it. */
+  actorUserId?: string | null;
   requestedSeatBand?: string | null;
 }): Promise<
   | { ok: true; deal: AddDealFormRow }
@@ -2746,7 +3204,11 @@ export async function loadPayableDeal(params: {
   if (!cid || !dealId) {
     return { ok: false, status: 400, message: "Select a deal to pay MRR for." };
   }
-  if (params.allowedDealIds) {
+  const actorId = String(params.actorUserId ?? "").trim();
+  const leadsThisDeal = actorId
+    ? await isPortalUserLeadSponsorOnDeal(dealId, actorId)
+    : false;
+  if (params.allowedDealIds && !leadsThisDeal) {
     const allow = new Set(
       params.allowedDealIds.map((id) => String(id).trim().toLowerCase()),
     );
@@ -2758,11 +3220,20 @@ export async function loadPayableDeal(params: {
       };
     }
   }
-  const [deal] = await db
+  const [inCompany] = await db
     .select()
     .from(addDealForm)
     .where(and(eq(addDealForm.id, dealId), eq(addDealForm.organizationId, cid)))
     .limit(1);
+  let deal = inCompany;
+  if (!deal && leadsThisDeal) {
+    const [led] = await db
+      .select()
+      .from(addDealForm)
+      .where(eq(addDealForm.id, dealId))
+      .limit(1);
+    deal = led;
+  }
   if (!deal) {
     return { ok: false, status: 404, message: "Deal not found." };
   }

@@ -454,6 +454,11 @@ export async function createSignFlowSponsorEmbedSigningSession(params: {
 /** Stable embed recipient ids — must match SignFlow `EMBED_DEFAULT_RECIPIENTS`. */
 export const SIGNFLOW_EMBED_INVESTOR_RECIPIENT_ID = "rec_investor";
 export const SIGNFLOW_EMBED_SPONSOR_RECIPIENT_ID = "rec_sponsor";
+/**
+ * Holds alternate signature lines (an "OR" block) that are not this signer's.
+ * Not a real recipient, so SignFlow does not ask anyone to sign those lines.
+ */
+export const SIGNFLOW_PARKED_ALTERNATE_RECIPIENT_ID = "rec_alternate_signature";
 
 export function resolveSignFlowInvestorRecipientId(doc: SignFlowDocument): string {
   const recipients = doc.recipients ?? [];
@@ -515,6 +520,9 @@ export function normalizeSignFlowFieldRecipientIds(
       rid === "rec_2"
     ) {
       return { ...field, recipientId: sponsorId };
+    }
+    if (rid === SIGNFLOW_PARKED_ALTERNATE_RECIPIENT_ID) {
+      return field;
     }
     return { ...field, recipientId: investorId };
   });
@@ -758,9 +766,9 @@ export function normalizeSignFlowFieldTypeForApi(type: string): string {
   return String(type ?? "text").trim() || "text";
 }
 
-export function normalizeSignFlowFieldsForApi(
-  fields: SignFlowField[],
-): SignFlowField[] {
+export function normalizeSignFlowFieldsForApi<T extends { type?: string }>(
+  fields: T[],
+): Array<T & { type: string }> {
   return fields.map((field) => ({
     ...field,
     type: normalizeSignFlowFieldTypeForApi(String(field.type ?? "text")),

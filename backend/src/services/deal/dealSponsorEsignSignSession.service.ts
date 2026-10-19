@@ -18,12 +18,19 @@ import {
   ensureParallelPartiesMaySign,
   evaluateSignFlowRecipientSignAccess,
   getSignFlowDocument,
+  normalizeSignFlowFieldsForApi,
+  patchSignFlowDocument,
   signFlowAnySponsorHasSigned,
   signFlowCounterSignRequiresInvestorSigned,
   signFlowInvestorPhaseComplete,
   signFlowTemplateHasSponsorFields,
 } from "../esign/signflow.service.js";
 import { syncDealInvestorEsignByTarget } from "./dealMemberEsignCompletion.service.js";
+import { applyEditableSigningDatePrefill } from "./investorQuestionnaireEsignPrefill.service.js";
+import { choiceFieldSourcesForDealFiles } from "./dealEsignSignflow.service.js";
+import { restoreFlattenedChoiceFields } from "./esignPdfMerge.service.js";
+import { limitAlternateSignatureFieldsForSigner } from "./esignAlternateSignature.service.js";
+import type { SignFlowField } from "../esign/signflow.service.js";
 import {
   findInvestorEsignContextBySignatureRequestId,
   readInvestorEsignStatusJson,
@@ -303,31 +310,11 @@ export async function getDealSponsorEsignSignSession(params: {
     ? await listDealSponsorSignerOptions(dealId)
     : [];
 
-  if (canAssign && !assigneeMemberRowId) {
-    if (signerOptions.length === 1) {
-      assigneeMemberRowId = signerOptions[0]!.rowId;
-    } else if (signerOptions.length > 1) {
-      return {
-        ok: true,
-        alreadyCompleted: false,
-        needsSignerSelection: true,
-        provider: provider ?? "dropbox",
-        signUrl: null,
-        clientId: provider === "signflow" ? null : dropboxCfg.clientId,
-        testMode:
-          provider === "signflow" ? signFlowCfg.testMode : dropboxCfg.testMode,
-        configured: true,
-        signatureRequestId: sigId,
-        embedApiKey: provider === "signflow" ? signFlowCfg.embedApiKey : null,
-        appBaseUrl: provider === "signflow" ? signFlowCfg.appBaseUrl : null,
-        documentId: sigId,
-        canAssignSigner: true,
-        signerOptions,
-        assignedSignerEmail: "",
-        assignedSignerName: "",
-      };
-    }
+  if (canAssign && !assigneeMemberRowId && signerOptions.length === 1) {
+    assigneeMemberRowId = signerOptions[0]!.rowId;
   }
+  // "Who will sign for the sponsor?" is not shown. The sponsor who opened
+  // the document is the signer, so multiple deal sponsors do not get a picker.
 
   const signerResolved = await resolveSponsorSignerForSession({
     dealId,
@@ -391,6 +378,37 @@ export async function getDealSponsorEsignSignSession(params: {
         const role = String(r.role ?? "").trim().toLowerCase();
         return role === "seller" || role.includes("sponsor");
       });
+      const sponsorRecipientId = sponsorRecipient?.id?.trim();
+      if (sponsorRecipientId) {
+        try {
+          const sources = await choiceFieldSourcesForDealFiles(
+            dealId,
+            (send.documents ?? []).map((doc) => doc.fileId),
+          );
+          const restored = restoreFlattenedChoiceFields(
+            (docForSession.fields ?? []) as SignFlowField[],
+            sources,
+          );
+          const limited = await limitAlternateSignatureFieldsForSigner({
+            doc: docForSession,
+            fields: restored.fields,
+            recipientId: sponsorRecipientId,
+            signerName,
+          });
+          const refreshed = applyEditableSigningDatePrefill(
+            limited.fields,
+            sponsorRecipientId,
+          );
+          if (restored.changed || limited.changed || refreshed.changed) {
+            docForSession = await patchSignFlowDocument(sigId, {
+              fields: normalizeSignFlowFieldsForApi(refreshed.fields),
+            });
+          }
+        } catch (err) {
+          console.warn("refresh sponsor signing fields:", err);
+        }
+      }
+
       const access = evaluateSignFlowRecipientSignAccess(
         docForSession,
         signer.email,

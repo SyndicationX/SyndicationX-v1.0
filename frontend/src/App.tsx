@@ -122,7 +122,7 @@ function SettingsRoute() {
   if (!leadFlagReady) return null;
   const billing = new URLSearchParams(location.search).get("billing");
   const leadSponsorPaying =
-    billing === "pay" && isDealSponsorSessionUser();
+    (billing === "pay" || billing === "upgrade") && isDealSponsorSessionUser();
   if (
     !canAccessCompanyPage() &&
     !isLeadSponsorSessionUser() &&

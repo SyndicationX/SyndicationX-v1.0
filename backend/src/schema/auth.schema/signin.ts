@@ -41,6 +41,13 @@ export const users = pgTable("users", {
     .defaultNow()
     .notNull(),
   inviteExpiresAt: timestamp("invite_expires_at", { withTimezone: true }),
+  /** Portal user who sent the organization invite. Null for self-serve signups. */
+  invitedByUserId: uuid("invited_by_user_id").references(
+    (): AnyPgColumn => users.id,
+    { onDelete: "set null" },
+  ),
+  /** When the organization invitation was sent. */
+  invitedAt: timestamp("invited_at", { withTimezone: true }),
   /**
    * Stripe customer that holds this user’s saved cards.
    * Company and deal customers stay separate so a card is not an organization record.

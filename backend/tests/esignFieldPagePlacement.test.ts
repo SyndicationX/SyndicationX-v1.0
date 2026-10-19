@@ -7,7 +7,9 @@ import {
 import {
   alignSignFlowRadioFieldSizeToChoiceBox,
   esignDocumentChoiceFieldSize,
+  keepChoiceFieldsThroughPrefill,
   normalizeSignFlowChoiceFieldOptionNumbers,
+  restoreFlattenedChoiceFields,
 } from "../src/services/deal/esignPdfMerge.service.js";
 
 process.env.JWT_SECRET_KEY =
@@ -156,5 +158,109 @@ describe("signflow choice field numbering", () => {
       fields.map((field) => field.label),
       ["Checkbox 1", "Checkbox 2", "Checkbox 1", "Checkbox 3"],
     );
+  });
+
+  it("turns a flattened text field back into its radio or checkbox", () => {
+    const restored = restoreFlattenedChoiceFields(
+      [
+        {
+          type: "text",
+          label: "Accredited",
+          x: 12,
+          y: 40,
+          width: 30,
+          height: 4,
+          page: 3,
+          recipientId: "rec_investor",
+          radioGroupId: "grp-accredited",
+          value: "Jane",
+        },
+        {
+          type: "text",
+          label: "Agree",
+          x: 18,
+          y: 55,
+          width: 30,
+          height: 4,
+          page: 3,
+          recipientId: "rec_investor",
+        },
+        {
+          type: "text",
+          label: "First Name",
+          x: 20,
+          y: 10,
+          width: 30,
+          height: 4,
+          page: 1,
+          recipientId: "rec_investor",
+        },
+      ],
+      [
+        {
+          type: "radio",
+          label: "Accredited",
+          x: 12,
+          y: 40,
+          width: 2,
+          height: 2,
+          page: 1,
+          recipientId: "rec_investor",
+          radioGroupId: "grp-accredited",
+        },
+        {
+          type: "checkbox",
+          label: "Agree",
+          x: 18,
+          y: 55,
+          width: 2,
+          height: 2,
+          page: 1,
+          recipientId: "rec_investor",
+        },
+      ],
+    );
+
+    assert.equal(restored.changed, true);
+    assert.equal(restored.fields[0]?.type, "radio");
+    assert.equal(restored.fields[0]?.radioGroupId, "grp-accredited");
+    assert.equal(restored.fields[1]?.type, "checkbox");
+    assert.equal(restored.fields[1]?.width, 2);
+    assert.equal(restored.fields[2]?.type, "text");
+  });
+
+  it("keeps radio and checkbox types that prefill rewrote as text", () => {
+    const kept = keepChoiceFieldsThroughPrefill(
+      [
+        {
+          type: "text",
+          label: "Accredited",
+          x: 1,
+          y: 1,
+          width: 40,
+          height: 8,
+          page: 2,
+          recipientId: "rec_investor",
+          value: "Jane",
+        },
+      ],
+      [
+        {
+          type: "radio",
+          label: "Accredited",
+          x: 12,
+          y: 40,
+          width: 2,
+          height: 2,
+          page: 2,
+          recipientId: "rec_investor",
+          radioGroupId: "grp-accredited",
+        },
+      ],
+    );
+    assert.equal(kept[0]?.type, "radio");
+    assert.equal(kept[0]?.radioGroupId, "grp-accredited");
+    assert.equal(kept[0]?.x, 12);
+    assert.equal(kept[0]?.width, 2);
   });
 });
