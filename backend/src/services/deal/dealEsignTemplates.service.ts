@@ -99,6 +99,8 @@ export type SignflowInvestorDataFieldBinding = {
   page: number;
   x: number;
   y: number;
+  /** False when the sponsor marked the field optional. Missing means required. */
+  required?: boolean;
 };
 
 export function resolveEsignTemplateProvider(

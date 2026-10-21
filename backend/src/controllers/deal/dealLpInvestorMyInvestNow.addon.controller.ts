@@ -16,6 +16,7 @@ import { readMyInvestNowCommitment } from "../../services/deal/dealLpInvestorMyI
 import { evaluateLpInvestNowEligibility } from "../../services/deal/dealLpInvestNowEligibility.service.js";
 import { dealSaasLockHttpPayload } from "../../services/billing/dealBilling.service.js";
 import { sendInvestmentCommitmentNotifications } from "../../services/deal/investmentCommitmentEmail.service.js";
+import { clearInvestorDealRemoval } from "../../services/deal/investorParticipation.service.js";
 
 function bodyString(v: unknown): string {
   if (typeof v === "string") return v;
@@ -206,6 +207,14 @@ export async function patchDealLpInvestorMyInvestNowAddon(
     }
 
     await reconcileAssigningDealUsersForDeal(dealId.trim(), user.id);
+    try {
+      await clearInvestorDealRemoval(user.id, dealId.trim());
+    } catch (clearErr) {
+      console.warn(
+        "patchDealLpInvestorMyInvestNowAddon: clear investor deal removal",
+        clearErr,
+      );
+    }
 
     const payload = await getLpInvestorsTabPayload(dealId.trim(), user.id);
     const savedRow = await readMyInvestNowCommitment({

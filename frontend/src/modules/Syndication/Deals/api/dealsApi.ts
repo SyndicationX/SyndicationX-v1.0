@@ -2950,6 +2950,24 @@ function normalizeInvestorRowApi(
     investedAtIso: str(
       firstDefined(raw, ["investedAtIso", "invested_at_iso", "createdAt", "created_at"]),
     ),
+    commitmentCompletedAtIso: str(
+      firstDefined(raw, [
+        "commitmentCompletedAtIso",
+        "commitment_completed_at_iso",
+        "commitmentCompletedAt",
+        "commitment_completed_at",
+      ]),
+    ),
+    ...(() => {
+      const v = firstDefined(raw, ["investorArchived", "investor_archived"])
+      if (v === true || v === "true" || v === 1 || v === "1") {
+        return { investorArchived: true as const }
+      }
+      if (v === false || v === "false" || v === 0 || v === "0") {
+        return { investorArchived: false as const }
+      }
+      return {}
+    })(),
     percentOfClassOwnership: str(
       firstDefined(raw, [
         "percentOfClassOwnership",
@@ -3693,6 +3711,7 @@ export async function postDealEsignAddInvestorDataField(
   fieldKey: string,
   profileIds?: string[],
   page?: number,
+  required = true,
 ): Promise<PostDealEsignAddInvestorDataFieldResult> {
   const base = getApiV1Base()
   if (!base) {
@@ -3711,6 +3730,7 @@ export async function postDealEsignAddInvestorDataField(
         body: JSON.stringify({
           fieldKey,
           profileIds: profileIds ?? [],
+          required,
           ...(Number.isFinite(page) && page && page >= 1
             ? { page: Math.floor(page) }
             : {}),
@@ -3737,6 +3757,46 @@ export async function postDealEsignAddInvestorDataField(
       esignLabel:
         typeof data.esignLabel === "string" ? data.esignLabel : fieldKey,
       label: typeof data.label === "string" ? data.label : fieldKey,
+      fieldCount: typeof data.fieldCount === "number" ? data.fieldCount : 0,
+    }
+  } catch {
+    return { ok: false, message: "Network error" }
+  }
+}
+
+/** Store the current SignFlow field layout without marking the template ready. */
+export async function postDealEsignSyncEmbeddedTemplateFields(
+  dealId: string,
+  fileId: string,
+): Promise<{ ok: true; fieldCount: number } | { ok: false; message: string }> {
+  const base = getApiV1Base()
+  if (!base) {
+    return { ok: false, message: "API base URL is not configured" }
+  }
+  try {
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(dealId)}/esign-templates/${encodeURIComponent(fileId)}/sync-embedded-template-fields`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        credentials: "include",
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as {
+      fieldCount?: unknown
+      message?: unknown
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        message:
+          data.message != null
+            ? String(data.message)
+            : "Could not store eSign fields",
+      }
+    }
+    return {
+      ok: true,
       fieldCount: typeof data.fieldCount === "number" ? data.fieldCount : 0,
     }
   } catch {

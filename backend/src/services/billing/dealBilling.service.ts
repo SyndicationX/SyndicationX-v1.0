@@ -1677,17 +1677,9 @@ export async function upgradeDealStripeSubscription(params: {
       currentCompanyUsers?.seatBand ?? params.deal.stripeSeatBand,
       params.seatBand,
     );
-  if (
+  const samePackage =
     !dealPaidPlanNeedsUpgrade(params.deal.stripePlanId, params.planId) &&
-    !seatUpgrade
-  ) {
-    return {
-      ok: false,
-      status: 409,
-      message:
-        "This deal is already on the offering and Co-Sponsor package selected.",
-    };
-  }
+    !seatUpgrade;
 
   const stripe = getStripeClient();
   const priceId = await stripePriceIdForPlatformAmount({
@@ -1810,6 +1802,18 @@ export async function upgradeDealStripeSubscription(params: {
       nextAmount != null &&
       holdCents !== nextAmount &&
       (couponDuration === "forever" || holdMonths != null);
+    if (
+      samePackage &&
+      !(differenceCents != null && differenceCents > 0) &&
+      !useHold
+    ) {
+      return {
+        ok: false,
+        status: 409,
+        message:
+          "This deal is already on the offering and Co-Sponsor package selected.",
+      };
+    }
     const nowUnix = Math.floor(Date.now() / 1000);
     const storedUntil = Number(sub.metadata?.couponRepeatUntil ?? "");
     const sameWindow =

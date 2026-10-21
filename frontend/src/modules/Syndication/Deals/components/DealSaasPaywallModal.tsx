@@ -10,10 +10,7 @@ import { createPortal } from "react-dom"
 import { useNavigate } from "react-router-dom"
 import { isLpInvestorSessionUser } from "../../../../common/auth/roleUtils"
 import { getSessionOrganizationCompanyId } from "../../../../common/auth/sessionOrganization"
-import {
-  openCompanyBillingPortal,
-  startCompanyBillingCheckout,
-} from "../../company/companyBillingApi"
+import { openCompanyBillingPortal } from "../../company/companyBillingApi"
 import { formatDealListDateDisplay } from "../dealsListDisplay"
 import {
   dealSaasBillingSettingsPath,
@@ -118,40 +115,18 @@ export function DealSaasPaywallModal({
     )
   }
 
-  async function payUpgradeInStripe() {
-    setError("")
-    const companyId = getSessionOrganizationCompanyId()?.trim() ?? ""
-    const planId = (
-      lockedDeal.suggestedPlanId ||
-      lockedDeal.billingPlanId ||
-      "starter"
+  function payDifferenceFromDeal() {
+    navigate(
+      dealSaasBillingSettingsPath(lockedDeal.id, lockedDeal.dealName, {
+        billing: "difference",
+      }),
     )
-      .trim()
-      .toLowerCase()
-    if (!companyId || (planId !== "starter" && planId !== "running" && planId !== "growth")) {
-      goToFirstPayment()
-      return
-    }
-    setBusy(true)
-    const result = await startCompanyBillingCheckout(
-      companyId,
-      planId,
-      "annually",
-      "5",
-      lockedDeal.id,
-    )
-    setBusy(false)
-    if (!result.ok) {
-      setError(result.message)
-      return
-    }
-    window.location.assign(result.url)
   }
 
   async function handlePay() {
     setError("")
     if (isPlanUpgrade) {
-      await payUpgradeInStripe()
+      payDifferenceFromDeal()
       return
     }
     if (!needsExistingInvoicePay) {
@@ -256,7 +231,7 @@ export function DealSaasPaywallModal({
                 type="button"
                 className="deal_stage_modal_btn deal_stage_modal_btn--confirm"
                 disabled={busy}
-                onClick={() => void payUpgradeInStripe()}
+                onClick={payDifferenceFromDeal}
               >
                 {busy ? (
                   <Loader2

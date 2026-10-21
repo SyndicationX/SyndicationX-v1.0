@@ -120,6 +120,7 @@ import {
   isGeneralPartnerRole,
   isLpInvestorRole,
   dealInvestorProfileDisplayName,
+  dealInvestorProfileTypeDisplay,
   type DealInvestmentModalEntry,
 } from "../../constants/investor-profile";
 import { INVESTMENT_STATUS_APPROVE_FUND } from "../../constants/investment-status";
@@ -1215,6 +1216,20 @@ function DealInvestorsPopulated({
           dealInvestorProfileDisplayName(row).toLowerCase(),
         cell: (row) => {
           const text = dealInvestorProfileDisplayName(row)
+          if (!text || text === "—")
+            return <span className="um_status_muted">—</span>
+          return <span className="deal_inv_profile_full_text">{text}</span>
+        },
+      },
+      {
+        id: "profileType",
+        header: "Profile type",
+        colWidth: "14rem",
+        thClassName: "deal_inv_th_profile deal_inv_th_profile_type",
+        tdClassName: "deal_inv_td_profile deal_inv_td_profile_type",
+        sortValue: (row) => dealInvestorProfileTypeDisplay(row).toLowerCase(),
+        cell: (row) => {
+          const text = dealInvestorProfileTypeDisplay(row)
           if (!text || text === "—")
             return <span className="um_status_muted">—</span>
           return <span className="deal_inv_profile_full_text">{text}</span>

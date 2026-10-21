@@ -1413,6 +1413,74 @@ a.deal_offering_add_ic_header.um_btn_primary {
   margin-top: 0.35em;
 }
 
+.deal_offering_gallery_toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin: 0.35rem 0 1.15rem;
+}
+
+.deal_offering_gallery_upload_btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.deal_offering_gallery_upload_panel {
+  width: min(32rem, calc(100vw - 2rem));
+}
+
+.deal_offering_gallery_upload_body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.deal_offering_gallery_upload_preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.deal_offering_gallery_upload_preview .asset_image_grid {
+  grid-template-columns: minmax(0, 11rem);
+}
+
+.deal_offering_gallery_lightbox_actions .um_btn_primary,
+.deal_offering_gallery_lightbox_actions .um_btn_secondary,
+.deal_offering_gallery_upload_btn {
+  gap: 0.4rem;
+}
+
+.deal_offering_gallery_upload_field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--portal-text, #0f172a);
+}
+
+.deal_offering_gallery_upload_field select,
+.deal_offering_gallery_upload_field input[type="file"] {
+  font: inherit;
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.deal_offering_gallery_upload_field select {
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--portal-border, #e2e8f0);
+  border-radius: var(--portal-card-radius, 4px);
+  background: var(--portal-surface, #fff);
+}
+
+.deal_offering_gallery_upload_file {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--portal-text-muted, #64748b);
+}
+
 .deal_offering_gallery_cover_hint {
   margin: 0 0 0.65em;
   font-size: 0.8125rem;
@@ -4274,6 +4342,29 @@ a.deal_docs_name_link:hover {
 .deal_docs_ui_banner_icon_btn_danger:hover {
   border-color: #fecaca;
   color: #b91c1c;
+}
+
+.deal_docs_ui_needs_attention {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.45rem;
+  padding: 0.12rem 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  color: #9a3412;
+  white-space: nowrap;
+  border-radius: 999px;
+  border: 1px solid #fdba74;
+  background: #fff7ed;
+}
+
+:root[data-theme="dark"] .deal_docs_ui_needs_attention {
+  color: #fdba74;
+  border-color: color-mix(in srgb, #fdba74 45%, transparent);
+  background: color-mix(in srgb, #9a3412 35%, transparent);
 }
 
 .deal_docs_ui_banner_count {

@@ -163,6 +163,7 @@ export function mergePythonPrefillFields(
       ...updated,
       value: updated.value?.trim() || original.value,
       dataKey: original.dataKey ?? updated.dataKey,
+      required: original.required === false ? false : updated.required,
       profileTypes: original.profileTypes?.length
         ? original.profileTypes
         : updated.profileTypes,

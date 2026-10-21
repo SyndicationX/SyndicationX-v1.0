@@ -351,32 +351,38 @@ export async function getDealSponsorEsignSignSession(params: {
         esignSendReadyForSponsorCounterSign(send) ||
         signFlowInvestorPhaseComplete(liveDoc);
 
-      const sponsorOnDoc = (liveDoc.recipients ?? []).find((r) => {
-        const role = String(r.role ?? "").trim().toLowerCase();
-        return role === "seller" || role.includes("sponsor");
-      });
       const signerEmail = signer.email.trim().toLowerCase();
       const signerName = signer.name.trim() || signerEmail;
-      const needsSponsorAssign =
-        String(sponsorOnDoc?.email ?? "").trim().toLowerCase() !== signerEmail ||
-        String(sponsorOnDoc?.name ?? "").trim() !== signerName;
+      const sponsorRecipients = (liveDoc.recipients ?? []).filter((recipient) => {
+        const role = String(recipient.role ?? "").trim().toLowerCase();
+        return role === "seller" || role.includes("sponsor");
+      });
+      const sponsorAlreadyOnDoc = sponsorRecipients.find(
+        (recipient) =>
+          String(recipient.email ?? "").trim().toLowerCase() === signerEmail,
+      );
 
       let docForSession = liveDoc;
-      if (needsSponsorAssign) {
+      if (!sponsorAlreadyOnDoc) {
         const patched = await assignSignFlowDocumentSponsorSigner(sigId, signer);
         if (!patched) {
           return {
             ok: false,
             code: "not_ready",
-            message: "Could not assign sponsor signer on this SignFlow document",
+            message:
+              "This signature is assigned to another sponsor. Sign in as that sponsor to counter-sign.",
           };
         }
         docForSession = await getSignFlowDocument(sigId);
       }
 
-      const sponsorRecipient = (docForSession.recipients ?? []).find((r) => {
-        const role = String(r.role ?? "").trim().toLowerCase();
-        return role === "seller" || role.includes("sponsor");
+      const sponsorRecipient = (docForSession.recipients ?? []).find((recipient) => {
+        const role = String(recipient.role ?? "").trim().toLowerCase();
+        const isSponsor = role === "seller" || role.includes("sponsor");
+        return (
+          isSponsor &&
+          String(recipient.email ?? "").trim().toLowerCase() === signerEmail
+        );
       });
       const sponsorRecipientId = sponsorRecipient?.id?.trim();
       if (sponsorRecipientId) {

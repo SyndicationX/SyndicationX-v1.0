@@ -1,14 +1,23 @@
-import { MoreHorizontal, Plus, TrendingUp } from "lucide-react"
+import { Archive, ArchiveRestore, MoreHorizontal, Plus, Trash2, TrendingUp } from "lucide-react"
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
+import { ConfirmDeleteModal } from "@/common/components/ConfirmDeleteModal"
+import { toast } from "@/common/components/Toast"
+import { MemberRemoveConfirmModal } from "@/modules/Syndication/usermanagement/MemberRemoveConfirmModal"
 import "@/modules/Syndication/usermanagement/user_management.css"
 
 type InvestmentProfileBreakdownRowActionsProps = {
   profileLabel: string
   /** When false, kebab stays visible but cannot open. */
   disabled?: boolean
+  archived?: boolean
   onAddInvestment?: () => void
   onResumeInvesting?: () => void
+  /** Soft-committed and invested profiles. Notifies the sponsor. */
+  onArchive?: () => Promise<void>
+  onRestore?: () => Promise<void>
+  /** Soft-committed profiles only. Notifies the sponsor. */
+  onDeleteProfile?: () => Promise<void>
 }
 
 /**
@@ -19,17 +28,30 @@ type InvestmentProfileBreakdownRowActionsProps = {
 export function InvestmentProfileBreakdownRowActions({
   profileLabel,
   disabled = false,
+  archived = false,
   onAddInvestment,
   onResumeInvesting,
+  onArchive,
+  onRestore,
+  onDeleteProfile,
 }: InvestmentProfileBreakdownRowActionsProps) {
   const a11yLabel = (profileLabel?.trim() || "Profile").replace(/"/g, "”")
   const [open, setOpen] = useState(false)
+  const [confirmKind, setConfirmKind] = useState<null | "archive" | "delete">(null)
+  const [confirmBusy, setConfirmBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState("")
   const wrapRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLUListElement>(null)
   const close = useCallback(() => setOpen(false), [])
 
   useLayoutEffect(() => {
-    if (!open || disabled || (!onResumeInvesting && !onAddInvestment)) return
+    if (
+      !open ||
+      disabled ||
+      (!onResumeInvesting && !onAddInvestment && !onArchive && !onRestore && !onDeleteProfile)
+    ) {
+      return
+    }
 
     function syncPosition() {
       const trigger = wrapRef.current
@@ -64,7 +86,7 @@ export function InvestmentProfileBreakdownRowActions({
       window.removeEventListener("scroll", syncPosition, true)
       window.removeEventListener("resize", syncPosition)
     }
-  }, [open, disabled, onAddInvestment, onResumeInvesting])
+  }, [open, disabled, onAddInvestment, onResumeInvesting, onArchive, onRestore, onDeleteProfile])
 
   useEffect(() => {
     if (!open) return
@@ -85,7 +107,30 @@ export function InvestmentProfileBreakdownRowActions({
     }
   }, [open, close])
 
-  const hasMenu = Boolean(onAddInvestment || onResumeInvesting)
+  const hasMenu = Boolean(
+    onAddInvestment || onResumeInvesting || onArchive || onRestore || onDeleteProfile,
+  )
+
+  const runConfirmed = useCallback(async () => {
+    const action = confirmKind === "delete" ? onDeleteProfile : onArchive
+    if (!action) return
+    setConfirmBusy(true)
+    setDeleteError("")
+    try {
+      await action()
+      setDeleteError("")
+      setConfirmKind(null)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Something went wrong."
+      if (confirmKind === "delete") setDeleteError(message)
+      toast.error(
+        confirmKind === "delete" ? "Could not remove profile" : "Could not archive profile",
+        message,
+      )
+    } finally {
+      setConfirmBusy(false)
+    }
+  }, [confirmKind, onArchive, onDeleteProfile])
   const triggerTitle = "Actions"
 
   return (
@@ -161,10 +206,111 @@ export function InvestmentProfileBreakdownRowActions({
                   </button>
                 </li>
               ) : null}
+              {archived && onRestore ? (
+                <li role="none">
+                  <button
+                    type="button"
+                    className="um_kebab_menuitem"
+                    role="menuitem"
+                    onClick={() => {
+                      close()
+                      void onRestore().catch((err: unknown) => {
+                        toast.error(
+                          "Could not restore profile",
+                          err instanceof Error ? err.message : "Something went wrong.",
+                        )
+                      })
+                    }}
+                  >
+                    <ArchiveRestore
+                      className="um_kebab_menuitem_icon"
+                      size={16}
+                      strokeWidth={2}
+                      aria-hidden
+                    />
+                    Restore profile
+                  </button>
+                </li>
+              ) : null}
+              {!archived && onArchive ? (
+                <li role="none">
+                  <button
+                    type="button"
+                    className="um_kebab_menuitem"
+                    role="menuitem"
+                    onClick={() => {
+                      close()
+                      setConfirmKind("archive")
+                    }}
+                  >
+                    <Archive
+                      className="um_kebab_menuitem_icon"
+                      size={16}
+                      strokeWidth={2}
+                      aria-hidden
+                    />
+                    Archive profile
+                  </button>
+                </li>
+              ) : null}
+              {onDeleteProfile ? (
+                <li role="none">
+                  <button
+                    type="button"
+                    className="um_kebab_menuitem deals_kebab_menuitem_danger"
+                    role="menuitem"
+                    onClick={() => {
+                      close()
+                      setConfirmKind("delete")
+                    }}
+                  >
+                    <Trash2
+                      className="um_kebab_menuitem_icon"
+                      size={16}
+                      strokeWidth={2}
+                      aria-hidden
+                    />
+                    Remove
+                  </button>
+                </li>
+              ) : null}
             </ul>,
             document.body,
           )
         : null}
+      <ConfirmDeleteModal
+        open={confirmKind === "archive"}
+        title="Archive this profile?"
+        message={`Archive “${a11yLabel}” on this deal? The commitment comes off the deal until you restore the profile. The sponsor is notified.`}
+        confirmLabel="Archive"
+        busyLabel="Archiving…"
+        busy={confirmBusy}
+        onCancel={() => {
+          if (!confirmBusy) setConfirmKind(null)
+        }}
+        onConfirm={() => void runConfirmed()}
+      />
+      {confirmKind === "delete" ? (
+        <MemberRemoveConfirmModal
+          memberName={a11yLabel}
+          busy={confirmBusy}
+          error={deleteError}
+          submitLabel="Remove"
+          busyLabel="Removing…"
+          message={
+            <>
+              This will remove the soft commitment for <strong>{a11yLabel}</strong>.
+              It is removed from the deal and the sponsor is notified.
+            </>
+          }
+          onClose={() => {
+            if (confirmBusy) return
+            setDeleteError("")
+            setConfirmKind(null)
+          }}
+          onConfirm={() => void runConfirmed()}
+        />
+      ) : null}
     </div>
   )
 }

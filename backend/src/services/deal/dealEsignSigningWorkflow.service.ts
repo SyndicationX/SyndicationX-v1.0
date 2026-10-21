@@ -192,9 +192,18 @@ export async function syncSignflowTemplateSigningWorkflow(
     return r;
   });
 
+  const workflowUnchanged =
+    String(doc.workflowType ?? "").trim().toLowerCase() === workflowType;
+  const ordersUnchanged = recipients.every(
+    (recipient, index) =>
+      Number(recipient.order) === Number(existing[index]?.order),
+  );
+  if (workflowUnchanged && ordersUnchanged) return;
+
   await patchSignFlowDocument(documentId, {
     workflowType,
     recipients,
+    fields: doc.fields ?? [],
   });
 }
 
@@ -436,14 +445,22 @@ export async function assignSignFlowDocumentSponsorSigner(
 
   const email = signer.email.trim().toLowerCase();
   const name = signer.name.trim() || email;
-  const currentEmail = String(sponsorRecipient.email ?? "").trim().toLowerCase();
-  const currentName = String(sponsorRecipient.name ?? "").trim();
-  if (currentEmail === email && currentName === name) {
-    return true;
-  }
+  const sellers = recipients.filter((recipient) => {
+    const role = String(recipient.role ?? "").trim().toLowerCase();
+    return role === "seller" || role.includes("sponsor");
+  });
+  const alreadyAssigned = sellers.find(
+    (recipient) => String(recipient.email ?? "").trim().toLowerCase() === email,
+  );
+  if (alreadyAssigned) return true;
+
+  const placeholder = sellers.find((recipient) =>
+    isPlaceholderSponsorEmail(recipient.email),
+  );
+  if (!placeholder) return false;
 
   const nextRecipients = recipients.map((r) => {
-    if (r === sponsorRecipient) {
+    if (r === placeholder) {
       return { ...r, email, name };
     }
     return r;
@@ -451,4 +468,71 @@ export async function assignSignFlowDocumentSponsorSigner(
 
   await patchSignFlowDocument(sigId, { recipients: nextRecipients });
   return true;
+}
+
+const SPONSOR_RECIPIENT_COLORS = ["#2563eb", "#7c3aed", "#0f766e", "#b45309", "#be123c"];
+
+function isPlaceholderSponsorEmail(email: string | null | undefined): boolean {
+  const value = String(email ?? "").trim().toLowerCase();
+  return !value.includes("@") || value.endsWith("@embed.local");
+}
+
+function sponsorRoleLabel(role: string): string {
+  return role
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+/**
+ * Adds each deal sponsor as their own sponsor signer on the template.
+ * Fields placed for a sponsor stay on that sponsor instead of one shared signer.
+ */
+export async function syncDealSponsorsOntoSignFlowTemplate(
+  documentId: string,
+  dealId: string,
+): Promise<void> {
+  const sigId = documentId.trim();
+  if (!sigId) return;
+  const sponsors = await listDealSponsorSignerOptions(dealId);
+  if (sponsors.length === 0) return;
+
+  const doc = await getSignFlowDocument(sigId);
+  const existing = [...(doc.recipients ?? [])];
+  const knownEmails = new Set(
+    existing
+      .map((recipient) => String(recipient.email ?? "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  let order = existing.reduce(
+    (max, recipient) => Math.max(max, Number(recipient.order) || 0),
+    2,
+  );
+  const next = [...existing];
+  let added = false;
+
+  sponsors.forEach((sponsor, index) => {
+    const email = sponsor.email.trim().toLowerCase();
+    if (!email.includes("@") || knownEmails.has(email)) return;
+    knownEmails.add(email);
+    order += 1;
+    const roleLabel = sponsorRoleLabel(sponsor.role || "Sponsor");
+    next.push({
+      name: `${sponsor.name} (${roleLabel})`,
+      email,
+      role: "seller",
+      color: SPONSOR_RECIPIENT_COLORS[(index + 1) % SPONSOR_RECIPIENT_COLORS.length],
+      order,
+    });
+    added = true;
+  });
+
+  if (!added) return;
+  await patchSignFlowDocument(sigId, { recipients: next });
+}
+
+export function isNamedSponsorRecipientEmail(email: string | null | undefined): boolean {
+  return !isPlaceholderSponsorEmail(email);
 }

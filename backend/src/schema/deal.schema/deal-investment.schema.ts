@@ -67,6 +67,11 @@ export const dealInvestment = pgTable("deal_investment", {
   commitmentSponsorEmailSentAt: timestamp("commitment_sponsor_email_sent_at", {
     withTimezone: true,
   }),
+  /**
+   * Investor-only archive of this commitment inside Investing.
+   * Does not archive the sponsor's deal.
+   */
+  investorArchivedAt: timestamp("investor_archived_at", { withTimezone: true }),
   extraContributionAmounts: jsonb("extra_contribution_amounts")
     .$type<string[]>()
     .notNull(),

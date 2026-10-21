@@ -22,7 +22,17 @@ import {
   isInvestNowDraftInvestorRow,
 } from "@/modules/Investing/pages/invest/investNowDraftUtils"
 import { fetchDealInvestors } from "@/modules/Syndication/Deals/api/dealsApi"
+import { DEALS_LIST_REFETCH_EVENT } from "@/modules/Syndication/Deals/createDealFormDraftStorage"
 import { getSessionUserEmail } from "@/common/auth/sessionUserEmail"
+import { ActiveArchivedTabs } from "@/common/components/active-archived-tabs/ActiveArchivedTabs"
+import { toast } from "@/common/components/Toast"
+import {
+  INVESTMENT_DETAIL_REFETCH_EVENT,
+  deleteMyInvestorProfileParticipation,
+  patchMyInvestorProfileParticipation,
+} from "@/modules/Investing/api/investorParticipationApi"
+import { investorParticipationKind } from "@/modules/Investing/utils/investorParticipationKind"
+import type { DealInvestorRow } from "@/modules/Syndication/Deals/types/deal-investors.types"
 import { EntityAvatarNameCell } from "@/common/components/entity-avatar/EntityAvatarNameCell"
 import {
   CardCompactAmount,
@@ -65,6 +75,16 @@ import { resolveInvestmentDealId } from "./utils/resolveInvestmentDealId"
 import { countVisibleDocumentsForInvestmentDetail } from "./utils/countInvestmentDetailDocuments"
 import { bindInvestmentOfferingDocumentsAutoRefresh } from "./utils/bindInvestmentOfferingDocumentsAutoRefresh"
 import "./investment-detail.css"
+
+function lineIsInvestorArchived(
+  line: InvestmentBreakdownLine,
+  rows: DealInvestorRow[],
+): boolean {
+  const id = String(line.investmentRowId ?? "").trim()
+  const row = id ? rows.find((item) => String(item.id ?? "") === id) : undefined
+  if (row && typeof row.investorArchived === "boolean") return row.investorArchived
+  return Boolean(line.investorArchived)
+}
 
 function formatInvDetailUsd(n: number): string {
   return formatCardCompactUsdExact(n)
@@ -419,9 +439,6 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
   const navigate = useNavigate()
   const { switchToInvesting } = usePortalMode()
   const list = d.list
-  const investedAmountNode = (
-    <CardCompactAmount amount={list.investedAmount} />
-  )
 
   const [propertyStatus, setPropertyStatus] = useState(() =>
     readPropertyStatusForDetail(d.id, d.propertyStatus),
@@ -449,6 +466,7 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
   )
   const hasRoleBreakdownTable = (d.investedAsBreakdown?.length ?? 0) > 0
   const [profileBreakdownQuery, setProfileBreakdownQuery] = useState("")
+  const [profileListTab, setProfileListTab] = useState<"active" | "archived">("active")
   const filteredProfileBreakdown = useMemo(() => {
     const rows = d.investedAsBreakdown
     if (!rows?.length) return []
@@ -626,19 +644,36 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
   const [dealInvestorRows, setDealInvestorRows] = useState<
     import("@/modules/Syndication/Deals/types/deal-investors.types").DealInvestorRow[]
   >([])
+  const activeCommitmentTotal = useMemo(() => {
+    const lines = d.investedAsBreakdown ?? []
+    if (lines.length === 0) return list.investedAmount
+    return lines.reduce((sum, line) => {
+      if (lineIsInvestorArchived(line, dealInvestorRows)) return sum
+      return sum + (Number(line.investedAmount) || 0)
+    }, 0)
+  }, [d.investedAsBreakdown, dealInvestorRows, list.investedAmount])
+  const investedAmountNode = (
+    <CardCompactAmount amount={activeCommitmentTotal} />
+  )
 
   useEffect(() => {
     if (!dealId) return
     let cancelled = false
-    void fetchDealInvestors(dealId, { lpInvestorsOnly: false })
-      .then((payload) => {
-        if (!cancelled) setDealInvestorRows(payload.investors ?? [])
-      })
-      .catch(() => {
-        if (!cancelled) setDealInvestorRows([])
-      })
+    const loadInvestors = () => {
+      void fetchDealInvestors(dealId, { lpInvestorsOnly: false })
+        .then((payload) => {
+          if (!cancelled) setDealInvestorRows(payload.investors ?? [])
+        })
+        .catch(() => {
+          if (!cancelled) setDealInvestorRows([])
+        })
+    }
+    loadInvestors()
+    const onRefetch = () => loadInvestors()
+    window.addEventListener(INVESTMENT_DETAIL_REFETCH_EVENT, onRefetch)
     return () => {
       cancelled = true
+      window.removeEventListener(INVESTMENT_DETAIL_REFETCH_EVENT, onRefetch)
     }
   }, [dealId])
 
@@ -699,6 +734,27 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
     [dealId, d.id, navigate, switchToInvesting],
   )
 
+  const profileRowsForTab = useMemo(() => {
+    return filteredProfileBreakdown.filter((line) => {
+      const archived = lineIsInvestorArchived(line, dealInvestorRows)
+      return profileListTab === "archived" ? archived : !archived
+    })
+  }, [filteredProfileBreakdown, dealInvestorRows, profileListTab])
+  const profileActiveCount = useMemo(
+    () =>
+      (d.investedAsBreakdown ?? []).filter(
+        (line) => !lineIsInvestorArchived(line, dealInvestorRows),
+      ).length,
+    [d.investedAsBreakdown, dealInvestorRows],
+  )
+  const profileArchivedCount = useMemo(
+    () =>
+      (d.investedAsBreakdown ?? []).filter((line) =>
+        lineIsInvestorArchived(line, dealInvestorRows),
+      ).length,
+    [d.investedAsBreakdown, dealInvestorRows],
+  )
+
   const profileBreakdownColumnsWithActions: DataTableColumn<InvestmentBreakdownLine>[] =
     useMemo(() => {
       const em = getSessionUserEmail()?.trim().toLowerCase() ?? ""
@@ -712,10 +768,14 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
           thClassName: "um_th_actions deals_th_actions_head",
           tdClassName: "um_td_actions deal_inv_td_actions",
           cell: (line) => {
+            const lineInvestmentId = String(line.investmentRowId ?? "").trim()
+            const exactRow = lineInvestmentId
+              ? dealInvestorRows.find(
+                  (r) => String(r.id ?? "").trim() === lineInvestmentId,
+                )
+              : undefined
             const row =
-              dealInvestorRows.find(
-                (r) => String(r.id ?? "") === String(line.investmentRowId ?? ""),
-              ) ??
+              exactRow ??
               (em
                 ? findInvestorRowForInvestNowScope(dealInvestorRows, {
                     email: em,
@@ -724,13 +784,30 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
                     profileId: line.commitmentProfileId,
                   })
                 : undefined)
-            const canAddInvestment = Boolean(line.userInvestorProfileId?.trim())
+            const archived = lineIsInvestorArchived(line, dealInvestorRows)
+            const kind = exactRow
+              ? investorParticipationKind(exactRow)
+              : line.participationKind
+            const investmentId = String(line.investmentRowId ?? "").trim()
+            const rosterOnly =
+              row?.investorKind === "lp_roster" ||
+              row?.investorKind === "member_roster"
+            const canManageProfile = Boolean(
+              dealId?.trim() && investmentId && row && !rosterOnly,
+            )
+            const canAddInvestment =
+              !archived && Boolean(line.userInvestorProfileId?.trim())
             const canResume =
-              Boolean(row && em && isInvestNowDraftInvestorRow(row, em))
+              !archived && Boolean(row && em && isInvestNowDraftInvestorRow(row, em))
+            const notifyLists = () => {
+              window.dispatchEvent(new Event(INVESTMENT_DETAIL_REFETCH_EVENT))
+              window.dispatchEvent(new Event(DEALS_LIST_REFETCH_EVENT))
+            }
             return (
               <InvestmentProfileBreakdownRowActions
                 profileLabel={line.profileName?.trim() || "Profile"}
-                disabled={!canAddInvestment && !canResume}
+                archived={archived}
+                disabled={!canAddInvestment && !canResume && !canManageProfile}
                 onAddInvestment={
                   canAddInvestment
                     ? () => openAddInvestmentForLine(line)
@@ -739,12 +816,72 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
                 onResumeInvesting={
                   canResume ? () => openResumeForLine(line) : undefined
                 }
+                onArchive={
+                  canManageProfile && !archived
+                    ? async () => {
+                        const result = await patchMyInvestorProfileParticipation(
+                          dealId,
+                          investmentId,
+                          true,
+                        )
+                        if (!result.ok) throw new Error(result.message)
+                        toast.success(
+                          "Profile archived",
+                          result.sponsorNotified
+                            ? "The sponsor was notified."
+                            : "Saved. The sponsor could not be emailed.",
+                        )
+                        notifyLists()
+                      }
+                    : undefined
+                }
+                onRestore={
+                  canManageProfile && archived
+                    ? async () => {
+                        const result = await patchMyInvestorProfileParticipation(
+                          dealId,
+                          investmentId,
+                          false,
+                        )
+                        if (!result.ok) throw new Error(result.message)
+                        toast.success(
+                          "Profile restored",
+                          "It is back with the active profiles on this deal.",
+                        )
+                        notifyLists()
+                      }
+                    : undefined
+                }
+                onDeleteProfile={
+                  canManageProfile && kind === "soft_committed"
+                    ? async () => {
+                        const result = await deleteMyInvestorProfileParticipation(
+                          dealId,
+                          investmentId,
+                        )
+                        if (!result.ok) throw new Error(result.message)
+                        toast.success(
+                          "Profile removed",
+                          result.sponsorNotified
+                            ? "Removed from the deal. The sponsor was notified."
+                            : "Removed from the deal. The sponsor could not be emailed.",
+                        )
+                        notifyLists()
+                      }
+                    : undefined
+                }
               />
             )
           },
         },
       ]
-    }, [profileBreakdownColumns, dealInvestorRows, openAddInvestmentForLine, openResumeForLine])
+    }, [
+      profileBreakdownColumns,
+      dealInvestorRows,
+      openAddInvestmentForLine,
+      openResumeForLine,
+      dealId,
+    ])
 
   return (
     <>
@@ -1058,18 +1195,28 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
                       />
                     </div>
                   </div>
+                  <ActiveArchivedTabs
+                    value={profileListTab}
+                    onChange={setProfileListTab}
+                    activeCount={profileActiveCount}
+                    archivedCount={profileArchivedCount}
+                    idPrefix="inv-profile-lines"
+                    ariaLabel="Profile commitment status"
+                  />
                   <DataTable<InvestmentBreakdownLine>
                     visualVariant="members"
                     membersTableClassName="um_table_members deal_inv_table"
                     columns={profileBreakdownColumnsWithActions}
-                    rows={filteredProfileBreakdown}
+                    rows={profileRowsForTab}
                     getRowKey={(r, i) =>
                       r.investmentRowId?.trim() || `inv-breakdown-${i}`
                     }
                     emptyLabel={
                       profileBreakdownQuery.trim()
                         ? "No lines match this filter."
-                        : "No investment lines for this deal."
+                        : profileListTab === "archived"
+                          ? "No archived profiles on this deal."
+                          : "No active profiles on this deal."
                     }
                     initialSort={{ columnId: "profileName", direction: "asc" }}
                   />
@@ -1187,10 +1334,13 @@ export default function InvestmentDetailPage() {
     const onFocus = () => load(true)
     window.addEventListener("focus", onFocus)
     document.addEventListener("visibilitychange", onVisible)
+    const onDetailRefetch = () => load(true)
+    window.addEventListener(INVESTMENT_DETAIL_REFETCH_EVENT, onDetailRefetch)
     return () => {
       cancelled = true
       window.removeEventListener("focus", onFocus)
       document.removeEventListener("visibilitychange", onVisible)
+      window.removeEventListener(INVESTMENT_DETAIL_REFETCH_EVENT, onDetailRefetch)
     }
   }, [decodedId])
 

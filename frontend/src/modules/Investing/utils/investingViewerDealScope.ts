@@ -47,6 +47,7 @@ export function committedAmountForViewerEmail(
   let sum = 0
   for (const inv of payload.investors) {
     if (!investorRowMatchesViewerEmail(inv, viewerEmailNorm)) continue
+    if (inv.investorArchived) continue
     if (!investorCommittedVisibleToViewer(inv)) continue
     sum += investorRowCommittedNumeric(inv)
   }
@@ -64,6 +65,7 @@ export function committedAmountMatchingInvestorsTable(
   let sum = 0
   for (const inv of payload.investors) {
     if (!investorRowMatchesViewerEmail(inv, viewerEmailNorm)) continue
+    if (inv.investorArchived) continue
     sum += investorRowCommittedAmountNumeric(inv)
   }
   return sum

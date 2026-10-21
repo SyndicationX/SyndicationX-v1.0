@@ -1132,6 +1132,10 @@ function BillingPayCouponModal({
       return;
     }
     setCoupon(result.coupon);
+    toast.success(
+      "Coupon applied",
+      `${result.coupon.code} updated the amount due.`,
+    );
   }
 
   return createPortal(
@@ -1214,6 +1218,7 @@ function BillingPayCouponModal({
               className="cp_pay_coupon_form"
               onSubmit={(e) => {
                 e.preventDefault();
+                if (coupon || row.couponRedeemed) return;
                 void applyCoupon();
               }}
             >
@@ -1221,11 +1226,12 @@ function BillingPayCouponModal({
                 Coupon code
                 <input
                   className="cp_coupons_input"
-                  value={code}
-                  autoFocus
-                  disabled={locked}
+                  value={coupon ? coupon.code : code}
+                  autoFocus={!coupon}
+                  disabled={locked || coupon != null || row.couponRedeemed === true}
                   autoCapitalize="characters"
                   onChange={(e) => {
+                    if (coupon || row.couponRedeemed) return;
                     setCode(e.target.value.toUpperCase());
                     setCodeError("");
                   }}
@@ -1275,7 +1281,12 @@ function BillingPayCouponModal({
               <button
                 type="button"
                 className="deal_stage_modal_btn deal_stage_modal_btn--confirm"
-                disabled={locked}
+                disabled={locked || row.couponRedeemed === true}
+                title={
+                  row.couponRedeemed
+                    ? "A coupon is already applied to this deal."
+                    : undefined
+                }
                 onClick={() => setAsking(false)}
               >
                 <BadgePercent size={16} strokeWidth={2} aria-hidden />
@@ -1504,7 +1515,7 @@ function dealAmountSearchText(
     extra.dueLabel,
     (() => {
       const upgrade = upgradeDifferenceDollars(row);
-      return upgrade
+      return upgrade && upgrade.due > 0
         ? `${formatBillingDollars(upgrade.due)} difference due`
         : null;
     })(),
@@ -1556,7 +1567,7 @@ function DealAmountCell({
     return <span>—</span>;
   }
   const upgrade = upgradeDifferenceDollars(row);
-  if (upgrade) {
+  if (upgrade && upgrade.due > 0) {
     const period = /annual|year/i.test(String(row.billingCycle ?? ""))
       ? "/yr"
       : "/mo";
@@ -2417,6 +2428,8 @@ function BillingPricingPanel({
                         <Trash2 size={15} strokeWidth={2} aria-hidden />
                       </button>
                     </p>
+                  ) : selectedDeal?.couponRedeemed ? (
+                    <p className="cp_billing_coupon_applied">Coupon already applied</p>
                   ) : (
                     <button
                       type="button"
@@ -2828,7 +2841,7 @@ function DealMrrPaymentHistory({
 
   return (
     <div className="cp_billing_deal_mrr_history">
-      {upgrade ? (
+      {upgrade && upgrade.due > 0 ? (
         <p className="cp_billing_deal_mrr_history_title">
           Difference due {formatBillingDollars(upgrade.due)}
           {upgradePeriod}. Paid {formatBillingDollars(upgrade.paid)}
@@ -2999,6 +3012,7 @@ function BillingDealDetailsPanel({
   onPaid,
   onSelectOrganization,
   onOpenPlanUpgrade,
+  autoDifferenceDealId,
 }: {
   companyId: string;
   /** Lead sponsors may lead deals in more than one company. */
@@ -3008,8 +3022,11 @@ function BillingDealDetailsPanel({
   onPaid?: () => void;
   onSelectOrganization?: (organizationId: string) => void;
   onOpenPlanUpgrade?: (dealId: string, dealName: string) => void;
+  /** Open the pay-the-difference coupon flow for this deal once. */
+  autoDifferenceDealId?: string;
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const platformAdmin = isPlatformAdmin();
   const [deals, setDeals] = useState<CompanyDealBillingRow[]>([]);
   const [organizations, setOrganizations] = useState<
@@ -3576,6 +3593,35 @@ function BillingDealDetailsPanel({
     window.location.assign(result.url);
   };
 
+  const differencePromptOpened = useRef(false);
+
+  const beginDifferencePay = useCallback(
+    (prompt: {
+      row: CompanyDealBillingRow;
+      companyId: string;
+      planId: string;
+      cycle: "monthly" | "annually";
+      seatBand: SeatBand;
+    }) => {
+      const due = upgradeDifferenceDollars(prompt.row);
+      if (!due?.due) return false;
+      setUpgradeChoice(null);
+      setUpgradeChoiceError("");
+      setUpgradeChoiceBusy(null);
+      setPayCouponError("");
+      setPayCouponBusy(false);
+      setPayCoupon({
+        ...prompt,
+        listPrice: due.due,
+        paidAlready: due.paid,
+        renewsAt: due.next,
+        upgradeMode: "difference",
+      });
+      return true;
+    },
+    [],
+  );
+
   const handleUpgradeChoice = async (mode: "difference" | "plan") => {
     if (!upgradeChoice || upgradeChoiceBusy) return;
     if (saasBillingStartIsInFuture(upgradeChoice.row)) {
@@ -3600,16 +3646,53 @@ function BillingDealDetailsPanel({
     setUpgradeChoice(null);
     setUpgradeChoiceError("");
     setUpgradeChoiceBusy(null);
-    setPayCouponError("");
-    setPayCouponBusy(false);
-    setPayCoupon({
-      ...prompt,
-      listPrice: due?.due ?? null,
-      paidAlready: due?.paid ?? null,
-      renewsAt: due?.next ?? null,
-      upgradeMode: mode,
-    });
+    beginDifferencePay(prompt);
   };
+
+  useEffect(() => {
+    const dealId = (autoDifferenceDealId ?? "").trim().toLowerCase();
+    if (!dealId || differencePromptOpened.current || loading) return;
+    const row = deals.find((deal) => deal.id.trim().toLowerCase() === dealId);
+    if (!row) return;
+    const payCompanyId = dealBillingCompanyId(row, companyId);
+    const planId = (row.suggestedPlanId || row.planId || "starter")
+      .trim()
+      .toLowerCase();
+    const cycle = billingCycleSelectValue(row.billingCycle);
+    if (!payCompanyId || !cycle) return;
+    const seatBand =
+      row.suggestedSeatBand === "5" ||
+      row.suggestedSeatBand === "10" ||
+      row.suggestedSeatBand === "10plus"
+        ? row.suggestedSeatBand
+        : catalogSeatBand(row);
+    differencePromptOpened.current = true;
+    const opened = beginDifferencePay({
+      row,
+      companyId: payCompanyId,
+      planId,
+      cycle,
+      seatBand,
+    });
+    if (!opened) return;
+    const params = new URLSearchParams(location.search);
+    params.delete("billing");
+    const next = params.toString();
+    navigate(
+      `${location.pathname}${next ? `?${next}` : ""}${location.hash}`,
+      { replace: true },
+    );
+  }, [
+    autoDifferenceDealId,
+    beginDifferencePay,
+    companyId,
+    deals,
+    loading,
+    location.hash,
+    location.pathname,
+    location.search,
+    navigate,
+  ]);
 
   const handleCycleChange = useCallback(
     async (row: CompanyDealBillingRow, next: "monthly" | "annually") => {
@@ -4870,7 +4953,11 @@ export function CompanyBillingTab({
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const billing = params.get("billing");
-    if (billing !== "pay" && billing !== "upgrade") return;
+    if (billing !== "pay" && billing !== "upgrade" && billing !== "difference") return;
+    if (billing === "difference") {
+      setBillingSubTab("deals");
+      return;
+    }
     if (billing === "upgrade" || canPayBilling) {
       setBillingSubTab("pricing");
       return;
@@ -5212,6 +5299,9 @@ export function CompanyBillingTab({
                 }),
               );
             }}
+            autoDifferenceDealId={
+              billingQuery === "difference" ? focusDealId : undefined
+            }
           />
         ) : null}
       </div>

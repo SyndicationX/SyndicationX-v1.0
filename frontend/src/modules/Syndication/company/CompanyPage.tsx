@@ -538,7 +538,8 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
       billing === "cancel" ||
       billing === "portal_return" ||
       billing === "pay" ||
-      billing === "upgrade"
+      billing === "upgrade" ||
+      billing === "difference"
     ) {
       setCompanyPageTab("billing");
       return;

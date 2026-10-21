@@ -1,6 +1,7 @@
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
 import { UserMinus, X } from "lucide-react"
 import { createPortal } from "react-dom"
+import "./user_management.css"
 
 const REMOVE_CONFIRM_TEXT = "REMOVE"
 
@@ -10,12 +11,19 @@ export function MemberRemoveConfirmModal({
   error,
   onClose,
   onConfirm,
+  message,
+  submitLabel = "Remove",
+  busyLabel = "Removing…",
 }: {
   memberName: string
   busy: boolean
   error: string
   onClose: () => void
   onConfirm: () => void
+  /** Replaces the organization-member explanation. Layout stays the same. */
+  message?: ReactNode
+  submitLabel?: string
+  busyLabel?: string
 }) {
   const [confirmText, setConfirmText] = useState("")
   const canConfirm = confirmText.trim() === REMOVE_CONFIRM_TEXT
@@ -61,9 +69,13 @@ export function MemberRemoveConfirmModal({
           }}
         >
           <p className="um_member_remove_message">
-            This will remove <strong>{memberName}</strong> from this
-            organization. They will leave the Members list and show on All
-            Contacts.
+            {message ?? (
+              <>
+                This will remove <strong>{memberName}</strong> from this
+                organization. They will leave the Members list and show on All
+                Contacts.
+              </>
+            )}
           </p>
           <label className="um_field um_member_remove_confirm_field">
             <span>
@@ -101,7 +113,7 @@ export function MemberRemoveConfirmModal({
               disabled={busy || !canConfirm}
             >
               <UserMinus size={16} strokeWidth={2} aria-hidden />
-              {busy ? "Removing…" : "Remove"}
+              {busy ? busyLabel : submitLabel}
             </button>
           </div>
         </form>

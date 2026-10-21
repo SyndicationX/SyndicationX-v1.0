@@ -124,6 +124,18 @@ export function dealInvestorProfileDisplayName(row: {
   return "—"
 }
 
+/** Profile type column: Individual, Joint tenancy, LLC, or custodian IRA. */
+export function dealInvestorProfileTypeDisplay(row: {
+  profileId?: string | null
+  entitySubtitle?: string | null
+}): string {
+  const fromId = investorProfileLabel(String(row.profileId ?? ""))
+  if (fromId !== "—" && fromId.toLowerCase() !== "select") return fromId
+  const sub = String(row.entitySubtitle ?? "").trim()
+  if (sub && sub !== "—" && investorProfileIdFromLabel(sub)) return sub
+  return "—"
+}
+
 /** Resolve profile select `value` from a display label (e.g. when API only sent `entitySubtitle`). */
 export function investorProfileIdFromLabel(label: string): string {
   if (!label?.trim()) return ""

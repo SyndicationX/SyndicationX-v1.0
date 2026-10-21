@@ -23,12 +23,16 @@ export type DealSaasPaywallDeal = {
 export function dealSaasBillingSettingsPath(
   dealId: string,
   dealName?: string,
-  options?: { billing?: "pay" | "upgrade" },
+  options?: { billing?: "pay" | "upgrade" | "difference" },
 ): string {
   const id = dealId.trim()
-  const params = new URLSearchParams({
-    billing: options?.billing === "upgrade" ? "upgrade" : "pay",
-  })
+  const billing =
+    options?.billing === "upgrade"
+      ? "upgrade"
+      : options?.billing === "difference"
+        ? "difference"
+        : "pay"
+  const params = new URLSearchParams({ billing })
   if (id) params.set("dealId", id)
   const name = String(dealName ?? "").trim()
   if (name) params.set("dealName", name)

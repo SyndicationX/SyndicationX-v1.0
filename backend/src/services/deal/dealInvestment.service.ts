@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getUploadsPhysicalRoot } from "../../config/uploadPaths.js";
 import {
   DEAL_ASSETS_UPLOAD_SUBDIR,
@@ -207,10 +207,32 @@ function isMezzanineSubscriptionType(subscriptionType: string): boolean {
   return subscriptionType.trim().toLowerCase() === "mezzanine";
 }
 
-function isInvestorOnboardingSubscriptionType(subscriptionType: string): boolean {
+function nameLooksLikeGeneralPartner(name: string | null | undefined): boolean {
+  return /\bgp\b|general partner/i.test(String(name ?? ""));
+}
+
+/**
+ * Investor onboarding may use LP, mezzanine, preferred equity, and classes
+ * saved with a blank type (Class Setup displays those as LP, e.g. Class A).
+ * GP is excluded.
+ */
+function isInvestorOnboardingClass(row: {
+  subscriptionType: string;
+  name?: string | null;
+}): boolean {
+  const subscriptionType = String(row.subscriptionType ?? "");
+  if (isGpSubscriptionType(subscriptionType)) return false;
+  if (
+    !subscriptionType.trim() &&
+    nameLooksLikeGeneralPartner(row.name)
+  ) {
+    return false;
+  }
   return (
+    !subscriptionType.trim() ||
     isLpSubscriptionType(subscriptionType) ||
-    isMezzanineSubscriptionType(subscriptionType)
+    isMezzanineSubscriptionType(subscriptionType) ||
+    subscriptionType.trim().toLowerCase() === "preferred_equity"
   );
 }
 
@@ -245,9 +267,7 @@ export async function resolveFirstLpInvestorClassForDeal(
   { ok: true; storedInvestorClass: string } | { ok: false; message: string }
 > {
   const classes = await listInvestorClassesByDealId(dealId);
-  const onboardingClasses = classes.filter((c) =>
-    isInvestorOnboardingSubscriptionType(c.subscriptionType),
-  );
+  const onboardingClasses = classes.filter((c) => isInvestorOnboardingClass(c));
   if (onboardingClasses.length === 0) {
     return {
       ok: false,
@@ -303,16 +323,14 @@ export async function resolveInvestorClassForDealInvestment(
     return { ok: false, message: "Investor class is required." };
   }
 
-  function rejectIfClassNotAllowed(
-    subscriptionType: string,
-  ): { ok: false; message: string } | null {
-    if (
-      opts?.lpOnboardingOnly &&
-      !isInvestorOnboardingSubscriptionType(subscriptionType)
-    ) {
+  function rejectIfClassNotAllowed(row: {
+    subscriptionType: string;
+    name?: string | null;
+  }): { ok: false; message: string } | null {
+    if (opts?.lpOnboardingOnly && !isInvestorOnboardingClass(row)) {
       return { ok: false, message: LP_ONBOARDING_CLASS_UNAVAILABLE_MESSAGE };
     }
-    if (opts?.excludeGp && isGpSubscriptionType(subscriptionType)) {
+    if (opts?.excludeGp && isGpSubscriptionType(row.subscriptionType)) {
       return { ok: false, message: GP_CLASS_ON_INVESTORS_TAB_MESSAGE };
     }
     return null;
@@ -320,7 +338,7 @@ export async function resolveInvestorClassForDealInvestment(
 
   const byId = classes.find((c) => c.id === t);
   if (byId) {
-    const blocked = rejectIfClassNotAllowed(byId.subscriptionType);
+    const blocked = rejectIfClassNotAllowed(byId);
     if (blocked) return blocked;
     const name = byId.name?.trim();
     return {
@@ -332,7 +350,7 @@ export async function resolveInvestorClassForDealInvestment(
   const norm = (s: string) => s.trim().toLowerCase();
   const byName = classes.find((c) => norm(c.name) === norm(t));
   if (byName) {
-    const blocked = rejectIfClassNotAllowed(byName.subscriptionType);
+    const blocked = rejectIfClassNotAllowed(byName);
     if (blocked) return blocked;
     const name = byName.name?.trim();
     return {
@@ -941,6 +959,10 @@ export function mapRowToInvestorApi(
       extraContributionAmounts: extras,
       docSignedDateIso: row.docSignedDate?.trim() ?? "",
       invitationMailSent,
+      investorArchived: Boolean(row.investorArchivedAt),
+      commitmentCompletedAtIso: row.commitmentCompletedAt
+        ? new Date(row.commitmentCompletedAt).toISOString()
+        : "",
     };
   }
   const legacy = userForContact(row.contactId);
@@ -1009,6 +1031,10 @@ export function mapRowToInvestorApi(
       ? new Date(row.createdAt).toISOString()
       : "",
     invitationMailSent,
+    investorArchived: Boolean(row.investorArchivedAt),
+    commitmentCompletedAtIso: row.commitmentCompletedAt
+      ? new Date(row.commitmentCompletedAt).toISOString()
+      : "",
   };
 }
 
@@ -2399,23 +2425,36 @@ export async function assertDealExists(dealId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-/** Autosaved draft rows are hidden unless `includeDrafts` is set (modal resume only). */
+/**
+ * Autosaved draft rows are hidden unless `includeDrafts` is set (modal resume only).
+ * Investor-archived commitments are hidden unless `includeInvestorArchived` is set.
+ * The owning investor still receives those rows from the investors API so they can restore them.
+ */
 export async function listDealInvestmentsByDealId(
   dealId: string,
-  options?: { lpInvestorsOnly?: boolean; includeDrafts?: boolean },
+  options?: {
+    lpInvestorsOnly?: boolean;
+    includeDrafts?: boolean;
+    includeInvestorArchived?: boolean;
+  },
 ): Promise<DealInvestmentRow[]> {
   const draftExpr =
     options?.includeDrafts === true
       ? undefined
       : eq(dealInvestment.isDraft, false);
+  const archivedExpr =
+    options?.includeInvestorArchived === true
+      ? undefined
+      : isNull(dealInvestment.investorArchivedAt);
   const whereExpr =
     options?.lpInvestorsOnly === true
       ? and(
           eq(dealInvestment.dealId, dealId),
           inArray(dealInvestment.investor_role, [...LP_INVESTOR_ROLE_MATCH]),
           draftExpr,
+          archivedExpr,
         )
-      : and(eq(dealInvestment.dealId, dealId), draftExpr);
+      : and(eq(dealInvestment.dealId, dealId), draftExpr, archivedExpr);
   return db
     .select()
     .from(dealInvestment)
@@ -2453,7 +2492,11 @@ export async function sumCommittedAmountByDealIds(
     })
     .from(dealInvestment)
     .where(
-      and(inArray(dealInvestment.dealId, ids), eq(dealInvestment.isDraft, false)),
+      and(
+        inArray(dealInvestment.dealId, ids),
+        eq(dealInvestment.isDraft, false),
+        isNull(dealInvestment.investorArchivedAt),
+      ),
     );
 
   for (const row of rows) {

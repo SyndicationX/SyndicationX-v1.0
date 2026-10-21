@@ -9,6 +9,7 @@ import {
   Link2,
   ListChecks,
   Loader2,
+  OctagonAlert,
   Pencil,
   Plus,
   Save,
@@ -156,7 +157,7 @@ type DocumentMoveItem = {
 function nestedDocumentNeedsSponsorSign(doc: NestedPreviewDocument): boolean {
   if (!doc.esignSignatureRequestId?.trim()) return false
   if (doc.esignSponsorSigned) return false
-  return doc.esignAwaitingSponsorSignature === true || !doc.esignSponsorSigned
+  return doc.esignAwaitingSponsorSignature === true
 }
 
 function DocumentsTableDocName({
@@ -2266,6 +2267,12 @@ export function DocumentsSection({
               const isBuiltInSection = isBuiltInDocumentSection(section)
               const isAutoManagedSection = isAutoManagedDocumentsSection(section)
               const isEsignSection = isEsignTemplateDocumentsSection(section)
+              const sponsorSignPendingCount = isEsignSection
+                ? section.nestedDocuments.filter(
+                    (doc) =>
+                      viewerCanSponsorSign && nestedDocumentNeedsSponsorSign(doc),
+                  ).length
+                : 0
               const canRenameSection =
                 viewerCanRenameDocumentSections &&
                 isBuiltInDocumentSectionLabelEditable(section)
@@ -2283,7 +2290,11 @@ export function DocumentsSection({
                   <div
                     className="deal_docs_ui_banner"
                     role="region"
-                    aria-label={sectionLabel}
+                    aria-label={
+                      sponsorSignPendingCount > 0
+                        ? `${sectionLabel}, needs attention`
+                        : sectionLabel
+                    }
                   >
                     <button
                       type="button"
@@ -2355,6 +2366,12 @@ export function DocumentsSection({
                             {sectionLabel}
                           </span>
                         )}
+                        {sponsorSignPendingCount > 0 ? (
+                          <span className="deal_docs_ui_needs_attention">
+                            <OctagonAlert size={13} strokeWidth={2.25} aria-hidden />
+                            Needs attention
+                          </span>
+                        ) : null}
                         {n > 0 ? (
                           <span
                             className="deal_docs_ui_banner_inline_actions"
@@ -2580,6 +2597,10 @@ export function DocumentsSection({
                           <tbody>
                             {section.nestedDocuments.map((d) => {
                               const url = d.url?.trim()
+                              const sponsorSignOnly =
+                                isEsignSection &&
+                                viewerCanSponsorSign &&
+                                nestedDocumentNeedsSponsorSign(d)
                               const checked = Boolean(
                                 checkedDocsBySection[section.id]?.[d.id],
                               )
@@ -2658,8 +2679,7 @@ export function DocumentsSection({
                                             <Download size={16} strokeWidth={2} />
                                           </span>
                                         )}
-                                        {viewerCanSponsorSign &&
-                                        nestedDocumentNeedsSponsorSign(d) ? (
+                                        {sponsorSignOnly ? (
                                           <button
                                             type="button"
                                             className="deal_docs_ui_doc_icon_btn deal_docs_ui_doc_sign_btn"
@@ -2900,14 +2920,12 @@ export function DocumentsSection({
                                   {!viewOnly ? (
                                   <td className="deal_docs_ui_td deal_docs_ui_td_actions">
                                     <div className="deal_docs_ui_row_actions">
-                                      {isEsignSection &&
-                                      viewerCanSponsorSign &&
-                                      nestedDocumentNeedsSponsorSign(d) ? (
+                                      {sponsorSignOnly ? (
                                         <button
                                           type="button"
                                           className="deal_docs_ui_row_icon_btn deal_docs_ui_doc_sign_btn"
-                                          title="Sponsor counter-sign"
-                                          aria-label={`Sponsor sign ${d.name}`}
+                                          title="Sign document"
+                                          aria-label={`Sign ${d.name}`}
                                           onClick={() =>
                                             setSponsorSignTarget({
                                               documentName: d.name,

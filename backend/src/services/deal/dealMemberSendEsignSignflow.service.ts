@@ -65,7 +65,7 @@ import {
 
   mapSignFlowTemplateFieldsForInvestor,
 
-  mapSignFlowTemplateFieldsForSponsor,
+  collectSignFlowSponsorSigningGroups,
 
   normalizeSignFlowFieldsForApi,
 
@@ -269,8 +269,6 @@ export async function createInvestorSignatureRequestSignflow(params: {
 
   const investorRecipientId = "rec_investor";
 
-  const sponsorRecipientId = "rec_sponsor";
-
   const resolvedProfileId = await resolveCommitmentProfileIdForSend(params);
 
   const investorProfileType = portalProfileIdToSignFlowProfileType(
@@ -448,10 +446,10 @@ export async function createInvestorSignatureRequestSignflow(params: {
   investorFields = dedupeSignFlowFieldsByPlacement(investorFields);
 
   const includeSponsor = signFlowTemplateHasSponsorFields(templateDoc);
-  let sponsorFields = includeSponsor
-    ? mapSignFlowTemplateFieldsForSponsor(templateDoc, sponsorRecipientId)
+  const sponsorGroups = includeSponsor
+    ? collectSignFlowSponsorSigningGroups(templateDoc)
     : [];
-
+  let sponsorFields = sponsorGroups.flatMap((group) => group.fields);
   let includeSponsorOnSend = includeSponsor && sponsorFields.length > 0;
 
   if (sponsorFields.length > 0) {
@@ -501,22 +499,48 @@ export async function createInvestorSignatureRequestSignflow(params: {
 
   let sponsorSigner: { email: string; name: string } | null = null;
   if (includeSponsorOnSend) {
-    sponsorSigner = await resolveDealLeadSponsorSigner(params.dealId);
-    if (!sponsorSigner) {
+    const leadSponsor = await resolveDealLeadSponsorSigner(params.dealId);
+    const sentSponsorIds = new Map<string, string>();
+    for (const group of sponsorGroups) {
+      const email = group.placeholder
+        ? leadSponsor?.email?.trim().toLowerCase() ?? ""
+        : group.email.trim().toLowerCase();
+      const name = group.placeholder
+        ? leadSponsor?.name?.trim() || email
+        : group.name.trim() || email;
+      if (!email.includes("@")) continue;
+      const existingId = sentSponsorIds.get(email);
+      const clientId = existingId ?? group.clientRecipientId;
+      sentSponsorIds.set(email, clientId);
+      if (!existingId) {
+        recipients.push({
+          id: clientId,
+          name,
+          email,
+          role: "seller",
+          color: group.color ?? "#dc2626",
+          order: sponsorOrder,
+        });
+      }
+      if (!sponsorSigner) sponsorSigner = { email, name };
+    }
+    sponsorFields = sponsorFields.flatMap((field) => {
+      const owner = sponsorGroups.find(
+        (item) => item.clientRecipientId === field.recipientId,
+      );
+      const email = owner?.placeholder
+        ? leadSponsor?.email?.trim().toLowerCase() ?? ""
+        : owner?.email.trim().toLowerCase() ?? "";
+      const clientId = sentSponsorIds.get(email);
+      if (!clientId) return [];
+      return [{ ...field, recipientId: clientId }];
+    });
+    if (sponsorFields.length === 0 || !sponsorSigner) {
       console.warn(
-        "SignFlow send: sponsor signature fields exist but no lead sponsor email; sending investor-only.",
+        "SignFlow send: sponsor signature fields exist but no sponsor email; sending investor-only.",
       );
       includeSponsorOnSend = false;
       sponsorFields = [];
-    } else {
-      recipients.push({
-        id: sponsorRecipientId,
-        name: sponsorSigner.name,
-        email: sponsorSigner.email,
-        role: "seller",
-        color: "#dc2626",
-        order: sponsorOrder,
-      });
     }
   }
 

@@ -8,7 +8,7 @@ const DATABASE_PASSWORD = process.env.DATABASE_PASSWORD ?? "Syndicationx$0606202
 const DATABASE_HOST = process.env.DATABASE_HOST ?? "localhost";
 const DATABASE_PORT = process.env.DATABASE_PORT ?? "5432";
 const DATABASE_NAME = process.env.DATABASE_NAME ?? "syndicationx_db";
-// const DATABASE_NAME = process.env.DATABASE_NAME ?? "13Oct_syndicationx_db";
+// const DATABASE_NAME = process.env.DATABASE_NAME ?? "19oct_syndicationx_db";
 // const DATABASE_NAME = process.env.DATABASE_NAME ?? "16Oct_syndicationx_db";
 
 const DATABASE_URI = `postgresql://${DATABASE_USER}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT}/${DATABASE_NAME}`;

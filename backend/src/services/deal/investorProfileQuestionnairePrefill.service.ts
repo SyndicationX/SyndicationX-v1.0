@@ -400,6 +400,7 @@ export function buildQuestionnairePrefillFromProfileBook(
   // Must run even when a deal questionnaire exists — those questions early-path
   // only cover questionnaire ids, not sponsor-placed PDF data fields.
   for (const field of ESIGN_INVESTOR_DATA_FIELDS) {
+    if (field.signFlowType === "signature") continue;
     const answerKey = esignInvestorDataAnswerKey(field);
     if (out[answerKey]?.trim()) continue;
     const value = resolveInvestorProfileFieldValue(

@@ -5,6 +5,8 @@ import {
   assertDealIdReadableOrAssignedParticipant,
   resolveDealViewerScope,
 } from "../../services/deal/dealAccess.service.js";
+import { resolveLpViewerEmailNorm } from "../../services/deal/dealLpViewerIdentity.service.js";
+import { omitArchivedCommitmentsHiddenFromViewer } from "../../services/deal/investorParticipation.service.js";
 import { requestedOrganizationIdFromRequest } from "../../services/org/orgResolution.service.js";
 import {
   filterRowsBySearch,
@@ -261,7 +263,15 @@ export async function getDealInvestors(
       });
     let rows = await listDealInvestmentsByDealId(dealId, {
       lpInvestorsOnly: false,
+      includeInvestorArchived: true,
     });
+    const viewerEmail = await resolveLpViewerEmailNorm(user.id, user.email);
+    rows = await omitArchivedCommitmentsHiddenFromViewer(
+      dealId,
+      user.id,
+      viewerEmail,
+      rows,
+    );
     rows = await mergeDealLpRosterIntoFullInvestorRows(dealId, rows);
     if (await shouldScopeInvestorsToCoSponsorAddedOnly(dealId, user.id)) {
       rows = await filterMergedLpInvestorsForCoSponsorViewer(

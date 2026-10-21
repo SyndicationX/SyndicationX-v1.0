@@ -57,6 +57,7 @@ import {
   postDealEsignAddInvestorDataField,
   postDealEsignCompleteEmbeddedTemplate,
   postDealEsignEmbeddedDraft,
+  postDealEsignSyncEmbeddedTemplateFields,
 } from "../controllers/deal/dealEsignDropboxSign.controller.js";
 import {
   getDealEsignSignFlowConfig,
@@ -87,6 +88,13 @@ import {
   postSyncCompletedEsignDocuments,
 } from "../controllers/deal/dealInvestorEsignDocuments.controller.js";
 import { postDealDocumentSharedNotification } from "../controllers/deal/dealDocumentNotification.controller.js";
+import {
+  deleteMyInvestorDealParticipation,
+  deleteMyInvestorProfileParticipation,
+  getMyInvestorParticipation,
+  patchMyInvestorDealParticipation,
+  patchMyInvestorProfileParticipation,
+} from "../controllers/deal/investorParticipation.controller.js";
 import {
   deleteDealInvestorClass,
   getDealInvestorClasses,
@@ -232,6 +240,10 @@ router.post(
   "/deals/:dealId/esign-templates/:fileId/complete-embedded-template",
   postDealEsignCompleteEmbeddedTemplate,
 );
+router.post(
+  "/deals/:dealId/esign-templates/:fileId/sync-embedded-template-fields",
+  postDealEsignSyncEmbeddedTemplateFields,
+);
 router.get(
   "/deals/:dealId/esign-templates/investor-data-fields",
   getDealEsignInvestorDataFields,
@@ -326,6 +338,17 @@ router.put(
 router.delete(
   "/deals/:dealId/distributions/:distributionId",
   deleteDealPriorDistribution,
+);
+router.get("/deals/my-participation", getMyInvestorParticipation);
+router.patch("/deals/:dealId/my-participation", patchMyInvestorDealParticipation);
+router.delete("/deals/:dealId/my-participation", deleteMyInvestorDealParticipation);
+router.patch(
+  "/deals/:dealId/my-participation/:investmentId",
+  patchMyInvestorProfileParticipation,
+);
+router.delete(
+  "/deals/:dealId/my-participation/:investmentId",
+  deleteMyInvestorProfileParticipation,
 );
 router.get("/deals/:dealId", getDealById);
 router.put("/deals/:dealId", putDeal);

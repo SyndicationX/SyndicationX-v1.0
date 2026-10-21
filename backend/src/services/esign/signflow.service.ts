@@ -643,31 +643,18 @@ export async function ensureSignFlowEmbedRecipients(documentId: string): Promise
     return field;
   });
 
-  const recipientsStable =
-    oldBuyerId === SIGNFLOW_EMBED_INVESTOR_RECIPIENT_ID &&
-    oldSellerId === SIGNFLOW_EMBED_SPONSOR_RECIPIENT_ID &&
-    existingBuyer &&
-    existingSeller;
+  // Buyer and seller rows already exist. Replacing them deletes every field
+  // (recipient delete cascades to document_fields). Leave this document alone.
+  if (existingBuyer && existingSeller) return;
 
   const docForFieldNormalization: SignFlowDocument = {
     ...doc,
-    recipients: recipientsStable ? existing : nextRecipients,
+    recipients: nextRecipients,
   };
   const normalizedFields = normalizeSignFlowFieldRecipientIds(
     docForFieldNormalization,
     nextFields,
   );
-  const fieldsNeedRecipientSync = normalizedFields.some(
-    (field, index) =>
-      String(field.recipientId ?? "").trim() !==
-      String(fields[index]?.recipientId ?? "").trim(),
-  );
-
-  if (recipientsStable) {
-    if (!fieldsNeedRecipientSync) return;
-    await patchSignFlowDocument(documentId, { fields: normalizedFields });
-    return;
-  }
 
   await patchSignFlowDocument(documentId, {
     recipients: nextRecipients,
@@ -777,11 +764,11 @@ export function normalizeSignFlowFieldsForApi<T extends { type?: string }>(
 
 /**
  * Resolve template fields for send/sign.
- * Live SignFlow is the base (respects sponsor deletes). SynX snapshot/bindings
- * only fill in sponsor-added catalog fields that are missing from live.
+ * The live SignFlow document is the layout the sponsor last left in the editor.
+ * Saved snapshots are not copied back, or removed fields show up again.
  */
 export function resolveSignFlowTemplateDocumentFields(
-  file: {
+  _file: {
     signflowStatus?: string;
     signflowTemplateFields?: SignFlowField[];
     signflowInvestorDataFieldBindings?: Array<{
@@ -794,54 +781,7 @@ export function resolveSignFlowTemplateDocumentFields(
   },
   templateDoc: SignFlowDocument,
 ): SignFlowDocument {
-  const stored = file.signflowTemplateFields ?? [];
-  const live = (templateDoc.fields ?? []) as SignFlowField[];
-
-  if (!live.length && stored.length) {
-    return { ...templateDoc, fields: stored };
-  }
-  if (!stored.length) return templateDoc;
-
-  const bindingKeys = new Set(
-    (file.signflowInvestorDataFieldBindings ?? [])
-      .map((b) => String(b.dataKey ?? "").trim())
-      .filter(Boolean),
-  );
-  if (!bindingKeys.size) return templateDoc;
-
-  const liveHasCatalogKey = (dataKey: string) =>
-    live.some((field) => String(field.dataKey ?? "").trim() === dataKey);
-
-  const liveHasPlacement = (field: SignFlowField) =>
-    live.some((existing) => {
-      const pageA = Math.max(1, Math.floor(Number(existing.page) || 1));
-      const pageB = Math.max(
-        1,
-        Math.floor(Number(field.templatePage ?? field.page) || 1),
-      );
-      if (pageA !== pageB) return false;
-      return (
-        Math.abs(Number(existing.x) - Number(field.x)) < 1.5 &&
-        Math.abs(Number(existing.y) - Number(field.y)) < 1.5 &&
-        String(existing.label ?? "").trim().toLowerCase() ===
-          String(field.label ?? "").trim().toLowerCase()
-      );
-    });
-
-  const missingCatalogFields = stored.filter((field) => {
-    const dataKey = String(field.dataKey ?? "").trim();
-    if (!dataKey || !bindingKeys.has(dataKey)) return false;
-    if (liveHasCatalogKey(dataKey)) return false;
-    if (liveHasPlacement(field)) return false;
-    return true;
-  });
-
-  if (!missingCatalogFields.length) return templateDoc;
-
-  return {
-    ...templateDoc,
-    fields: [...live, ...missingCatalogFields],
-  };
+  return templateDoc;
 }
 
 export function findSignFlowTemplateRecipient(
@@ -1075,8 +1015,7 @@ export function mapSignFlowTemplateFieldsForInvestor(
         ...(f.dataKey?.trim() ? { dataKey: f.dataKey.trim() } : {}),
         ...(f.value?.trim() ? { value: f.value.trim() } : {}),
         recipientId: investorRecipientId,
-        // Sponsor-added catalog fields (dataKey) always count for the investor.
-        required: f.dataKey?.trim() ? true : f.required !== false,
+        required: f.required !== false,
         ...(profileTypes ? { profileTypes } : {}),
         ...(profileType ? { profileType } : {}),
         ...(String(f.radioGroupId ?? "").trim()
@@ -1110,6 +1049,71 @@ export function signFlowInvestorTemplateHasFieldsForProfile(
     }
     return signFlowFieldAppliesToProfile(f, profileType);
   });
+}
+
+export type SignFlowSponsorSigningGroup = {
+  clientRecipientId: string;
+  name: string;
+  email: string;
+  color?: string;
+  /** Generic template sponsor. The send path fills in the lead sponsor. */
+  placeholder: boolean;
+  fields: SignFlowField[];
+};
+
+function isPlaceholderSponsorEmail(email: string): boolean {
+  const value = email.trim().toLowerCase();
+  return !value.includes("@") || value.endsWith("@embed.local");
+}
+
+/** One signing party per sponsor who has fields on the template. */
+export function collectSignFlowSponsorSigningGroups(
+  template: SignFlowDocument,
+): SignFlowSponsorSigningGroup[] {
+  const recipients = template.recipients ?? [];
+  const sellers = recipients.filter((recipient) =>
+    matchSignFlowPartyRole(recipient, "sponsor"),
+  );
+  const groups: SignFlowSponsorSigningGroup[] = [];
+
+  sellers.forEach((seller, index) => {
+    const sourceId = String(seller.id ?? "").trim();
+    if (!sourceId) return;
+    const owned = (template.fields ?? []).filter(
+      (field) => String(field.recipientId ?? "").trim() === sourceId,
+    );
+    if (owned.length === 0) return;
+    const email = String(seller.email ?? "").trim().toLowerCase();
+    const clientRecipientId = `rec_sponsor_${index + 1}`;
+    groups.push({
+      clientRecipientId,
+      name: String(seller.name ?? "").trim() || email || "Sponsor",
+      email,
+      color: seller.color,
+      placeholder: isPlaceholderSponsorEmail(email),
+      fields: owned.map((field) => {
+        const { templatePage, pageHash } = resolveSignFlowFieldTemplateAnchor(field);
+        return {
+          type: String(field.type ?? "signature"),
+          label: String(field.label ?? "Field"),
+          x: signFlowFieldCoordinate(field.x, 10),
+          y: signFlowFieldCoordinate(field.y, 10),
+          width: Math.max(1, signFlowFieldCoordinate(field.width, 20)),
+          height: Math.max(1, signFlowFieldCoordinate(field.height, 4)),
+          page: templatePage,
+          templatePage,
+          ...(pageHash ? { pageHash } : {}),
+          recipientId: clientRecipientId,
+          required: field.required !== false,
+          ...(String(field.radioGroupId ?? "").trim()
+            ? { radioGroupId: String(field.radioGroupId).trim() }
+            : {}),
+        };
+      }),
+    });
+  });
+
+  return groups;
 }
 
 export function mapSignFlowTemplateFieldsForSponsor(
@@ -1313,27 +1317,14 @@ export async function patchSignFlowDocument(
   documentId: string,
   body: Record<string, unknown>,
 ): Promise<SignFlowDocument> {
-  let patchBody = body;
-  if (
-    body.fields === undefined &&
-    (body.recipients !== undefined || body.workflowType !== undefined)
-  ) {
-    const current = await getSignFlowDocument(documentId);
-    const preservedFields = normalizeSignFlowFieldRecipientIds(
-      current,
-      current.fields ?? [],
-    );
-    if (preservedFields.length > 0) {
-      patchBody = { ...body, fields: preservedFields };
-    }
-  }
-
+  // Do not resend a previously read field list. A recipient-only patch used to
+  // attach that snapshot and put deleted fields back after the editor saved.
   const doc = await signflowRequest<SignFlowDocument>(
     `/documents/${encodeURIComponent(documentId.trim())}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patchBody),
+      body: JSON.stringify(body),
     },
   );
   if (!doc?.id) {

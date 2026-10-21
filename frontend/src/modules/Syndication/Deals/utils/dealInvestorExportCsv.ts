@@ -2,6 +2,7 @@ import { isPlatformAdmin } from "../../../../common/auth/roleUtils"
 import { formatMemberUsername } from "../../usermanagement/memberAdminShared"
 import {
   dealInvestorProfileDisplayName,
+  dealInvestorProfileTypeDisplay,
   investorRoleLabel,
 } from "../constants/investor-profile"
 import type { DealInvestorRow } from "../types/deal-investors.types"
@@ -104,6 +105,7 @@ export function buildDealInvestorsExportMatrix(
     [
       "Member name",
       "Profile",
+      "Profile type",
       "Role",
       "Investor class",
       "Status",
@@ -148,6 +150,7 @@ export function buildDealInvestorsExportMatrix(
     matrix.push([
       String(row.displayName ?? ""),
       dealInvestorProfileDisplayName(row),
+      dealInvestorProfileTypeDisplay(row),
       roleForCsv,
       invClass,
       dealInvestorStatusForTable(row),

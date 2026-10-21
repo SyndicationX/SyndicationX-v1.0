@@ -346,6 +346,7 @@ export function syntheticInvestmentFromDealLpInvestor(
     commitmentCompletedAt: null,
     commitmentInvestorEmailSentAt: null,
     commitmentSponsorEmailSentAt: null,
+    investorArchivedAt: null,
     extraContributionAmounts: [],
     documentStoragePath: null,
     createdAt: m.createdAt,

@@ -94,6 +94,10 @@ export interface DealInvestorRow {
   docSignedDateIso?: string
   /** Timestamp when this investment row was first created (invested). */
   investedAtIso?: string
+  /** Set when the investor archived this commitment in Investing. */
+  investorArchived?: boolean
+  /** Set when Invest Now Finish records the commitment. */
+  commitmentCompletedAtIso?: string
   /** Portal user who added this investor (`deal_lp_investor` / `deal_member.added_by`). */
   /** Sponsor / Co-sponsor display name for this investor on the deal (Sponsor name column). */
   addedByDisplayName?: string

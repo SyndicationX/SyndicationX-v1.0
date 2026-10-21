@@ -757,6 +757,13 @@
       "when": 1895950000000,
       "tag": "0108_user_invited_by",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1896000000000,
+      "tag": "0109_investor_deal_participation",
+      "breakpoints": true
     }
   ]
 }
