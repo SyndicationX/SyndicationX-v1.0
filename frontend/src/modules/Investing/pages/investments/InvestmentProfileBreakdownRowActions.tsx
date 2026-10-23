@@ -10,6 +10,8 @@ type InvestmentProfileBreakdownRowActionsProps = {
   profileLabel: string
   /** When false, kebab stays visible but cannot open. */
   disabled?: boolean
+  /** Shown on hover when the action cannot be used. */
+  disabledReason?: string
   archived?: boolean
   onAddInvestment?: () => void
   onResumeInvesting?: () => void
@@ -28,6 +30,7 @@ type InvestmentProfileBreakdownRowActionsProps = {
 export function InvestmentProfileBreakdownRowActions({
   profileLabel,
   disabled = false,
+  disabledReason,
   archived = false,
   onAddInvestment,
   onResumeInvesting,
@@ -131,7 +134,8 @@ export function InvestmentProfileBreakdownRowActions({
       setConfirmBusy(false)
     }
   }, [confirmKind, onArchive, onDeleteProfile])
-  const triggerTitle = "Actions"
+  const hoverReason = disabledReason?.trim() || ""
+  const triggerTitle = hoverReason || "Actions"
 
   return (
     <div
@@ -140,6 +144,11 @@ export function InvestmentProfileBreakdownRowActions({
       role="group"
       aria-label={`Actions for ${a11yLabel}`}
     >
+      <span
+        className="um_kebab_trigger_hover"
+        title={triggerTitle}
+        style={disabled ? { display: "inline-flex" } : undefined}
+      >
       <button
         type="button"
         className="um_kebab_trigger"
@@ -148,7 +157,12 @@ export function InvestmentProfileBreakdownRowActions({
         aria-disabled={disabled || undefined}
         disabled={disabled}
         title={triggerTitle}
-        aria-label={`Actions for ${a11yLabel}`}
+        style={disabled ? { pointerEvents: "none" } : undefined}
+        aria-label={
+          hoverReason
+            ? `${hoverReason} Actions for ${a11yLabel}`
+            : `Actions for ${a11yLabel}`
+        }
         onClick={(e) => {
           e.stopPropagation()
           if (disabled) return
@@ -157,6 +171,7 @@ export function InvestmentProfileBreakdownRowActions({
       >
         <MoreHorizontal size={18} strokeWidth={2} aria-hidden />
       </button>
+      </span>
       {open && !disabled && hasMenu && typeof document !== "undefined"
         ? createPortal(
             <ul

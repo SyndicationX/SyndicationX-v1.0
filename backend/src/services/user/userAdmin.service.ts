@@ -335,6 +335,25 @@ async function listUsersScopedToCompany(
   );
 }
 
+/** Platform Users & Roles: every account, not one company and not staff roles only. */
+async function listAllUsersForPlatformAdmin(
+  sort: UserListSort,
+): Promise<Record<string, unknown>[]> {
+  const rows = await db
+    .select({
+      user: users,
+      orgName: companies.name,
+    })
+    .from(users)
+    .leftJoin(companies, eq(users.organizationId, companies.id))
+    .orderBy(...userListOrderBy(sort));
+  const mapped = rows.map(({ user, orgName }) =>
+    serializeUserForClient(user, String(orgName ?? "").trim() || null),
+  );
+  const withDeal = await enrichSerializedUsersWithDealParticipantRoles(mapped);
+  return enrichUserRowsWithMemberships(withDeal);
+}
+
 export async function listUsersForAdmin(
   actorRole: string,
   actorOrganizationId: string | null,
@@ -350,7 +369,9 @@ export async function listUsersForAdmin(
     const applyOrgFilter =
       filterOrg.length > 0 && ORG_UUID_RE.test(filterOrg);
     if (!applyOrgFilter) {
-      return [];
+      return attachMemberInvitationDetails(
+        await listAllUsersForPlatformAdmin(sort),
+      );
     }
     let rows = await listUsersScopedToCompany(filterOrg, sort);
     const actorUserId = opts?.actorUserId?.trim() ?? "";

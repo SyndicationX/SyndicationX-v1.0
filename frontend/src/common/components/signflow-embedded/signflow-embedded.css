@@ -159,6 +159,57 @@
   color: #64748b;
 }
 
+.signflow_editor_data_panel_label_row {
+  display: flex;
+  flex-flow: row nowrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.25rem;
+  min-height: 16px;
+}
+
+.signflow_editor_data_panel_label_row .signflow_editor_data_panel_label {
+  display: flex;
+  align-items: center;
+  width: auto;
+  height: 16px;
+  margin: 0;
+  line-height: 16px;
+}
+
+.signflow_editor_data_panel_label_row .form_tooltip_root,
+.signflow_editor_data_panel_label_row .form_tooltip_trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  line-height: 0;
+}
+
+.signflow_editor_data_panel_label_row .form_tooltip_trigger {
+  padding: 0;
+}
+
+.signflow_editor_data_panel_label_row .form_tooltip_trigger svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+.signflow_editor_field_sides_tip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-width: 18rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.signflow_editor_field_sides_tip p {
+  margin: 0;
+}
+
 .signflow_editor_data_panel_label {
   margin-top: 0.25rem;
   font-size: 0.75rem;

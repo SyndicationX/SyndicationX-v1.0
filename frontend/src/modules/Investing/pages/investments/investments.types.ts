@@ -55,6 +55,8 @@ export type InvestmentListRow = {
   archived?: boolean
   /** Investor archived this deal in Investing. Separate from the sponsor archive flag. */
   investorArchived?: boolean
+  /** Sponsor or platform admin removed the investment. Restore stays disabled. */
+  sponsorRemoved?: boolean
   /** Soft commitment with nothing invested — investor may delete it. */
   investorCanDeleteDeal?: boolean
   /** Latest commitment row timestamp for default newest-first list ordering. */
@@ -93,6 +95,8 @@ export type InvestmentBreakdownLine = {
   approvedAtIso?: string
   /** Investor archived this profile commitment inside the deal. */
   investorArchived?: boolean
+  /** Sponsor or platform admin removed this commitment. The investor cannot restore it. */
+  sponsorRemoved?: boolean
   /** Soft-committed profiles can be deleted. Invested profiles cannot. */
   participationKind?: "invested" | "soft_committed" | "draft" | "in_progress"
 }

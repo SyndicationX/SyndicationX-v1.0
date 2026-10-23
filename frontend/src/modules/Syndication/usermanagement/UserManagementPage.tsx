@@ -52,7 +52,6 @@ import { getApiV1Base } from "../../../common/utils/apiBaseUrl";
 import { isCompanyAdmin, isPlatformAdmin } from "../../../common/auth/roleUtils";
 import {
   getSessionOrganizationCompanyId,
-  resolvePlatformAdminMembersListScope,
 } from "../../../common/auth/sessionOrganization";
 import { DataTablePagination } from "../../../common/components/DataTablePagination/DataTablePagination";
 import { TableHScrollShell } from "../../../common/components/data-table/TableHScrollShell";
@@ -76,7 +75,6 @@ import {
   formatOrganizationsCsvCell,
   formatRoleCsvCell,
   formatValue,
-  isOrgStaffPortalRole,
   memberUserCellPrimaryLabel,
   memberInvitePending,
   memberRowIsCurrentUser,
@@ -235,6 +233,22 @@ function memberSortValue(
     default:
       return "";
   }
+}
+
+const USERS_ROLES_TABLE_ROLES = new Set(["company_admin", "company_user"])
+
+function memberRowsFromList(list: unknown[]): Record<string, unknown>[] {
+  return list.filter(
+    (x): x is Record<string, unknown> =>
+      x !== null &&
+      typeof x === "object" &&
+      !Array.isArray(x) &&
+      USERS_ROLES_TABLE_ROLES.has(
+        String((x as Record<string, unknown>).role ?? "")
+          .trim()
+          .toLowerCase(),
+      ),
+  )
 }
 
 function buildSortColumns(organizationScoped = false): {
@@ -466,8 +480,8 @@ export default function UserManagementPage({
     if (membersOrganizationScope !== undefined) {
       return membersOrganizationScope;
     }
-    const platformScope = resolvePlatformAdminMembersListScope();
-    if (platformScope !== undefined) return platformScope;
+    // Users & Roles for a platform admin is the whole directory, not one company.
+    if (isPlatformAdmin()) return undefined;
     const active = getSessionOrganizationCompanyId();
     if (active && ORG_UUID_RE.test(active)) return active;
     return undefined;
@@ -522,14 +536,7 @@ export default function UserManagementPage({
           return;
         }
         const list = Array.isArray(data.users) ? data.users : [];
-        const normalized = list.filter(
-          (x): x is Record<string, unknown> =>
-            x !== null &&
-            typeof x === "object" &&
-            !Array.isArray(x) &&
-            isOrgStaffPortalRole(x.role),
-        );
-        setMemberRows(normalized);
+        setMemberRows(memberRowsFromList(list));
         setActionMenuRowId(null);
         setActionMenuRow(null);
         setMenuPos(null);
@@ -561,14 +568,7 @@ export default function UserManagementPage({
       };
       if (!res.ok) return;
       const list = Array.isArray(data.users) ? data.users : [];
-      const normalized = list.filter(
-        (x): x is Record<string, unknown> =>
-          x !== null &&
-          typeof x === "object" &&
-          !Array.isArray(x) &&
-          isOrgStaffPortalRole(x.role),
-      );
-      setMemberRows(normalized);
+      setMemberRows(memberRowsFromList(list));
     } catch {
       /* ignore */
     }
@@ -588,12 +588,14 @@ export default function UserManagementPage({
    * the current members list organization only (no picker).
    */
   const showCompanyColumn = isPlatformAdmin();
+  const showSerialNumbers = true;
   const showInviteRolePicker = showCompanyColumn || isCompanyAdmin();
   const sortColumns = useMemo(
     () => buildSortColumns(Boolean(organizationDisplayScope?.companyId)),
     [organizationDisplayScope],
   );
-  const membersTableColSpan = 1 + sortColumns.length + 1;
+  const membersTableColSpan =
+    (showSerialNumbers ? 1 : 0) + 1 + sortColumns.length + 1;
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
@@ -1694,6 +1696,13 @@ export default function UserManagementPage({
           </div>
         ) : null}
       </div>
+      {membersTab === "users" ? (
+        <p className="um_users_roles_scope">
+          {showCompanyColumn
+            ? "Company admins and company users from every company."
+            : "Company admins and company users in this company."}
+        </p>
+      ) : null}
 
       <div className="um_members_tab_content">
       {membersTab === "users" ? (
@@ -1782,6 +1791,11 @@ export default function UserManagementPage({
                       aria-label="Select all members in this list"
                     />
                   </th>
+                  {showSerialNumbers ? (
+                    <th scope="col" className="um_th_serial" aria-label="Serial number">
+                      #
+                    </th>
+                  ) : null}
                   {sortColumns.map(({ key, label }) => {
                     const active = sortKey === key;
                     const ariaSort = active
@@ -1897,6 +1911,9 @@ export default function UserManagementPage({
                           }
                         />
                       </td>
+                      {showSerialNumbers ? (
+                        <td className="um_td_serial">{globalIndex + 1}</td>
+                      ) : null}
                       <td className="um_td_user">
                         <div className="um_user_cell">
                           <div className="um_user_avatar_ring" aria-hidden>

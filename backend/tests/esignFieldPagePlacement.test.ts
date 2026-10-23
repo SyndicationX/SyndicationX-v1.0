@@ -146,6 +146,51 @@ describe("signflow choice field numbering", () => {
     );
   });
 
+  it("keeps a radio group numbered across pages", () => {
+    const fields = normalizeSignFlowChoiceFieldOptionNumbers([
+      {
+        type: "radio",
+        label: "Option 1",
+        x: 10,
+        y: 80,
+        width: 16,
+        height: 3,
+        page: 1,
+        recipientId: "rec_1",
+        radioGroupId: "rg_shared",
+      },
+      {
+        type: "radio",
+        label: "Option 2",
+        x: 10,
+        y: 90,
+        width: 16,
+        height: 3,
+        page: 1,
+        recipientId: "rec_1",
+        radioGroupId: "rg_shared",
+      },
+      {
+        type: "radio",
+        label: "Option 1",
+        x: 10,
+        y: 2,
+        width: 16,
+        height: 3,
+        page: 2,
+        recipientId: "rec_1",
+        radioGroupId: "rg_shared",
+      },
+    ]);
+
+    assert.deepEqual(
+      fields.map((field) => field.label),
+      ["Option 1", "Option 2", "Option 3"],
+    );
+    assert.equal(fields[2]?.page, 2);
+    assert.equal(fields[2]?.radioGroupId, "rg_shared");
+  });
+
   it("keeps separate checkbox stacks numbered independently", () => {
     const fields = normalizeSignFlowChoiceFieldOptionNumbers([
       { type: "checkbox", label: "Checkbox 1", x: 10, y: 10, width: 2, height: 2, page: 1, recipientId: "rec_1" },

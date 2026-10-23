@@ -1221,7 +1221,11 @@ async function loadLpRosterContactKeysForDeal(dealId: string): Promise<Set<strin
     .select({ contactMemberId: dealLpInvestor.contactMemberId })
     .from(dealLpInvestor)
     .where(
-      and(eq(dealLpInvestor.dealId, dealId), eq(dealLpInvestor.isDraft, false)),
+      and(
+        eq(dealLpInvestor.dealId, dealId),
+        eq(dealLpInvestor.isDraft, false),
+        isNull(dealLpInvestor.removedAt),
+      ),
     );
   const set = new Set<string>();
   for (const r of rows) {
@@ -2101,9 +2105,10 @@ function appendCompanyName(
 }
 
 /**
- * Companies a sponsor belongs to. Portal `organization_id` is often empty;
- * company membership (and the contact’s organization) is the usual source.
- * Multiple names are joined with `||`.
+ * Company a person belongs to. Company membership wins over `users.organization_id`.
+ * A CRM contact is matched to the portal account by email and uses that account's company.
+ * The contact's own organization is used only when no portal account exists.
+ * Multiple memberships are joined with `||`.
  */
 export async function resolveUserCompanyNamesByIds(
   ids: (string | null | undefined)[],
@@ -2117,18 +2122,7 @@ export async function resolveUserCompanyNamesByIds(
   const idList = [...need];
   const m = new Map<string, string>();
 
-  const found = await db
-    .select({
-      id: users.id,
-      companyName: companies.name,
-    })
-    .from(users)
-    .leftJoin(companies, eq(users.organizationId, companies.id))
-    .where(inArray(users.id, idList));
-  for (const u of found) {
-    appendCompanyName(m, String(u.id).toLowerCase(), u.companyName);
-  }
-
+  const membershipByUser = new Map<string, string>();
   try {
     const memberships = await db
       .select({
@@ -2139,7 +2133,11 @@ export async function resolveUserCompanyNamesByIds(
       .innerJoin(companies, eq(userCompanyMembership.companyId, companies.id))
       .where(inArray(userCompanyMembership.userId, idList));
     for (const row of memberships) {
-      appendCompanyName(m, String(row.userId).toLowerCase(), row.companyName);
+      appendCompanyName(
+        membershipByUser,
+        String(row.userId).toLowerCase(),
+        row.companyName,
+      );
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2148,6 +2146,28 @@ export async function resolveUserCompanyNamesByIds(
     }
   }
 
+  const found = await db
+    .select({
+      id: users.id,
+      companyName: companies.name,
+    })
+    .from(users)
+    .leftJoin(companies, eq(users.organizationId, companies.id))
+    .where(inArray(users.id, idList));
+  for (const u of found) {
+    const key = String(u.id).toLowerCase();
+    const memberCompanies = membershipByUser.get(key);
+    if (memberCompanies) {
+      m.set(key, memberCompanies);
+    } else {
+      appendCompanyName(m, key, u.companyName);
+    }
+  }
+  for (const [key, names] of membershipByUser) {
+    if (!m.has(key)) m.set(key, names);
+  }
+
+  const contactOrgFallback = new Map<string, string>();
   const contactRows = await db
     .select({
       id: contact.id,
@@ -2160,7 +2180,8 @@ export async function resolveUserCompanyNamesByIds(
   const emailToKeys = new Map<string, string[]>();
   for (const row of contactRows) {
     const key = String(row.id).toLowerCase();
-    appendCompanyName(m, key, row.companyName);
+    const orgName = String(row.companyName ?? "").trim();
+    if (orgName) contactOrgFallback.set(key, orgName);
     const email = String(row.email ?? "").trim().toLowerCase();
     if (!email) continue;
     const keys = emailToKeys.get(email) ?? [];
@@ -2169,20 +2190,64 @@ export async function resolveUserCompanyNamesByIds(
   }
 
   const emails = [...emailToKeys.keys()];
+  const portalAccountKeys = new Set<string>();
   if (emails.length > 0) {
     const byEmail = await db
       .select({
+        id: users.id,
         email: users.email,
         companyName: companies.name,
       })
       .from(users)
       .leftJoin(companies, eq(users.organizationId, companies.id))
-      .where(inArray(users.email, emails));
+      .where(inArray(sql`lower(trim(${users.email}))`, emails));
+    const matchedUserIds = byEmail
+      .map((row) => String(row.id ?? "").trim())
+      .filter((id) => looksLikeUuid(id));
+    const membershipForMatched = new Map<string, string>();
+    if (matchedUserIds.length > 0) {
+      try {
+        const extraMemberships = await db
+          .select({
+            userId: userCompanyMembership.userId,
+            companyName: companies.name,
+          })
+          .from(userCompanyMembership)
+          .innerJoin(
+            companies,
+            eq(userCompanyMembership.companyId, companies.id),
+          )
+          .where(inArray(userCompanyMembership.userId, matchedUserIds));
+        for (const row of extraMemberships) {
+          appendCompanyName(
+            membershipForMatched,
+            String(row.userId).toLowerCase(),
+            row.companyName,
+          );
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('relation "user_company_membership" does not exist')) {
+          throw err;
+        }
+      }
+    }
     for (const row of byEmail) {
       const keys = emailToKeys.get(String(row.email ?? "").trim().toLowerCase());
       if (!keys) continue;
-      for (const key of keys) appendCompanyName(m, key, row.companyName);
+      for (const key of keys) portalAccountKeys.add(key);
+      const userKey = String(row.id ?? "").toLowerCase();
+      const chosen =
+        membershipForMatched.get(userKey) ||
+        String(row.companyName ?? "").trim();
+      if (!chosen) continue;
+      for (const key of keys) m.set(key, chosen);
     }
+  }
+
+  for (const [key, orgName] of contactOrgFallback) {
+    if (portalAccountKeys.has(key) || m.has(key)) continue;
+    appendCompanyName(m, key, orgName);
   }
 
   return m;
@@ -2313,13 +2378,6 @@ export async function enrichInvestorApiRowsWithAddedBy<
   const leadFallback = needsLeadFallback
     ? await resolveDealLeadSponsorFallback(dealId)
     : {};
-  const [dealCompanyRow] = await db
-    .select({ companyName: companies.name })
-    .from(addDealForm)
-    .leftJoin(companies, eq(addDealForm.organizationId, companies.id))
-    .where(eq(addDealForm.id, dealId))
-    .limit(1);
-  const dealCompanyName = String(dealCompanyRow?.companyName ?? "").trim();
 
   let leadCompanyName: string | undefined;
   if (leadFallback.userId) {
@@ -2364,9 +2422,6 @@ export async function enrichInvestorApiRowsWithAddedBy<
     }
     if (!companyName && !uid && leadCompanyName) {
       companyName = leadCompanyName;
-    }
-    if (!companyName && dealCompanyName) {
-      companyName = dealCompanyName;
     }
     const patch: {
       addedByUserId?: string;
@@ -2428,7 +2483,9 @@ export async function assertDealExists(dealId: string): Promise<boolean> {
 /**
  * Autosaved draft rows are hidden unless `includeDrafts` is set (modal resume only).
  * Investor-archived commitments are hidden unless `includeInvestorArchived` is set.
- * The owning investor still receives those rows from the investors API so they can restore them.
+ * Sponsor-removed investments and unlinked investor associations stay in the
+ * table for audit and are hidden from rosters and active totals.
+ * The owning investor still receives archived rows from the investors API so they can restore them.
  */
 export async function listDealInvestmentsByDealId(
   dealId: string,
@@ -2436,6 +2493,7 @@ export async function listDealInvestmentsByDealId(
     lpInvestorsOnly?: boolean;
     includeDrafts?: boolean;
     includeInvestorArchived?: boolean;
+    includeRemoved?: boolean;
   },
 ): Promise<DealInvestmentRow[]> {
   const draftExpr =
@@ -2446,6 +2504,13 @@ export async function listDealInvestmentsByDealId(
     options?.includeInvestorArchived === true
       ? undefined
       : isNull(dealInvestment.investorArchivedAt);
+  const removedExpr =
+    options?.includeRemoved === true
+      ? undefined
+      : and(
+          isNull(dealInvestment.removedAt),
+          isNull(dealInvestment.investorUnlinkedAt),
+        );
   const whereExpr =
     options?.lpInvestorsOnly === true
       ? and(
@@ -2453,8 +2518,14 @@ export async function listDealInvestmentsByDealId(
           inArray(dealInvestment.investor_role, [...LP_INVESTOR_ROLE_MATCH]),
           draftExpr,
           archivedExpr,
+          removedExpr,
         )
-      : and(eq(dealInvestment.dealId, dealId), draftExpr, archivedExpr);
+      : and(
+          eq(dealInvestment.dealId, dealId),
+          draftExpr,
+          archivedExpr,
+          removedExpr,
+        );
   return db
     .select()
     .from(dealInvestment)
@@ -2496,6 +2567,8 @@ export async function sumCommittedAmountByDealIds(
         inArray(dealInvestment.dealId, ids),
         eq(dealInvestment.isDraft, false),
         isNull(dealInvestment.investorArchivedAt),
+        isNull(dealInvestment.removedAt),
+        isNull(dealInvestment.investorUnlinkedAt),
       ),
     );
 

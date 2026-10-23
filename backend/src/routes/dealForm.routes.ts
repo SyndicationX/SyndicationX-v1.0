@@ -69,6 +69,7 @@ import {
 } from "../controllers/deal/dealInvestorQuestionnaire.controller.js";
 import {
   deleteDealMember,
+  postDealInvestorRemoval,
   getDealCoSponsorEmailIntercept,
   getDealMemberEsignStatus,
   getDealMembers,
@@ -84,6 +85,7 @@ import {
   getDealSponsorEsignSignSessionHandler,
   postDealMyEsignMarkViewed,
   postDealMyEsignSync,
+  postDealMyEsignWithdrawSignature,
   postDealSponsorEsignSync,
   postSyncCompletedEsignDocuments,
 } from "../controllers/deal/dealInvestorEsignDocuments.controller.js";
@@ -193,6 +195,10 @@ router.post(
   "/deals/:dealId/members/export-notify",
   postDealMembersExportNotify,
 );
+router.post(
+  "/deals/:dealId/members/:rowId/removal",
+  postDealInvestorRemoval,
+);
 router.delete("/deals/:dealId/members/:rowId", deleteDealMember);
 router.put("/deals/:dealId/members/:rowId", putDealMember);
 router.post(
@@ -210,6 +216,10 @@ router.get(
 router.get("/deals/:dealId/my-esign-documents", getDealMyEsignDocuments);
 router.post("/deals/:dealId/my-esign-sync", postDealMyEsignSync);
 router.post("/deals/:dealId/my-esign-mark-viewed", postDealMyEsignMarkViewed);
+router.post(
+  "/deals/:dealId/my-esign-withdraw-signature",
+  postDealMyEsignWithdrawSignature,
+);
 router.get("/deals/:dealId/my-esign-sign-session", getDealMyEsignSignSessionHandler);
 router.get(
   "/deals/:dealId/sponsor-esign-sign-session",

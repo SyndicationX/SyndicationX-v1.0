@@ -246,6 +246,14 @@
   background: color-mix(in srgb, var(--portal-primary, #2563eb) 10%, transparent);
 }
 
+.investment_detail_esign_card_doc_sign_btn--remove {
+  color: #b42318;
+}
+
+.investment_detail_esign_card_doc_sign_btn--remove:hover {
+  background: color-mix(in srgb, #b42318 10%, transparent);
+}
+
 .investment_detail_documents_group_hint {
   margin: 0 0 0.75rem;
   font-size: 0.8125rem;

@@ -976,6 +976,12 @@ function stripeErrorMessage(err: unknown, fallback: string): string {
         : fallback;
   const text = raw.toLowerCase();
   if (text.includes("already used a coupon")) return fallback;
+  if (
+    text.includes("promotion code") &&
+    (text.includes("already exists") || text.includes("duplicate"))
+  ) {
+    return "That coupon code is already in use.";
+  }
   if (text.includes("expired")) return "Expired";
   if (
     text.includes("redeemed") ||
@@ -1073,7 +1079,7 @@ export async function postPlatformCoupon(
   }
   if (!/^[A-Z0-9-]{3,40}$/.test(code)) {
     res.status(400).json({
-      message: "Code must be 3–40 letters, numbers, or dashes.",
+      message: "Coupon code must be 3–40 letters, numbers, or dashes.",
     });
     return;
   }
@@ -1096,11 +1102,13 @@ export async function postPlatformCoupon(
   let amountOffCents: number | undefined;
   if (discountType === "amount") {
     const dollars = Number(body.amountOff ?? body.amount_off);
-    if (!Number.isFinite(dollars) || dollars <= 0) {
-      res.status(400).json({ message: "Enter an amount off greater than zero." });
+    if (!Number.isFinite(dollars) || dollars <= 0 || !Number.isInteger(dollars)) {
+      res.status(400).json({
+        message: "Amount off must be a whole number greater than zero.",
+      });
       return;
     }
-    amountOffCents = Math.round(dollars * 100);
+    amountOffCents = dollars * 100;
   } else {
     const pct = Number(body.percentOff ?? body.percent_off);
     if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
@@ -1117,13 +1125,34 @@ export async function postPlatformCoupon(
 
   let redeemBy: number | undefined;
   const redeemByRaw = bodyString(body.redeemBy ?? body.redeem_by);
-  if (redeemByRaw) {
-    const end = new Date(`${redeemByRaw}T23:59:59.000Z`);
-    if (Number.isNaN(end.getTime()) || end.getTime() <= Date.now()) {
-      res.status(400).json({ message: "Redeem-by date must be in the future." });
-      return;
-    }
-    redeemBy = Math.floor(end.getTime() / 1000);
+  if (!redeemByRaw) {
+    res.status(400).json({ message: "Enter a redeem-by date." });
+    return;
+  }
+  const end = new Date(`${redeemByRaw}T23:59:59.000Z`);
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  if (Number.isNaN(end.getTime()) || redeemByRaw < todayUtc) {
+    res.status(400).json({ message: "Redeem-by date cannot be in the past." });
+    return;
+  }
+  redeemBy = Math.floor(end.getTime() / 1000);
+
+  const maxRaw = body.maxRedemptions ?? body.max_redemptions;
+  const maxProvided =
+    maxRaw != null && !(typeof maxRaw === "string" && maxRaw.trim() === "");
+  const maxRedemptions = maxProvided
+    ? optionalPositiveInt(maxRaw)
+    : 1;
+  if (
+    maxProvided &&
+    (maxRedemptions == null ||
+      (typeof maxRaw === "number" && !Number.isInteger(maxRaw)) ||
+      (typeof maxRaw === "string" && !/^\d+$/.test(maxRaw.trim())))
+  ) {
+    res.status(400).json({
+      message: "Max redemptions must be a positive whole number.",
+    });
+    return;
   }
 
   try {
@@ -1134,17 +1163,17 @@ export async function postPlatformCoupon(
       amountOffCents,
       duration,
       durationInMonths,
-      maxRedemptions: optionalPositiveInt(
-        body.maxRedemptions ?? body.max_redemptions,
-      ),
+      maxRedemptions: maxRedemptions ?? 1,
       redeemBy,
     });
     res.status(201).json({ coupon });
   } catch (err) {
-    console.error("[billing] create coupon failed:", err);
-    res.status(502).json({
-      message: stripeErrorMessage(err, "Could not create the coupon."),
-    });
+    const message = stripeErrorMessage(err, "Could not create the coupon.");
+    const taken =
+      message === "That coupon code is already in use." ||
+      message === "That name is already in use.";
+    if (!taken) console.error("[billing] create coupon failed:", err);
+    res.status(taken ? 409 : 502).json({ message });
   }
 }
 

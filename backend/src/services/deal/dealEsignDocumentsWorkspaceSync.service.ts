@@ -17,13 +17,13 @@ import { getActiveEsignProvider } from "../../config/esignProvider.config.js";
 import { resolveEsignSignflowWorkflowType } from "../../constants/esignSigningWorkflow.js";
 import {
   getSignFlowDocument,
-  findSignFlowTemplateRecipient,
   downloadSignFlowRecipientSignedPdfBuffer,
   downloadSignFlowSignedPdfBuffer,
   isSignFlowNotAllSignedError,
   resolveSignFlowSponsorRecipientId,
   signFlowSponsorSignsBeforeInvestor,
   signFlowInvestorPhaseComplete,
+  signFlowPendingSponsorSignAudience,
   signFlowTemplateHasSponsorFields,
 } from "../esign/signflow.service.js";
 import { db } from "../../database/db.js";
@@ -384,21 +384,10 @@ function isEsignTemplateSection(section: Record<string, unknown>): boolean {
   );
 }
 
-function signFlowRecipientHasSigned(recipient: {
-  signed?: boolean;
-  signingStatus?: string;
-  status?: string;
-  signedAt?: string | null;
-}): boolean {
-  if (recipient.signed === true) return true;
-  const status = String(
-    recipient.signingStatus ?? recipient.status ?? "",
-  )
-    .trim()
-    .toLowerCase();
-  if (status === "signed" || status === "completed") return true;
-  return Boolean(recipient.signedAt?.trim());
-}
+const NO_PENDING_SPONSOR_AUDIENCE = {
+  openToAnySponsor: false,
+  pendingNamedSponsorEmails: [] as string[],
+};
 
 export async function resolveEsignSponsorSignState(
   send: StoredDealInvestorEsignSend,
@@ -407,6 +396,10 @@ export async function resolveEsignSponsorSignState(
   sponsorSigned: boolean;
   /** Parallel, or sequential sponsor-first: sponsor may sign before the investor. */
   sponsorMaySignBeforeInvestor: boolean;
+  /** Unsigned generic Sponsor slot — every deal sponsor may sign. */
+  openToAnySponsor: boolean;
+  /** Unsigned slots assigned to specific sponsors. */
+  pendingNamedSponsorEmails: string[];
 }> {
   const investorSignedLocal = esignSendReadyForSponsorCounterSign(send);
   const fullyCompleted = Boolean(send.completedAt?.trim());
@@ -415,6 +408,7 @@ export async function resolveEsignSponsorSignState(
       awaitingSponsorSignature: false,
       sponsorSigned: true,
       sponsorMaySignBeforeInvestor: false,
+      ...NO_PENDING_SPONSOR_AUDIENCE,
     };
   }
 
@@ -425,12 +419,14 @@ export async function resolveEsignSponsorSignState(
         awaitingSponsorSignature: false,
         sponsorSigned: fullyCompleted,
         sponsorMaySignBeforeInvestor: false,
+        ...NO_PENDING_SPONSOR_AUDIENCE,
       };
     }
     return {
       awaitingSponsorSignature: !fullyCompleted,
       sponsorSigned: fullyCompleted,
       sponsorMaySignBeforeInvestor: false,
+      ...NO_PENDING_SPONSOR_AUDIENCE,
     };
   }
 
@@ -470,59 +466,27 @@ export async function resolveEsignSponsorSignState(
       workflowType === "parallel" ||
       sameSigningTurn ||
       signFlowSponsorSignsBeforeInvestor(doc);
-    if (!signFlowTemplateHasSponsorFields(doc)) {
+    const audience = signFlowPendingSponsorSignAudience(doc);
+    if (!signFlowTemplateHasSponsorFields(doc) || audience.allSponsorSlotsSigned) {
       return {
         awaitingSponsorSignature: false,
         sponsorSigned: true,
         sponsorMaySignBeforeInvestor: false,
-      };
-    }
-    const sponsor = findSignFlowTemplateRecipient(doc, [
-      "seller",
-      "sponsor",
-      "rec_sponsor",
-      "rec_2",
-      "recipient_b",
-    ]);
-    if (!sponsor) {
-      return {
-        awaitingSponsorSignature: false,
-        sponsorSigned: fullyCompleted,
-        sponsorMaySignBeforeInvestor: false,
-      };
-    }
-    const sponsorSigned = signFlowRecipientHasSigned(sponsor);
-    if (sponsorSigned) {
-      return {
-        awaitingSponsorSignature: false,
-        sponsorSigned: true,
-        sponsorMaySignBeforeInvestor,
+        ...NO_PENDING_SPONSOR_AUDIENCE,
       };
     }
 
     const investorSignedLive =
       investorSignedLocal || signFlowInvestorPhaseComplete(doc);
-
-    if (sponsorMaySignBeforeInvestor) {
-      return {
-        awaitingSponsorSignature: true,
-        sponsorSigned: false,
-        sponsorMaySignBeforeInvestor: true,
-      };
-    }
-
-    if (!investorSignedLive) {
-      return {
-        awaitingSponsorSignature: false,
-        sponsorSigned: false,
-        sponsorMaySignBeforeInvestor: false,
-      };
-    }
+    const stillWaitingForInvestor =
+      !sponsorMaySignBeforeInvestor && !investorSignedLive;
 
     return {
-      awaitingSponsorSignature: true,
+      awaitingSponsorSignature: !stillWaitingForInvestor,
       sponsorSigned: false,
-      sponsorMaySignBeforeInvestor: false,
+      sponsorMaySignBeforeInvestor,
+      openToAnySponsor: audience.openToAnySponsor,
+      pendingNamedSponsorEmails: audience.namedEmails,
     };
   } catch {
     if (!investorSignedLocal) {
@@ -530,12 +494,14 @@ export async function resolveEsignSponsorSignState(
         awaitingSponsorSignature: false,
         sponsorSigned: fullyCompleted,
         sponsorMaySignBeforeInvestor: false,
+        ...NO_PENDING_SPONSOR_AUDIENCE,
       };
     }
     return {
       awaitingSponsorSignature: !fullyCompleted,
       sponsorSigned: fullyCompleted,
       sponsorMaySignBeforeInvestor: false,
+      ...NO_PENDING_SPONSOR_AUDIENCE,
     };
   }
 }
@@ -573,6 +539,8 @@ function buildEsignNestedDocument(params: {
   templateFileId: string;
   awaitingSponsorSignature: boolean;
   sponsorSigned: boolean;
+  openToAnySponsor: boolean;
+  pendingNamedSponsorEmails: string[];
 }): Record<string, unknown> {
   return {
     id: params.docId,
@@ -592,6 +560,10 @@ function buildEsignNestedDocument(params: {
     esignTemplateFileId: params.templateFileId || undefined,
     esignAwaitingSponsorSignature: params.awaitingSponsorSignature,
     esignSponsorSigned: params.sponsorSigned,
+    ...(params.openToAnySponsor ? { esignOpenSponsorSign: true } : {}),
+    ...(params.pendingNamedSponsorEmails.length > 0
+      ? { esignSponsorSignerEmails: params.pendingNamedSponsorEmails }
+      : {}),
   };
 }
 
@@ -676,6 +648,8 @@ async function collectCompletedEsignNestedDocuments(
             sponsorState.awaitingSponsorSignature ||
             (sponsorCanOpenNow && !sponsorState.sponsorSigned),
           sponsorSigned: sponsorState.sponsorSigned,
+          openToAnySponsor: sponsorState.openToAnySponsor,
+          pendingNamedSponsorEmails: sponsorState.pendingNamedSponsorEmails,
         }),
       );
     }

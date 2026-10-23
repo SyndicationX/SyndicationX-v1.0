@@ -10,6 +10,7 @@ import {
   Pencil,
   Send,
   Trash2,
+  UserMinus,
   X,
 } from "lucide-react"
 import {
@@ -30,6 +31,11 @@ import {
   investorEsignIsFullyCompletedForRow,
   investorEsignWasSent,
 } from "../../../utils/investorEsignStatus"
+import { MemberRemoveConfirmModal } from "../../../../usermanagement/MemberRemoveConfirmModal"
+import {
+  InvestorRemovalConfirmModal,
+  type InvestorRemovalAction,
+} from "./InvestorRemovalConfirmModal"
 import "../../../../usermanagement/user_management.css"
 import "../../../components/open-investment-esign-required-modal.css"
 import "./deal-member-row-actions.css"
@@ -51,9 +57,19 @@ export interface DealMemberRowActionsProps {
   sendEsignDisabledTitle?: string
   onSendInvite: (row: DealInvestorRow) => void
   /** Return a promise so the confirm dialog can show a loading state until the API finishes. */
-  onDelete: (row: DealInvestorRow) => void | Promise<void>
+  onDelete: (
+    row: DealInvestorRow,
+    removal?: { action: InvestorRemovalAction; reason: string },
+  ) => void | Promise<void>
   /** If true (default), opens the portal confirm dialog before calling `onDelete`. */
   confirmBeforeDelete?: boolean
+  /**
+   * Who is being removed. Investor and team member use the typed REMOVE dialog.
+   * General Partner rows keep the existing member confirmation.
+   */
+  removalSubject?: "member" | "investor" | "team_member"
+  /** General Partners: same confirm dialog as removing an organization member. */
+  orgStyleRemoveConfirm?: boolean
   /** Session draft row: first menu item is "Continue editing" (opens add-member flow). */
   draftRow?: boolean
   /** Disable Edit while keeping the rest of the row actions available. */
@@ -82,6 +98,14 @@ export interface DealMemberRowActionsProps {
   approveFundDisabledTitle?: string
   /** Open the row for reading only. Hides edit, invite, eSign, and delete. */
   viewOnly?: boolean
+  /** Lead and admin sponsors cannot remove a co-sponsor's investor. */
+  removeHidden?: boolean
+  /**
+   * Lead and admin sponsors may only view a co-sponsor's investor.
+   * Other menu items stay visible and disabled.
+   */
+  actionsLimitedToView?: boolean
+  actionsLimitedToViewTitle?: string
 }
 
 export function DealMemberRowActions({
@@ -95,6 +119,8 @@ export function DealMemberRowActions({
   onSendInvite,
   onDelete,
   confirmBeforeDelete = true,
+  removalSubject = "member",
+  orgStyleRemoveConfirm = false,
   draftRow = false,
   editDisabled = false,
   editDisabledTitle,
@@ -107,6 +133,9 @@ export function DealMemberRowActions({
   approveFundDisabled = false,
   approveFundDisabledTitle,
   viewOnly = false,
+  removeHidden = false,
+  actionsLimitedToView = false,
+  actionsLimitedToViewTitle = "This investor was added by a co-sponsor. Only view is available.",
 }: DealMemberRowActionsProps) {
   const esignWasSent = investorEsignWasSent(row)
   const esignCompleted = investorEsignIsFullyCompletedForRow(row)
@@ -114,6 +143,7 @@ export function DealMemberRowActions({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [leadSponsorBlockedOpen, setLeadSponsorBlockedOpen] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState("")
   const wrapRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLUListElement>(null)
   const deleteTitleId = useId()
@@ -124,6 +154,10 @@ export function DealMemberRowActions({
   const closeMenu = useCallback(() => setMenuOpen(false), [])
 
   const memberLabel = row.displayName?.trim() || "member"
+  const useInvestorChoiceModal = removalSubject === "investor" && !draftRow
+  const isTypedRemoval =
+    removalSubject === "team_member" ||
+    (removalSubject === "investor" && draftRow)
 
   useLayoutEffect(() => {
     if (!menuOpen) return
@@ -200,6 +234,7 @@ export function DealMemberRowActions({
       return
     }
     if (confirmBeforeDelete) {
+      setDeleteError("")
       setDeleteConfirmOpen(true)
       closeMenu()
       return
@@ -220,6 +255,26 @@ export function DealMemberRowActions({
     } finally {
       setDeleteBusy(false)
       setDeleteConfirmOpen(false)
+    }
+  }
+
+  async function confirmInvestorRemoval(removal: {
+    action: InvestorRemovalAction
+    reason: string
+  }) {
+    setDeleteBusy(true)
+    setDeleteError("")
+    try {
+      await Promise.resolve(onDelete(row, removal))
+      setDeleteConfirmOpen(false)
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error && err.message
+          ? err.message
+          : "Could not remove this record.",
+      )
+    } finally {
+      setDeleteBusy(false)
     }
   }
 
@@ -297,7 +352,48 @@ export function DealMemberRowActions({
       : null
 
   const deleteModal =
-    deleteConfirmOpen && typeof document !== "undefined"
+    useInvestorChoiceModal && deleteConfirmOpen ? (
+      <InvestorRemovalConfirmModal
+        investorName={memberLabel}
+        busy={deleteBusy}
+        error={deleteError}
+        onClose={() => {
+          if (deleteBusy) return
+          setDeleteConfirmOpen(false)
+        }}
+        onConfirm={(removal) => void confirmInvestorRemoval(removal)}
+      />
+    ) : (orgStyleRemoveConfirm || isTypedRemoval) && deleteConfirmOpen ? (
+      <MemberRemoveConfirmModal
+        memberName={memberLabel}
+        busy={deleteBusy}
+        error=""
+        submitLabel="Remove"
+        message={
+          removalSubject === "team_member" ? (
+            <>
+              This will remove <strong>{memberLabel}</strong> from the team
+              members on this deal. Other roles, investments, and the contact
+              record stay in place.
+            </>
+          ) : removalSubject === "investor" ? (
+            <>
+              This will remove <strong>{memberLabel}</strong>&apos;s investment.
+            </>
+          ) : (
+            <>
+              This will remove <strong>{memberLabel}</strong> from this deal.
+              They will leave General Partners.
+            </>
+          )
+        }
+        onClose={() => {
+          if (deleteBusy) return
+          setDeleteConfirmOpen(false)
+        }}
+        onConfirm={() => void confirmDelete()}
+      />
+    ) : deleteConfirmOpen && typeof document !== "undefined"
       ? createPortal(
           <div
             className="um_modal_overlay deals_add_inv_modal_overlay portal_modal_z_boost deal_member_delete_overlay"
@@ -401,15 +497,19 @@ export function DealMemberRowActions({
                     <button
                       type="button"
                       className={`um_kebab_menuitem${
-                        draftRow || approveFundDisabled
+                        draftRow || approveFundDisabled || actionsLimitedToView
                           ? " um_kebab_menuitem_disabled"
                           : ""
                       }`}
                       role="menuitem"
-                      disabled={draftRow || approveFundDisabled}
-                      title={approveFundDisabledTitle}
+                      disabled={draftRow || approveFundDisabled || actionsLimitedToView}
+                      title={
+                        actionsLimitedToView
+                          ? actionsLimitedToViewTitle
+                          : approveFundDisabledTitle
+                      }
                       onClick={() => {
-                        if (draftRow || approveFundDisabled) return
+                        if (draftRow || approveFundDisabled || actionsLimitedToView) return
                         runMenuAction(() => void onApproveFund(row))
                       }}
                     >
@@ -447,13 +547,19 @@ export function DealMemberRowActions({
                   <button
                     type="button"
                     className={`um_kebab_menuitem${
-                      editDisabled ? " um_kebab_menuitem_disabled" : ""
+                      editDisabled || actionsLimitedToView
+                        ? " um_kebab_menuitem_disabled"
+                        : ""
                     }`}
                     role="menuitem"
-                    disabled={editDisabled}
-                    title={editDisabledTitle}
+                    disabled={editDisabled || actionsLimitedToView}
+                    title={
+                      actionsLimitedToView
+                        ? actionsLimitedToViewTitle
+                        : editDisabledTitle
+                    }
                     onClick={() => {
-                      if (editDisabled) return
+                      if (editDisabled || actionsLimitedToView) return
                       runMenuAction(() => onEdit(row))
                     }}
                   >
@@ -470,21 +576,23 @@ export function DealMemberRowActions({
                   <button
                     type="button"
                     className={`um_kebab_menuitem${
-                      draftRow || !offeringLinkAvailable
+                      draftRow || !offeringLinkAvailable || actionsLimitedToView
                         ? " um_kebab_menuitem_disabled"
                         : ""
                     }`}
                     role="menuitem"
-                    disabled={draftRow || !offeringLinkAvailable}
+                    disabled={draftRow || !offeringLinkAvailable || actionsLimitedToView}
                     title={
-                      offeringLinkBlockedBecauseDraft
+                      actionsLimitedToView
+                        ? actionsLimitedToViewTitle
+                        : offeringLinkBlockedBecauseDraft
                         ? "Change the deal stage before copying an offering preview link."
                         : !offeringLinkAvailable
                           ? 'Set visibility to “Only visible with link” in Offering Details to enable this link.'
                           : undefined
                     }
                     onClick={() => {
-                      if (draftRow || !offeringLinkAvailable) return
+                      if (draftRow || !offeringLinkAvailable || actionsLimitedToView) return
                       runMenuAction(() => onCopyLink(row))
                     }}
                   >
@@ -502,14 +610,16 @@ export function DealMemberRowActions({
                     <button
                       type="button"
                       className={`um_kebab_menuitem${
-                        draftRow || sendEsignDisabled
+                        draftRow || sendEsignDisabled || actionsLimitedToView
                           ? " um_kebab_menuitem_disabled"
                           : ""
                       }`}
                       role="menuitem"
-                      disabled={draftRow || sendEsignDisabled}
+                      disabled={draftRow || sendEsignDisabled || actionsLimitedToView}
                       title={
-                        draftRow
+                        actionsLimitedToView
+                          ? actionsLimitedToViewTitle
+                          : draftRow
                           ? "Available after the investor is saved"
                           : sendEsignDisabled
                             ? sendEsignDisabledTitle
@@ -518,7 +628,7 @@ export function DealMemberRowActions({
                               : "Send eSign documents to this investor"
                       }
                       onClick={() => {
-                        if (draftRow || sendEsignDisabled) return
+                        if (draftRow || sendEsignDisabled || actionsLimitedToView) return
                         runMenuAction(() => void onSendEsign(row))
                       }}
                     >
@@ -536,16 +646,24 @@ export function DealMemberRowActions({
                   <button
                     type="button"
                     className={`um_kebab_menuitem${
-                      draftRow || invitationMailSending || invitationMailBlocked
+                      draftRow ||
+                      invitationMailSending ||
+                      invitationMailBlocked ||
+                      actionsLimitedToView
                         ? " um_kebab_menuitem_disabled"
                         : ""
                     }`}
                     role="menuitem"
                     disabled={
-                      draftRow || invitationMailSending || invitationMailBlocked
+                      draftRow ||
+                      invitationMailSending ||
+                      invitationMailBlocked ||
+                      actionsLimitedToView
                     }
                     title={
-                      draftRow
+                      actionsLimitedToView
+                        ? actionsLimitedToViewTitle
+                        : draftRow
                         ? "Available after the member is saved"
                         : invitationMailSending
                           ? "Sending invitation email"
@@ -559,7 +677,8 @@ export function DealMemberRowActions({
                       if (
                         draftRow ||
                         invitationMailSending ||
-                        invitationMailBlocked
+                        invitationMailBlocked ||
+                        actionsLimitedToView
                       )
                         return
                       runMenuAction(() => onSendInvite(row))
@@ -596,22 +715,31 @@ export function DealMemberRowActions({
                         : "Send invitation email"}
                   </button>
                 </li>
+                {removeHidden && !actionsLimitedToView ? null : (
                 <li role="none">
                   <button
                     type="button"
-                    className="um_kebab_menuitem deals_kebab_menuitem_danger"
+                    className={`um_kebab_menuitem deals_kebab_menuitem_danger${
+                      actionsLimitedToView ? " um_kebab_menuitem_disabled" : ""
+                    }`}
                     role="menuitem"
-                    onClick={() => void runDelete()}
+                    disabled={actionsLimitedToView}
+                    title={actionsLimitedToView ? actionsLimitedToViewTitle : undefined}
+                    onClick={() => {
+                      if (actionsLimitedToView) return
+                      void runDelete()
+                    }}
                   >
-                    <Trash2
+                    <UserMinus
                       className="um_kebab_menuitem_icon"
                       size={16}
                       strokeWidth={2}
                       aria-hidden
                     />
-                    Delete
+                    Remove
                   </button>
                 </li>
+                )}
                 </>
                 )}
               </ul>,

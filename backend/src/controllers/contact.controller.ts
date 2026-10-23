@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { getValidJwtUser } from "../middleware/jwtUser.js";
 import { isPlatformAdminRole } from "../constants/roles.js";
 import { db } from "../database/db.js";
@@ -857,6 +857,47 @@ export async function getContactMatchingIds(
   }
 }
 
+const SIGNUP_ROLE_LABELS: Record<string, string> = {
+  investor: "Investor",
+  syndicator: "Syndicator",
+  both: "Both",
+};
+
+/** Portal “Are you an” answer, matched by the contact’s email. */
+async function signupRoleLabelByEmail(
+  emails: string[],
+): Promise<Map<string, string>> {
+  const norms = [
+    ...new Set(
+      emails
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => email.includes("@")),
+    ),
+  ];
+  const out = new Map<string, string>();
+  if (norms.length === 0) return out;
+  const rows = await db
+    .select({
+      email: users.email,
+      signupAs: users.signupAs,
+    })
+    .from(users)
+    .where(
+      sql`lower(trim(${users.email})) in (${sql.join(
+        norms.map((email) => sql`${email}`),
+        sql`, `,
+      )})`,
+    );
+  for (const row of rows) {
+    const email = String(row.email ?? "").trim().toLowerCase();
+    if (!email) continue;
+    const stored = String(row.signupAs ?? "").trim().toLowerCase();
+    const label = SIGNUP_ROLE_LABELS[stored] ?? "";
+    if (label) out.set(email, label);
+  }
+  return out;
+}
+
 /**
  * GET /contacts/platform-contacts — Platform Contacts section: self-registered
  * investors. Opted-in only for company users; all self-signups for platform admins.
@@ -897,11 +938,24 @@ export async function getPlatformContacts(
       organizationId,
       user.id,
     );
+    const signupRoleByEmail = await signupRoleLabelByEmail(
+      contacts.map((row) => String(row.email ?? "")),
+    );
+    const withSignupRole = contacts.map((row, index) => {
+      const storedOnContact = String(rows[index]?.signupAs ?? "")
+        .trim()
+        .toLowerCase();
+      const signupRole =
+        SIGNUP_ROLE_LABELS[storedOnContact] ||
+        signupRoleByEmail.get(String(row.email ?? "").trim().toLowerCase()) ||
+        "";
+      return { ...row, signupRole, signup_role: signupRole };
+    });
     logSocContactDirectoryView({
       actorUserId: user.id,
-      resultCount: contacts.length,
+      resultCount: withSignupRole.length,
     });
-    res.status(200).json({ contacts });
+    res.status(200).json({ contacts: withSignupRole });
   } catch (err) {
     console.error("getPlatformContacts:", err);
     res.status(500).json({ message: "Could not load platform contacts" });

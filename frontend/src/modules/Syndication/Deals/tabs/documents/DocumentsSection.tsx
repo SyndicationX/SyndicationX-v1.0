@@ -154,10 +154,20 @@ type DocumentMoveItem = {
   docId: string
 }
 
-function nestedDocumentNeedsSponsorSign(doc: NestedPreviewDocument): boolean {
+function nestedDocumentNeedsSponsorSign(
+  doc: NestedPreviewDocument,
+  viewerEmail: string,
+): boolean {
   if (!doc.esignSignatureRequestId?.trim()) return false
   if (doc.esignSponsorSigned) return false
-  return doc.esignAwaitingSponsorSignature === true
+  if (doc.esignAwaitingSponsorSignature !== true) return false
+  if (doc.esignOpenSponsorSign) return true
+  const allowed = (doc.esignSponsorSignerEmails ?? [])
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean)
+  if (allowed.length === 0) return true
+  const me = viewerEmail.trim().toLowerCase()
+  return Boolean(me) && allowed.includes(me)
 }
 
 function DocumentsTableDocName({
@@ -2270,7 +2280,8 @@ export function DocumentsSection({
               const sponsorSignPendingCount = isEsignSection
                 ? section.nestedDocuments.filter(
                     (doc) =>
-                      viewerCanSponsorSign && nestedDocumentNeedsSponsorSign(doc),
+                      viewerCanSponsorSign &&
+                      nestedDocumentNeedsSponsorSign(doc, sessionEmail),
                   ).length
                 : 0
               const canRenameSection =
@@ -2600,7 +2611,7 @@ export function DocumentsSection({
                               const sponsorSignOnly =
                                 isEsignSection &&
                                 viewerCanSponsorSign &&
-                                nestedDocumentNeedsSponsorSign(d)
+                                nestedDocumentNeedsSponsorSign(d, sessionEmail)
                               const checked = Boolean(
                                 checkedDocsBySection[section.id]?.[d.id],
                               )

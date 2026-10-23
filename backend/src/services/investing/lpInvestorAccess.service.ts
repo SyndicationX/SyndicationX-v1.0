@@ -2,7 +2,7 @@
  * LP investing-mode nav, session flags, and deal allowlists from:
  * - `deal_lp_investor` only (contact email and/or denormalized `deal_lp_investor.email`).
  */
-import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   isInvestorDashboardOpportunityOffering,
 } from "../../constants/deal-lifecycle/deal-status-rules.js";
@@ -419,7 +419,9 @@ export async function listInvestorSponsorScopedDealIdsForUser(
     sponsorUserIds.length === 0
       ? await listDealIdsFromLpInvestorTableForEmail(e)
       : await listDealIdsWhereSponsorUsersOnRoster(sponsorUserIds);
-  const visible = await filterDealIdsVisibleToInvestors(raw);
+  const visibleCatalog = await filterDealIdsVisibleToInvestors(raw);
+  const rosterDeals = await listDealIdsFromLpInvestorTableForEmail(e);
+  const visible = [...new Set([...visibleCatalog, ...rosterDeals])];
   if (opts?.applyContactOfferingVisibility === false) return visible;
   if (sponsorUserIds.length === 0) {
     return filterDealIdsByContactOfferingVisibility(e, visible);
@@ -544,7 +546,15 @@ export async function listDirectInvestingParticipantDealIdsForUser(params: {
       ...investment,
     ]),
   ];
-  const visible = await filterDealIdsVisibleToInvestors(merged);
+  const visibleCatalog = await filterDealIdsVisibleToInvestors(merged);
+  /**
+   * A sponsor-added LP or investment stays on this investor's list even when
+   * the offering still has a placeholder property name. Company and fund deals
+   * often never fill that field.
+   */
+  const visible = [
+    ...new Set([...visibleCatalog, ...lp, ...investment]),
+  ];
   if (!emailNorm.includes("@")) return visible;
   if (params.applyContactOfferingVisibility === false) return visible;
   return filterDealIdsByContactOfferingVisibility(emailNorm, visible);
@@ -679,6 +689,7 @@ export async function mapLpInvestorRoleDisplayByDealIdForUserEmail(
       and(
         inArray(dealLpInvestor.dealId, ids),
         eq(dealLpInvestor.isDraft, false),
+        isNull(dealLpInvestor.removedAt),
         or(
           sql`(nullif(trim(${contact.email}), '') IS NOT NULL AND lower(trim(${contact.email})) = ${e})`,
           sql`nullif(trim(${dealLpInvestor.email}), '') IS NOT NULL AND lower(trim(${dealLpInvestor.email})) = ${e}`,

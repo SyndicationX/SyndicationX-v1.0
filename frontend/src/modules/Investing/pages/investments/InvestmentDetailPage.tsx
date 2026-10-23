@@ -80,8 +80,10 @@ function lineIsInvestorArchived(
   line: InvestmentBreakdownLine,
   rows: DealInvestorRow[],
 ): boolean {
+  if (line.sponsorRemoved) return true
   const id = String(line.investmentRowId ?? "").trim()
   const row = id ? rows.find((item) => String(item.id ?? "") === id) : undefined
+  if (row?.sponsorRemoved) return true
   if (row && typeof row.investorArchived === "boolean") return row.investorArchived
   return Boolean(line.investorArchived)
 }
@@ -785,6 +787,9 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
                   })
                 : undefined)
             const archived = lineIsInvestorArchived(line, dealInvestorRows)
+            const sponsorRemoved = Boolean(
+              line.sponsorRemoved || exactRow?.sponsorRemoved || row?.sponsorRemoved,
+            )
             const kind = exactRow
               ? investorParticipationKind(exactRow)
               : line.participationKind
@@ -798,16 +803,25 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
             const canAddInvestment =
               !archived && Boolean(line.userInvestorProfileId?.trim())
             const canResume =
-              !archived && Boolean(row && em && isInvestNowDraftInvestorRow(row, em))
+              !archived &&
+              !sponsorRemoved &&
+              Boolean(row && em && isInvestNowDraftInvestorRow(row, em))
             const notifyLists = () => {
               window.dispatchEvent(new Event(INVESTMENT_DETAIL_REFETCH_EVENT))
               window.dispatchEvent(new Event(DEALS_LIST_REFETCH_EVENT))
             }
+            const sponsorRemovedReason = sponsorRemoved
+              ? "Removed by the sponsor. This profile cannot be restored."
+              : ""
             return (
               <InvestmentProfileBreakdownRowActions
                 profileLabel={line.profileName?.trim() || "Profile"}
                 archived={archived}
-                disabled={!canAddInvestment && !canResume && !canManageProfile}
+                disabled={
+                  Boolean(sponsorRemovedReason) ||
+                  (!canAddInvestment && !canResume && !canManageProfile)
+                }
+                disabledReason={sponsorRemovedReason || undefined}
                 onAddInvestment={
                   canAddInvestment
                     ? () => openAddInvestmentForLine(line)
@@ -817,7 +831,7 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
                   canResume ? () => openResumeForLine(line) : undefined
                 }
                 onArchive={
-                  canManageProfile && !archived
+                  canManageProfile && !archived && !sponsorRemoved
                     ? async () => {
                         const result = await patchMyInvestorProfileParticipation(
                           dealId,
@@ -836,7 +850,7 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
                     : undefined
                 }
                 onRestore={
-                  canManageProfile && archived
+                  canManageProfile && archived && !sponsorRemoved
                     ? async () => {
                         const result = await patchMyInvestorProfileParticipation(
                           dealId,
@@ -853,7 +867,7 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
                     : undefined
                 }
                 onDeleteProfile={
-                  canManageProfile && kind === "soft_committed"
+                  canManageProfile && kind === "soft_committed" && !sponsorRemoved
                     ? async () => {
                         const result = await deleteMyInvestorProfileParticipation(
                           dealId,

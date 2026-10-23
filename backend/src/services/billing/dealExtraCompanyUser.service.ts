@@ -1,7 +1,7 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "../../database/db.js";
-import { addDealForm, contact, dealInvestorClass, dealInvestment, dealLpInvestor, dealMember, users } from "../../schema/schema.js";
+import { addDealForm, companyBillingInvoices, contact, dealInvestorClass, dealInvestment, dealLpInvestor, dealMember, users } from "../../schema/schema.js";
 import {
   EXTRA_COMPANY_USER_FEE_CENTS,
   EXTRA_COMPANY_USER_PAYMENT_REQUIRED,
@@ -20,8 +20,6 @@ import {
   isDealCompanyUserStoredRole,
   isLpInvestorRole,
 } from "../deal/dealInvestment.service.js";
-import { dealSaasBillingHasStarted } from "./saasBillingStartDate.js";
-
 const STARTER_MAX_CENTS = 3_000_000;
 const RUNNING_MAX_CENTS = 5_000_000;
 const DEAL_UUID_RE =
@@ -43,12 +41,6 @@ function planIdForDealRaiseAmount(raiseAmount: number): StripeBillingPlanId {
   return "starter";
 }
 
-const PLAN_RANK: Record<StripeBillingPlanId, number> = {
-  starter: 1,
-  running: 2,
-  growth: 3,
-};
-
 /** Catalog dollars for the 5 / 10 / 10+ package. Index matches the billing screen. */
 const CATALOG_MONTHLY: Record<StripeBillingPlanId, readonly number[]> = {
   starter: [149, 149, 149, 149, 149, 159, 169, 169, 169, 169, 179, 189],
@@ -60,6 +52,20 @@ const CATALOG_ANNUAL: Record<StripeBillingPlanId, readonly number[]> = {
   running: [1990, 1990, 1990, 1990, 1990, 2090, 2190, 2190, 2190, 2190, 2390, 2490],
   growth: [2490, 2490, 2490, 2490, 2490, 2590, 2690, 2690, 2690, 2690, 2790, 2890],
 };
+
+/** 10+ package prices in cents. A payment of one of these includes every co-sponsor. */
+const TEN_PLUS_PACKAGE_CENTS = new Set(
+  [CATALOG_MONTHLY, CATALOG_ANNUAL].flatMap((table) =>
+    (["starter", "running", "growth"] as const).map((plan) => table[plan][11] * 100),
+  ),
+);
+
+export function paidAmountIncludesAllCoSponsors(
+  paidCents: number | null | undefined,
+): boolean {
+  const amount = Math.round(Number(paidCents) || 0);
+  return amount > 0 && TEN_PLUS_PACKAGE_CENTS.has(amount);
+}
 
 /** Price of the package already paid or the package being purchased. */
 export function catalogPackagePriceCents(
@@ -138,6 +144,12 @@ export function differenceRepeatPriceCents(params: {
  * Checkout line before Stripe applies the same coupon, so the customer pays
  * the difference due after the coupon on the full package price.
  */
+/** Repeating and forever coupons can only be attached to a subscription. */
+export function couponDurationAppliesToOneTime(duration: string | null | undefined): boolean {
+  const value = String(duration ?? "").trim();
+  return value !== "repeating" && value !== "forever";
+}
+
 export function couponCheckoutLineCents(params: {
   dueCents: number;
   percentOff?: number | null;
@@ -234,27 +246,15 @@ export async function stripePriceIdForPlatformAmount(params: {
   return created.id;
 }
 
-/** 6–10 co-sponsors need Running. 11+ stays on the offering-size plan and uses the 10+ package. */
-export function planIdForCoGpCount(coGpCount: number): StripeBillingPlanId {
-  const count = Math.max(0, Math.floor(Number(coGpCount) || 0));
-  if (count > 5 && count <= 10) return "running";
-  return "starter";
-}
-
 /**
- * Lowest plan that covers the offering size and the co-sponsor count.
- * Six co-sponsors on a $3M offering is Running.
- * Eleven or more co-sponsors keep the plan the offering size requires and use the flat 10+ price.
+ * Plan tier follows the offering size. Co-sponsor count chooses the
+ * 5 / 10 / 10+ price inside that plan and does not change the tier.
  */
 export function economicPlanIdForDeal(
   raiseAmount: number,
-  coGpCount: number,
+  _coGpCount?: number,
 ): StripeBillingPlanId {
-  const bySize = planIdForDealRaiseAmount(raiseAmount);
-  const count = Math.max(0, Math.floor(Number(coGpCount) || 0));
-  if (count > 10) return bySize;
-  const byCoGps = planIdForCoGpCount(count);
-  return PLAN_RANK[byCoGps] > PLAN_RANK[bySize] ? byCoGps : bySize;
+  return planIdForDealRaiseAmount(raiseAmount);
 }
 
 const BILLING_COMMENT_MAX = 450;
@@ -723,6 +723,26 @@ export async function contactIsDealCompanyUser(
   return rows.some((row) => isDealCompanyUserStoredRole(row.dealMemberRole));
 }
 
+async function latestPaidInvoiceCents(
+  subscriptionId: string | null | undefined,
+): Promise<number | null> {
+  const id = String(subscriptionId ?? "").trim();
+  if (!id) return null;
+  const [row] = await db
+    .select({ amountPaidCents: companyBillingInvoices.amountPaidCents })
+    .from(companyBillingInvoices)
+    .where(
+      and(
+        eq(companyBillingInvoices.stripeSubscriptionId, id),
+        eq(companyBillingInvoices.status, "paid"),
+      ),
+    )
+    .orderBy(desc(companyBillingInvoices.paidAt))
+    .limit(1);
+  const amount = Number(row?.amountPaidCents ?? 0);
+  return amount > 0 ? amount : null;
+}
+
 async function resolveDealPlanId(
   dealId: string,
   stripePlanId: string | null | undefined,
@@ -780,17 +800,22 @@ export async function getDealCompanyUserSnapshot(
   const subscribedSeat =
     normalizeBillingSeatBand(deal.stripeSeatBand) ??
     planAndCycleFromPriceId(deal.stripePriceId).seatBand;
+  const paidPackageCents = await latestPaidInvoiceCents(
+    deal.stripeSubscriptionId,
+  );
+  const paidCoversAllCoSponsors = paidAmountIncludesAllCoSponsors(paidPackageCents);
   const requestedSeat = normalizeBillingSeatBand(options?.seatBand);
   const seatRank: Record<StripeBillingSeatBand, number> = {
     "5": 1,
     "10": 2,
     "10plus": 3,
   };
-  const coverageSeat =
-    requestedSeat ??
-    (subscribedSeat && seatRank[subscribedSeat] > seatRank[rosterSeat]
-      ? subscribedSeat
-      : rosterSeat);
+  const coverageSeat = paidCoversAllCoSponsors
+    ? "10plus"
+    : requestedSeat ??
+      (subscribedSeat && seatRank[subscribedSeat] > seatRank[rosterSeat]
+        ? subscribedSeat
+        : rosterSeat);
   const includedCoGps = includedCoGpsForSeatBand(coverageSeat);
   const billing = buildExtraUserBilling({
     members: roster,
@@ -805,7 +830,7 @@ export async function getDealCompanyUserSnapshot(
     includedCompanyUsers: included,
     currentCompanyUsers: billing.currentCompanyUsers,
     coGpCount: billing.coGpCount,
-    seatBand: subscribedSeat,
+    seatBand: paidCoversAllCoSponsors ? "10plus" : subscribedSeat,
     includedCoGps,
     extraCompanyUsersPaid: paid,
     extraCompanyUsersDue: billing.coGpsToCharge.length,
@@ -881,44 +906,8 @@ export async function assertExtraCompanyUserAllowedForAdd(params: {
   }
 
   if (!isCoGpStoredRole(params.investorRole)) return { ok: true };
-  if (snapshot.includedCoGps == null) return { ok: true };
-
-  const roster = await listDealBillingRoster(params.dealId);
-  const billing = buildExtraUserBilling({
-    members: [
-      ...roster,
-      {
-        contactId: contactId.toLowerCase(),
-        name: "this GP",
-        isCoGp: true,
-        createdAtMs: Date.now(),
-      },
-    ],
-    includedCoGps: snapshot.includedCoGps,
-    paid: snapshot.extraCompanyUsersPaid,
-  });
-  if (billing.coGpsToCharge.length === 0) return { ok: true };
-  if (!dealSaasBillingHasStarted(snapshot)) return { ok: true };
-
-  const extraUsersToPay = billing.coGpsToCharge.length;
-  const amountDueCents = extraUsersToPay * EXTRA_COMPANY_USER_FEE_CENTS;
-  return {
-    ok: false,
-    status: 402,
-    payload: {
-      code: EXTRA_COMPANY_USER_PAYMENT_REQUIRED,
-      message: `This deal includes ${snapshot.includedCoGps} co-sponsors. ${billing.comment || `Pay $${(amountDueCents / 100).toFixed(0)} ($10 each) for ${extraUsersToPay} GP${extraUsersToPay === 1 ? "" : "s"} beyond that count.`}`,
-      dealId: snapshot.dealId,
-      dealName: snapshot.dealName,
-      planId: snapshot.planId,
-      includedCompanyUsers: snapshot.includedCompanyUsers,
-      currentCompanyUsers: snapshot.currentCompanyUsers,
-      extraUsersToPay,
-      extraUserFeeCents: EXTRA_COMPANY_USER_FEE_CENTS,
-      amountDueCents,
-      comment: billing.comment,
-    },
-  };
+  // 6th co-sponsor uses the 10 package. 11th uses 10+. No $10 add-on.
+  return { ok: true };
 }
 
 export async function creditExtraCompanyUsersPaid(params: {

@@ -27,6 +27,7 @@ import {
 import {
   listMyEsignDocumentsForInvestor,
   maybeSyncDealInvestorEsignByTarget,
+  withdrawInvestorEsignBeforeSponsorSign,
   syncDealInvestorEsignAfterEmbeddedSign,
   syncDealInvestorEsignByTarget,
   syncDealInvestorEsignSignProgress,
@@ -467,6 +468,97 @@ async function resolveMyEsignTargetForUser(
     userId,
     ...scope,
   });
+}
+
+/**
+ * POST /deals/:dealId/my-esign-withdraw-signature
+ * Investor clears a completed signature before the sponsor signs, then can sign again.
+ */
+export async function postDealMyEsignWithdrawSignature(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+
+  const dealId =
+    typeof req.params.dealId === "string"
+      ? req.params.dealId
+      : req.params.dealId?.[0];
+  if (!dealId?.trim()) {
+    res.status(400).json({ message: "Missing deal id" });
+    return;
+  }
+
+  const email = String(user.email ?? "").trim().toLowerCase();
+  if (!email.includes("@")) {
+    res.status(400).json({ message: "Your account has no email on file" });
+    return;
+  }
+
+  const body = req.body as Record<string, unknown> | undefined;
+  const signatureRequestId = String(
+    body?.signatureRequestId ?? body?.signature_request_id ?? "",
+  ).trim();
+  if (!signatureRequestId) {
+    res.status(400).json({ message: "Missing signature request" });
+    return;
+  }
+
+  try {
+    const viewerScope = await resolveDealViewerScope(
+      user.id,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    if (!(await assertDealIdReadableOrAssignedParticipant(dealId, viewerScope))) {
+      res.status(404).json({ message: "Deal not found" });
+      return;
+    }
+
+    const esignScope = investNowEsignScopeFromRequest(req, email, user.id);
+    const bodyScope = investNowEsignScopeFromBody(body);
+    const target = await resolveMyEsignTargetForUser(dealId, user.id, email, {
+      userInvestorProfileId:
+        bodyScope.userInvestorProfileId || esignScope.userInvestorProfileId,
+      investmentId: bodyScope.investmentId || esignScope.investmentId,
+      profileId: bodyScope.profileId || esignScope.profileId,
+    });
+    if (!target) {
+      res.status(404).json({ message: "Investment was not found" });
+      return;
+    }
+    if (!(await investorEsignTargetHasPositiveCommitment(dealId, target))) {
+      res.status(403).json({
+        message: "A commitment is required before changing this signature",
+      });
+      return;
+    }
+
+    const result = await withdrawInvestorEsignBeforeSponsorSign({
+      dealId,
+      target,
+      signatureRequestId,
+      investorEmail: email,
+      preserveFieldValues: body?.preserveFieldValues === true,
+    });
+    if (!result.ok) {
+      const status = result.code === "sponsor_signed" ? 409 : 400;
+      res.status(status).json({
+        message: result.message,
+        ...(result.code ? { code: result.code } : {}),
+      });
+      return;
+    }
+
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("postDealMyEsignWithdrawSignature:", err);
+    res.status(500).json({ message: "Could not update this signature" });
+  }
 }
 
 /**

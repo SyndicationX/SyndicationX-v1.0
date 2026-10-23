@@ -115,12 +115,14 @@ export async function readMyInvestNowCommitment(
   if (investmentId) {
     match = rows.find(
       (r) =>
+        !r.removedAt &&
         String(r.id).toLowerCase() === investmentId.toLowerCase() &&
         isLpInvestorRole(r.investor_role) &&
         rowOwnedByViewer(r),
     );
   } else {
     for (const r of rows) {
+      if (r.removedAt) continue;
       if (!isLpInvestorRole(r.investor_role)) continue;
       if (!rowOwnedByViewer(r)) continue;
       if (uip) {

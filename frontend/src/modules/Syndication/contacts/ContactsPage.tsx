@@ -266,6 +266,7 @@ function contactRowMatchesSearch(row: ContactRow, query: string): boolean {
     row.invitedByDisplayName ?? "",
     row.addedByCompanyName ?? "",
     row.organizationName ?? "",
+    row.signupRole ?? "",
     row.visibleToUsers === true ? "yes" : "no",
     String(row.dealCount ?? 0),
     relationship506bLabel(row.relationship506b ?? null),
@@ -1819,6 +1820,18 @@ function ContactsPage({
           ) : (
             <span className="um_status_muted">—</span>
           )
+        },
+      },
+      {
+        id: "signupRole",
+        header: "Signup Role",
+        align: "center",
+        sortValue: (row) => row.signupRole ?? "",
+        thClassName: "contacts_th_signup_role",
+        tdClassName: "contacts_td_signup_role",
+        cell: (row) => {
+          const role = row.signupRole?.trim()
+          return role ? role : <span className="um_status_muted">—</span>
         },
       },
       {

@@ -398,8 +398,9 @@ export function DealRowActions({
               ) : null}
               {investorManage ? (
                 <>
+                  {archived && !onInvestorRestored ? null : (
                   <li role="none">
-                    {archived ? (
+                    {archived && onInvestorRestored ? (
                       <button
                         type="button"
                         className="um_kebab_menuitem"
@@ -409,7 +410,7 @@ export function DealRowActions({
                         <ArchiveRestore className="um_kebab_menuitem_icon" size={16} strokeWidth={2} aria-hidden />
                         Restore deal
                       </button>
-                    ) : (
+                    ) : archived ? null : (
                       <button
                         type="button"
                         className="um_kebab_menuitem"
@@ -421,6 +422,7 @@ export function DealRowActions({
                       </button>
                     )}
                   </li>
+                  )}
                   {allowInvestorDelete ? (
                     <li role="none">
                       <button

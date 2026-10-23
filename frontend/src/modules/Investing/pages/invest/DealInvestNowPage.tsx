@@ -815,6 +815,7 @@ export function DealInvestNowPage() {
       if (String(row.userEmail ?? "").trim().toLowerCase() !== em) return false
       // Roster rows mean the person is on the deal; only investment rows mean
       // this saved profile was already used for an investment on this deal.
+      if (row.sponsorRemoved) return false
       if (row.investorKind && row.investorKind !== "investment") return false
       if (
         currentInvestmentId &&
@@ -843,6 +844,7 @@ export function DealInvestNowPage() {
     }
     const row = dealInvestors.find((investor) => {
       if (String(investor.userEmail ?? "").trim().toLowerCase() !== em) return false
+      if (investor.sponsorRemoved) return false
       if (investor.investorKind && investor.investorKind !== "investment") return false
       if (investorEsignIsFullyCompletedForRow(investor)) return false
       return lpProfileUseKey(

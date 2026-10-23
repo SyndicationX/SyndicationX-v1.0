@@ -27,7 +27,7 @@ import {
   resolveEsignTemplateExternalId,
   type EsignTemplateFileRecord,
 } from "./dealEsignTemplates.service.js";
-import { resolveDealLeadSponsorSigner } from "./dealEsignSigningWorkflow.service.js";
+import { listDealSponsorSignerOptions } from "./dealEsignSigningWorkflow.service.js";
 import { notifySponsorDocumentsReadyToSign } from "./dealEsignStageNotificationEmail.service.js";
 import { esignTemplateDisplayNameForFile } from "./dealMemberSendEsignDropbox.service.js";
 import { isEsignProviderUnreachableError } from "../esign/esignProviderErrors.js";
@@ -62,6 +62,12 @@ import { portalProfileIdToSignFlowProfileType, signFlowFieldAppliesToProfile } f
 import {
 
   getSignFlowDocument,
+
+  SIGNFLOW_OPEN_SPONSOR_EMAIL,
+
+  SIGNFLOW_OPEN_SPONSOR_NAME,
+
+  SIGNFLOW_OPEN_SPONSOR_RECIPIENT_ID,
 
   mapSignFlowTemplateFieldsForInvestor,
 
@@ -498,19 +504,24 @@ export async function createInvestorSignatureRequestSignflow(params: {
 
 
   let sponsorSigner: { email: string; name: string } | null = null;
+  let openSponsorSlot = false;
+  const namedSponsorNotify: { email: string; name: string }[] = [];
   if (includeSponsorOnSend) {
-    const leadSponsor = await resolveDealLeadSponsorSigner(params.dealId);
     const sentSponsorIds = new Map<string, string>();
     for (const group of sponsorGroups) {
       const email = group.placeholder
-        ? leadSponsor?.email?.trim().toLowerCase() ?? ""
+        ? SIGNFLOW_OPEN_SPONSOR_EMAIL
         : group.email.trim().toLowerCase();
       const name = group.placeholder
-        ? leadSponsor?.name?.trim() || email
+        ? SIGNFLOW_OPEN_SPONSOR_NAME
         : group.name.trim() || email;
       if (!email.includes("@")) continue;
+      if (group.placeholder) openSponsorSlot = true;
       const existingId = sentSponsorIds.get(email);
-      const clientId = existingId ?? group.clientRecipientId;
+      const clientId = existingId
+        ?? (group.placeholder
+          ? SIGNFLOW_OPEN_SPONSOR_RECIPIENT_ID
+          : group.clientRecipientId);
       sentSponsorIds.set(email, clientId);
       if (!existingId) {
         recipients.push({
@@ -521,26 +532,28 @@ export async function createInvestorSignatureRequestSignflow(params: {
           color: group.color ?? "#dc2626",
           order: sponsorOrder,
         });
+        if (!group.placeholder) namedSponsorNotify.push({ email, name });
       }
-      if (!sponsorSigner) sponsorSigner = { email, name };
+      if (!sponsorSigner && !group.placeholder) sponsorSigner = { email, name };
     }
     sponsorFields = sponsorFields.flatMap((field) => {
       const owner = sponsorGroups.find(
         (item) => item.clientRecipientId === field.recipientId,
       );
       const email = owner?.placeholder
-        ? leadSponsor?.email?.trim().toLowerCase() ?? ""
+        ? SIGNFLOW_OPEN_SPONSOR_EMAIL
         : owner?.email.trim().toLowerCase() ?? "";
       const clientId = sentSponsorIds.get(email);
       if (!clientId) return [];
       return [{ ...field, recipientId: clientId }];
     });
-    if (sponsorFields.length === 0 || !sponsorSigner) {
+    if (sponsorFields.length === 0 || (!sponsorSigner && !openSponsorSlot)) {
       console.warn(
         "SignFlow send: sponsor signature fields exist but no sponsor email; sending investor-only.",
       );
       includeSponsorOnSend = false;
       sponsorFields = [];
+      openSponsorSlot = false;
     }
   }
 
@@ -576,18 +589,31 @@ export async function createInvestorSignatureRequestSignflow(params: {
 
   const sponsorCanSignNow =
     includeSponsorOnSend &&
-    sponsorSigner != null &&
+    (openSponsorSlot || sponsorSigner != null) &&
     (workflowType === "parallel" || signingOrder === "sponsor_first");
-  if (sponsorCanSignNow && sponsorSigner) {
+  if (sponsorCanSignNow) {
     try {
       const docName = esignTemplateDisplayNameForFile(file);
-      await notifySponsorDocumentsReadyToSign({
-        dealId: params.dealId,
-        sponsorEmail: sponsorSigner.email,
-        sponsorName: sponsorSigner.name,
-        dealName: dealLabel,
-        documentNames: docName ? [docName] : [],
-      });
+      const documentNames = docName ? [docName] : [];
+      const notify = new Map<string, string>();
+      if (openSponsorSlot) {
+        const sponsors = await listDealSponsorSignerOptions(params.dealId);
+        for (const sponsor of sponsors) {
+          notify.set(sponsor.email, sponsor.name);
+        }
+      }
+      for (const sponsor of namedSponsorNotify) {
+        if (!notify.has(sponsor.email)) notify.set(sponsor.email, sponsor.name);
+      }
+      for (const [sponsorEmail, sponsorName] of notify) {
+        await notifySponsorDocumentsReadyToSign({
+          dealId: params.dealId,
+          sponsorEmail,
+          sponsorName,
+          dealName: dealLabel,
+          documentNames,
+        });
+      }
     } catch (err) {
       console.warn("notifySponsorDocumentsReadyToSign:", err);
     }

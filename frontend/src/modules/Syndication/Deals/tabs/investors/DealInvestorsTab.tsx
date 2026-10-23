@@ -1,7 +1,6 @@
 import {
   Activity,
   BadgeCheck,
-  Building2,
   CircleDollarSign,
   DollarSign,
   Download,
@@ -46,6 +45,10 @@ import {
 } from "../deal_members/add-investment/addMemberFormDraftStorage";
 import { notifyDealInvestorsExportAudit } from "../../api/dealInvestorsExportNotifyApi";
 import { InviteMailStatusBadge } from "./InviteMailStatusBadge";
+import {
+  DealInvestorCompanyGroups,
+  groupInvestorsByCompany,
+} from "./DealInvestorCompanyGroups";
 import { DealInvestorIdentityCell } from "./DealInvestorIdentityCell";
 import { DealInvestorCommittedAmountCell } from "./DealInvestorCommittedAmountCell";
 // import { DealInvestorRoleCell } from "./DealInvestorRoleBadge"; // Role column commented out
@@ -71,10 +74,7 @@ import {
   investorRowCommittedAmountIsZero,
   parseMoneyDigits,
 } from "../../utils/offeringMoneyFormat";
-import {
-  DataTable,
-  type DataTableColumn,
-} from "../../../../../common/components/data-table/DataTable";
+import { type DataTableColumn } from "../../../../../common/components/data-table/DataTable";
 import {
   DropdownSelect,
   type DropdownSelectOption,
@@ -159,7 +159,6 @@ import {
   parseEmailInput,
 } from "../../../../../common/features/send-mail";
 import { useNavigate } from "react-router-dom";
-import { isPlatformAdmin } from "@/common/auth/roleUtils";
 import { getSessionUserId } from "@/common/auth/sessionUserId";
 import {
   isUsableInvestorEmail,
@@ -243,8 +242,12 @@ interface DealInvestorsTabProps {
    */
   offeringLinkAvailable?: boolean;
   offeringLinkBlockedBecauseDraft?: boolean;
-  /** Remove member / roster row (same as Deal Members). */
-  onDeleteMember?: (row: DealInvestorRow) => void | Promise<void>;
+  /** Remove investor row. Second argument marks investor wording for the toast. */
+  onDeleteMember?: (
+    row: DealInvestorRow,
+    subject?: "investor" | "member",
+    removal?: { action: "remove_investment" | "remove_investor"; reason: string },
+  ) => void | Promise<void>;
   /** Fires when Add or Edit investment modal is open — hide session draft row in Deal Members table. */
   onSharedInvestmentModalOpenChange?: (open: boolean) => void;
   /**
@@ -570,6 +573,7 @@ function DealInvestorsPopulated({
   onRefreshInvestors,
   canApproveFund = false,
   viewOnly = false,
+  viewerDealMemberRole = null,
 }: {
   initialPayload: DealInvestorsPayload;
   dealId: string;
@@ -585,12 +589,17 @@ function DealInvestorsPopulated({
   sendEsignDisabled?: boolean;
   sendEsignDisabledTitle?: string;
   onCopyOfferingLink?: (row: DealInvestorRow) => void;
-  onDeleteMember?: (row: DealInvestorRow) => void | Promise<void>;
+  onDeleteMember?: (
+    row: DealInvestorRow,
+    subject?: "investor" | "member",
+    removal?: { action: "remove_investment" | "remove_investor"; reason: string },
+  ) => void | Promise<void>;
   offeringLinkAvailable: boolean;
   offeringLinkBlockedBecauseDraft?: boolean;
   onRefreshInvestors?: () => void | Promise<void>;
   canApproveFund?: boolean;
   viewOnly?: boolean;
+  viewerDealMemberRole?: ViewerDealMemberRole;
 }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -611,7 +620,6 @@ function DealInvestorsPopulated({
   const [sendMailCc, setSendMailCc] = useState("");
   const [sendMailEmailPreview, setSendMailEmailPreview] =
     useState<SendMailEmailPreviewPayload | null>(null);
-  const investorSelectAllRef = useRef<HTMLInputElement | null>(null);
 
   const handleApproveFund = useCallback(
     async (row: DealInvestorRow) => {
@@ -715,7 +723,6 @@ function DealInvestorsPopulated({
   const [filterEsign, setFilterEsign] = useState("");
   const [filterFunding, setFilterFunding] = useState("");
   const [filterAccreditation, setFilterAccreditation] = useState("");
-  const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = usePersistedTablePageSize(
     TABLE_PAGE_SIZE_ID.dealInvestors,
   );
@@ -750,7 +757,7 @@ function DealInvestorsPopulated({
         const mailLabel =
           r.invitationMailSent === true ? "email sent" : "not sent";
         const haystack =
-          `${r.displayName} ${r.entitySubtitle} ${r.userInvestorProfileName ?? ""} ${r.userDisplayName} ${r.userEmail} ${r.firstName ?? ""} ${r.lastName ?? ""} ${isPlatformAdmin() ? (r.addedByDisplayName ?? "") : ""} ${r.addedByCompanyName ?? ""} ${mailLabel} ${investorFundedColumnLabel(r)}`.toLowerCase();
+          `${r.displayName} ${r.entitySubtitle} ${r.userInvestorProfileName ?? ""} ${r.userDisplayName} ${r.userEmail} ${r.firstName ?? ""} ${r.lastName ?? ""} ${r.addedByDisplayName ?? ""} ${mailLabel} ${investorFundedColumnLabel(r)}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
       if (filterClass) {
@@ -891,29 +898,6 @@ function DealInvestorsPopulated({
     return () => window.clearInterval(timer);
   }, [hasInFlightEsign, onRefreshInvestors]);
 
-  const allFilteredInvestorsSelected = useMemo(
-    () =>
-      filtered.length > 0 &&
-      filtered.every((r) => selectedInvestorIds.has(r.id)),
-    [filtered, selectedInvestorIds],
-  );
-
-  const someFilteredInvestorsSelected = useMemo(
-    () =>
-      filtered.some((r) => selectedInvestorIds.has(r.id)) &&
-      !allFilteredInvestorsSelected,
-    [filtered, selectedInvestorIds, allFilteredInvestorsSelected],
-  );
-
-  useLayoutEffect(() => {
-    const el = investorSelectAllRef.current;
-    if (el) el.indeterminate = someFilteredInvestorsSelected;
-  }, [
-    someFilteredInvestorsSelected,
-    allFilteredInvestorsSelected,
-    filtered.length,
-  ]);
-
   useEffect(() => {
     setSelectedInvestorIds((prev) => {
       if (prev.size === 0) return prev;
@@ -936,22 +920,24 @@ function DealInvestorsPopulated({
     });
   }, []);
 
-  const toggleSelectAllFilteredInvestors = useCallback(() => {
-    if (filtered.length === 0) return;
-    if (allFilteredInvestorsSelected) {
-      setSelectedInvestorIds((prev) => {
-        const next = new Set(prev);
-        for (const r of filtered) next.delete(r.id);
-        return next;
-      });
-      return;
-    }
+  const toggleSelectCompanyGroup = useCallback((groupRows: DealInvestorRow[]) => {
+    if (groupRows.length === 0) return;
     setSelectedInvestorIds((prev) => {
       const next = new Set(prev);
-      for (const r of filtered) next.add(r.id);
+      const allSelected = groupRows.every((row) => next.has(row.id));
+      if (allSelected) {
+        for (const row of groupRows) next.delete(row.id);
+      } else {
+        for (const row of groupRows) next.add(row.id);
+      }
       return next;
     });
-  }, [filtered, allFilteredInvestorsSelected]);
+  }, []);
+
+  const companyGroups = useMemo(
+    () => groupInvestorsByCompany(filtered),
+    [filtered],
+  );
 
   const selectedInvestorRows = useMemo(
     () => filtered.filter((r) => selectedInvestorIds.has(r.id)),
@@ -1044,22 +1030,6 @@ function DealInvestorsPopulated({
     [],
   );
 
-  useEffect(() => {
-    setPage(1);
-  }, [
-    query,
-    filterClass,
-    filterStatus,
-    filterEsign,
-    filterFunding,
-    filterAccreditation,
-  ]);
-
-  useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-    if (page > totalPages) setPage(totalPages);
-  }, [filtered.length, pageSize, page]);
-
   const classFilterOptions = useMemo((): DropdownSelectOption[] => {
     const gpKeys = new Set(
       investorClasses
@@ -1128,40 +1098,16 @@ function DealInvestorsPopulated({
     ],
     [],
   );
-  const pagination = useMemo(
-    () => ({
-      page,
-      pageSize,
-      totalItems: filtered.length,
-      onPageChange: setPage,
-      onPageSizeChange: setPageSize,
-      ariaLabel: "Investors table pagination",
-    }),
-    [page, pageSize, filtered.length],
-  );
-
   const exportModalRows = useMemo(
     () => filtered.filter((r) => r.id !== ADD_MEMBER_DRAFT_ROW_ID),
     [filtered],
   );
 
-  const showSponsorColumn = isPlatformAdmin();
-
   const columns: DataTableColumn<DealInvestorRow>[] = useMemo(
     () => [
       {
         id: "select",
-        header: (
-          <input
-            ref={investorSelectAllRef}
-            type="checkbox"
-            className="um_table_header_select_cb"
-            checked={allFilteredInvestorsSelected}
-            onChange={toggleSelectAllFilteredInvestors}
-            disabled={filtered.length === 0}
-            aria-label="Select all investors in this list"
-          />
-        ),
+        header: null,
         align: "center",
         thClassName: "um_th_checkbox",
         tdClassName: "um_td_checkbox",
@@ -1309,9 +1255,10 @@ function DealInvestorsPopulated({
       {
         id: "sponsor_company",
         header: "Sponsor name",
-        sortValue: (row) => String(row.addedByCompanyName ?? "").toLowerCase(),
-        tdClassName: "deal_inv_td_sponsor_company",
+        sortValue: (row) => String(row.addedByDisplayName ?? "").toLowerCase(),
+        tdClassName: "deal_inv_td_ellipsis",
         cell: (row) => {
+          /* Company name badges — replaced by the sponsor's full name for every role.
           const names = String(row.addedByCompanyName ?? "")
             .split("||")
             .map((part) => part.trim())
@@ -1333,9 +1280,36 @@ function DealInvestorsPopulated({
               ))}
             </div>
           );
+          */
+          const s = String(row.addedByDisplayName ?? "")
+            .split("||")
+            .map((part) => part.trim())
+            .filter((part) => part && part !== "—")
+            .join(", ");
+          const display = s && s !== "—" ? s : "—";
+          const email = String(row.addedByEmail ?? "").trim();
+          if (display === "—" || !email)
+            return <DealInvEllipsisText text={display} />;
+          return (
+            <FormTooltip
+              triggerMode="inline"
+              placement="top"
+              panelAlign="start"
+              openOnHover
+              label={`Sponsor email for ${display}`}
+              content={
+                <p className="deal_inv_sponsor_email_tooltip">{email}</p>
+              }
+            >
+              <span className="deal_inv_ellipsis_text deal_inv_sponsor_name_hover">
+                {display}
+              </span>
+            </FormTooltip>
+          );
         },
       },
-      ...(showSponsorColumn
+      /* Sponsor column — full name is shown in Sponsor name for every role.
+      ...(isPlatformAdmin()
         ? [
             {
               id: "added_by",
@@ -1373,6 +1347,7 @@ function DealInvestorsPopulated({
             } satisfies DataTableColumn<DealInvestorRow>,
           ]
         : []),
+      */
       {
         id: "committed",
         header: "Committed",
@@ -1444,6 +1419,7 @@ function DealInvestorsPopulated({
           <div className="deal_members_actions_cell">
             <DealMemberRowActions
               row={row}
+              removalSubject="investor"
               draftRow={row.id === ADD_MEMBER_DRAFT_ROW_ID}
               invitationMailSent={row.invitationMailSent === true}
               offeringLinkAvailable={offeringLinkAvailable}
@@ -1465,6 +1441,11 @@ function DealInvestorsPopulated({
                 void onSendInvitationMail?.(r);
               }}
               viewOnly={viewOnly}
+              actionsLimitedToView={
+                (viewerDealMemberRole === "lead_sponsor" ||
+                  viewerDealMemberRole === "admin_sponsor") &&
+                row.addedByIsCoSponsorOnDeal === true
+              }
               onApproveFund={canApproveFund ? handleApproveFund : undefined}
               approveFundDisabled={
                 !canApproveFund ||
@@ -1489,23 +1470,17 @@ function DealInvestorsPopulated({
                           ? "Complete e-sign before approving the fund"
                           : undefined
               }
-              onDelete={(r) => {
-                void onDeleteMember?.(r);
-              }}
+              onDelete={(r, removal) => onDeleteMember?.(r, "investor", removal)}
             />
           </div>
         ),
       },
     ],
     [
-      showSponsorColumn,
       dealAllClassNamesLine,
       investorClasses,
-      allFilteredInvestorsSelected,
-      toggleSelectAllFilteredInvestors,
       selectedInvestorIds,
       toggleSelectInvestor,
-      filtered.length,
       onEditInvestor,
       onViewInvestor,
       onAddInvestor,
@@ -1522,6 +1497,7 @@ function DealInvestorsPopulated({
       canApproveFund,
       openEsignStatusModal,
       viewOnly,
+      viewerDealMemberRole,
     ],
   );
 
@@ -2070,22 +2046,25 @@ function DealInvestorsPopulated({
           </section>
         </div>
 
-        <DataTable
-          visualVariant="members"
-          membersTableClassName="um_table_members deal_inv_table"
-          stickyColumnCount={2}
-          forceHorizontalScroll
-          columns={columns}
-          rows={filtered}
-          getRowKey={(row, i) =>
-            row.id?.trim() ? row.id : `inv-${dealId}-${i}`
-          }
-          getRowClassName={(row) =>
-            investorRowShowsDraftBadge(row) ? "deal_inv_row_draft" : undefined
-          }
-          emptyLabel="No LP investors match your filters."
-          pagination={pagination}
-        />
+        {companyGroups.length === 0 ? (
+          <p className="deal_inv_company_groups_empty" role="status">
+            No LP investors match your filters.
+          </p>
+        ) : (
+          <DealInvestorCompanyGroups
+            groups={companyGroups}
+            columns={columns}
+            dealId={dealId}
+            pageSize={pageSize}
+            onPageSizeChange={setPageSize}
+            selectedInvestorIds={selectedInvestorIds}
+            onToggleSelectGroup={toggleSelectCompanyGroup}
+            searchActive={query.trim().length > 0}
+            getRowClassName={(row) =>
+              investorRowShowsDraftBadge(row) ? "deal_inv_row_draft" : undefined
+            }
+          />
+        )}
       </div>
     </div>
   );
@@ -2329,6 +2308,11 @@ export const DealInvestorsTab = forwardRef<
     sessionEmail,
     sessionUserId,
   ]);
+
+  const coSponsorInvestorEditLocked =
+    (effectiveViewerRole === "lead_sponsor" ||
+      effectiveViewerRole === "admin_sponsor") &&
+    viewInvestorRow?.addedByIsCoSponsorOnDeal === true;
 
   const mergedInvestors = useMemo(() => {
     const combined = [...(payload?.investors ?? []), ...localAddedInvestors]
@@ -2639,6 +2623,7 @@ export const DealInvestorsTab = forwardRef<
           investorClasses={investorClasses}
           dealAllClassNamesLine={dealClassNamesLineForView}
           onEdit={handleEditInvestor}
+          editDisabled={coSponsorInvestorEditLocked}
           initialSectionTab="distribution"
         />
       </>
@@ -2714,6 +2699,7 @@ export const DealInvestorsTab = forwardRef<
         offeringLinkAvailable={offeringLinkAvailable}
         offeringLinkBlockedBecauseDraft={offeringLinkBlockedBecauseDraft}
         canApproveFund={canApproveFund}
+        viewerDealMemberRole={effectiveViewerRole}
         onRefreshInvestors={refreshInvestorsInPlace}
       />
       <DealInvestorViewModal
@@ -2723,6 +2709,7 @@ export const DealInvestorsTab = forwardRef<
         investorClasses={investorClasses}
         dealAllClassNamesLine={dealClassNamesLineForView}
         onEdit={handleEditInvestor}
+        editDisabled={coSponsorInvestorEditLocked}
         initialSectionTab="distribution"
       />
       {onSendEsignConfirm ? (

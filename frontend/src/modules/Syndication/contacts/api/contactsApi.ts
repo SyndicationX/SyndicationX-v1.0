@@ -184,6 +184,10 @@ function normalizeContact(raw: Record<string, unknown>): ContactRow {
       raw.createdAt != null || raw.created_at != null
         ? String(raw.createdAt ?? raw.created_at).trim() || undefined
         : undefined,
+    signupRole:
+      raw.signupRole != null || raw.signup_role != null
+        ? String(raw.signupRole ?? raw.signup_role).trim() || undefined
+        : undefined,
     visibleToUsers: parseContactFlag(
       raw.visibleToUsers ?? raw.visible_to_users,
     ),

@@ -7,7 +7,6 @@ import {
 } from "../../constants/deal-investor-esign-status.js";
 import { getDealEsignDropboxSignPublicConfig } from "./dealEsignDropboxSign.service.js";
 import {
-  assignSignFlowDocumentSponsorSigner,
   listDealSponsorSignerOptions,
   resolveDealMemberSignerByRowId,
   type DealMemberSignerOption,
@@ -20,8 +19,10 @@ import {
   getSignFlowDocument,
   normalizeSignFlowFieldsForApi,
   patchSignFlowDocument,
-  signFlowAnySponsorHasSigned,
+  isSignFlowOpenSponsorRecipient,
   signFlowCounterSignRequiresInvestorSigned,
+  signFlowPendingSponsorSignAudience,
+  signFlowRecipientHasSigned,
   signFlowInvestorPhaseComplete,
   signFlowTemplateHasSponsorFields,
 } from "../esign/signflow.service.js";
@@ -128,12 +129,8 @@ async function resolveSponsorSignerForSession(params: {
     return { ok: true, signer: { email: self.email, name: self.name } };
   }
 
-  const leadDefault = options[0];
-  if (leadDefault) {
-    return {
-      ok: true,
-      signer: { email: leadDefault.email, name: leadDefault.name },
-    };
+  if (sponsorEmail.includes("@")) {
+    return { ok: true, signer: { email: sponsorEmail, name: sponsorEmail } };
   }
 
   return {
@@ -268,7 +265,7 @@ export async function getDealSponsorEsignSignSession(params: {
         const liveDoc = await getSignFlowDocument(sigId);
         sponsorStillPending =
           signFlowTemplateHasSponsorFields(liveDoc) &&
-          !signFlowAnySponsorHasSigned(liveDoc);
+          !signFlowPendingSponsorSignAudience(liveDoc).allSponsorSlotsSigned;
       } catch (err) {
         console.warn("getDealSponsorEsignSignSession completion check:", err);
       }
@@ -357,33 +354,68 @@ export async function getDealSponsorEsignSignSession(params: {
         const role = String(recipient.role ?? "").trim().toLowerCase();
         return role === "seller" || role.includes("sponsor");
       });
-      const sponsorAlreadyOnDoc = sponsorRecipients.find(
+      const unsigned = sponsorRecipients.filter(
+        (recipient) => !signFlowRecipientHasSigned(recipient),
+      );
+      const recipientOwnsFields = (recipientId: string | undefined) => {
+        const id = recipientId?.trim();
+        if (!id) return false;
+        return (liveDoc.fields ?? []).some(
+          (field) => String(field.recipientId ?? "").trim() === id,
+        );
+      };
+      const namedMine = unsigned.find(
         (recipient) =>
+          !isSignFlowOpenSponsorRecipient(recipient) &&
           String(recipient.email ?? "").trim().toLowerCase() === signerEmail,
       );
-
-      let docForSession = liveDoc;
-      if (!sponsorAlreadyOnDoc) {
-        const patched = await assignSignFlowDocumentSponsorSigner(sigId, signer);
-        if (!patched) {
+      const openWithFields = unsigned.find(
+        (recipient) =>
+          isSignFlowOpenSponsorRecipient(recipient) &&
+          recipientOwnsFields(recipient.id),
+      );
+      const namedWithFields =
+        namedMine && recipientOwnsFields(namedMine.id) ? namedMine : undefined;
+      // This sponsor's assigned fields open on their own recipient. Unsigned
+      // Any sponsor fields are added in the signing view. Other sponsors only
+      // get the shared slot.
+      const sponsorRecipient =
+        namedWithFields ??
+        openWithFields ??
+        namedMine ??
+        unsigned.find((recipient) => isSignFlowOpenSponsorRecipient(recipient));
+      if (!sponsorRecipient) {
+        const assignedToOther = unsigned.some(
+          (recipient) => !isSignFlowOpenSponsorRecipient(recipient),
+        );
+        if (!assignedToOther) {
           return {
-            ok: false,
-            code: "not_ready",
-            message:
-              "This signature is assigned to another sponsor. Sign in as that sponsor to counter-sign.",
+            ok: true,
+            alreadyCompleted: true,
+            provider: "signflow",
+            signUrl: null,
+            clientId: null,
+            testMode: signFlowCfg.testMode,
+            configured: signFlowCfg.configured,
+            signatureRequestId: sigId,
+            embedApiKey: signFlowCfg.embedApiKey,
+            appBaseUrl: signFlowCfg.appBaseUrl,
+            documentId: sigId,
+            canAssignSigner: canAssign,
+            signerOptions,
+            assignedSignerEmail: "",
+            assignedSignerName: "",
           };
         }
-        docForSession = await getSignFlowDocument(sigId);
+        return {
+          ok: false,
+          code: "not_ready",
+          message:
+            "This signature is assigned to another sponsor. Sign in as that sponsor to counter-sign.",
+        };
       }
 
-      const sponsorRecipient = (docForSession.recipients ?? []).find((recipient) => {
-        const role = String(recipient.role ?? "").trim().toLowerCase();
-        const isSponsor = role === "seller" || role.includes("sponsor");
-        return (
-          isSponsor &&
-          String(recipient.email ?? "").trim().toLowerCase() === signerEmail
-        );
-      });
+      let docForSession = liveDoc;
       const sponsorRecipientId = sponsorRecipient?.id?.trim();
       if (sponsorRecipientId) {
         try {
@@ -415,9 +447,11 @@ export async function getDealSponsorEsignSignSession(params: {
         }
       }
 
+      const sessionEmail =
+        String(sponsorRecipient.email ?? "").trim() || signer.email;
       const access = evaluateSignFlowRecipientSignAccess(
         docForSession,
-        signer.email,
+        sessionEmail,
         { investorHasCompletedSignature },
       );
       if (!access.allowed && !portalReadyForSponsor) {
@@ -433,11 +467,22 @@ export async function getDealSponsorEsignSignSession(params: {
       try {
         const session = await createSignFlowSponsorEmbedSigningSession({
           documentId: sigId,
-          recipientEmail: signer.email,
-          recipientId: sponsorRecipient?.id?.trim(),
+          recipientEmail: sessionEmail,
+          recipientId: sponsorRecipient.id?.trim(),
           investorPhaseComplete: investorHasCompletedSignature,
         });
         signUrl = session.signUrl;
+        const assignedRecipientId = namedWithFields?.id?.trim();
+        if (assignedRecipientId) {
+          try {
+            const signLink = new URL(signUrl);
+            signLink.searchParams.set("assignedRecipientId", assignedRecipientId);
+            signUrl = signLink.toString();
+          } catch {
+            const joiner = signUrl.includes("?") ? "&" : "?";
+            signUrl = `${signUrl}${joiner}assignedRecipientId=${encodeURIComponent(assignedRecipientId)}`;
+          }
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         if (

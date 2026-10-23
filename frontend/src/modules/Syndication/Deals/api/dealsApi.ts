@@ -3648,7 +3648,7 @@ export async function postDealEsignEmbeddedDraft(
         message:
           data.message != null
             ? String(data.message)
-            : "The server did not return a template editor session. Check Dropbox Sign configuration and try again.",
+            : "The server did not return a template editor session. Check SignFlow configuration and try again.",
       }
     }
     const editUrl = typeof data.editUrl === "string" ? data.editUrl : ""
@@ -4397,6 +4397,10 @@ export type DealMyEsignDocument = {
   status: "pending" | "signed"
   categoryId?: string
   signatureRequestId?: string
+  /** Sponsor has signed. Edit and remove are closed. */
+  sponsorSigned?: boolean
+  /** Investor signed and the sponsor has not. Edit and remove are allowed. */
+  canRevise?: boolean
 }
 
 export type DealMyEsignDocumentsResult = {
@@ -4649,6 +4653,59 @@ export async function postDealMyEsignMarkViewed(
   }
 }
 
+/** POST `/deals/:dealId/my-esign-withdraw-signature` — clear a completed signature before the sponsor signs. */
+export async function postDealMyEsignWithdrawSignature(
+  dealId: string,
+  signatureRequestId: string,
+  scope?: DealMyEsignScopeQuery,
+  options?: { preserveFieldValues?: boolean },
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const base = getApiV1Base()
+  if (!base) {
+    return { ok: false, message: "API base URL is not configured" }
+  }
+  const sig = signatureRequestId.trim()
+  if (!sig) {
+    return { ok: false, message: "Missing signature request" }
+  }
+  try {
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(dealId)}/my-esign-withdraw-signature`,
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(),
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          signatureRequestId: sig,
+          ...(options?.preserveFieldValues ? { preserveFieldValues: true } : {}),
+          ...(scope?.userInvestorProfileId?.trim()
+            ? {
+                user_investor_profile_id: scope.userInvestorProfileId.trim(),
+              }
+            : {}),
+          ...(scope?.investmentId?.trim()
+            ? { investment_id: scope.investmentId.trim() }
+            : {}),
+          ...(scope?.profileId?.trim()
+            ? { profile_id: scope.profileId.trim() }
+            : {}),
+        }),
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as { message?: unknown }
+    if (!res.ok) {
+      const msg = data.message != null ? String(data.message) : res.statusText
+      return { ok: false, message: msg || "Could not update this signature" }
+    }
+    return { ok: true }
+  } catch {
+    return { ok: false, message: "Network error" }
+  }
+}
+
 /** GET `/deals/:dealId/my-esign-documents` — signed PDFs after investor completes eSign. */
 export async function fetchDealMyEsignDocuments(
   dealId: string,
@@ -4682,6 +4739,8 @@ export async function fetchDealMyEsignDocuments(
         status?: string
         categoryId?: string
         signatureRequestId?: string
+        sponsorSigned?: boolean
+        canRevise?: boolean
       }>
       esignCompleted?: boolean
       esignPending?: boolean
@@ -4721,6 +4780,8 @@ export async function fetchDealMyEsignDocuments(
               status,
               ...(categoryId ? { categoryId } : {}),
               ...(signatureRequestId ? { signatureRequestId } : {}),
+              sponsorSigned: Boolean(d.sponsorSigned),
+              canRevise: Boolean(d.canRevise),
             }
           })
           .filter((d) => d.fileId && d.name)
@@ -4933,14 +4994,16 @@ export async function postDealDocumentSharedNotification(
 export async function deleteDealMemberRoster(
   dealId: string,
   rowId: string,
+  scope?: "team_member",
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   const base = getApiV1Base()
   if (!base) {
     return { ok: false, message: "API base URL is not configured" }
   }
   try {
+    const scopeQuery = scope === "team_member" ? "?scope=team_member" : ""
     const res = await fetch(
-      `${base}/deals/${encodeURIComponent(dealId)}/members/${encodeURIComponent(rowId)}`,
+      `${base}/deals/${encodeURIComponent(dealId)}/members/${encodeURIComponent(rowId)}${scopeQuery}`,
       {
         method: "DELETE",
         headers: { ...authHeaders() },
@@ -4952,6 +5015,52 @@ export async function deleteDealMemberRoster(
       const msg =
         data.message != null ? String(data.message) : res.statusText
       return { ok: false, message: msg || "Could not remove member" }
+    }
+    return { ok: true }
+  } catch {
+    return { ok: false, message: "Network error" }
+  }
+}
+
+/**
+ * POST `/deals/:dealId/members/:rowId/removal` — remove one investment, or unlink
+ * the investor from it. Does not delete the user account.
+ */
+export async function postDealInvestorRemoval(
+  dealId: string,
+  rowId: string,
+  body: {
+    action: "remove_investment" | "remove_investor"
+    reason: string
+    confirmed: true
+  },
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const base = getApiV1Base()
+  if (!base) {
+    return { ok: false, message: "API base URL is not configured" }
+  }
+  try {
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(dealId)}/members/${encodeURIComponent(rowId)}/removal`,
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(),
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          action: body.action,
+          reason: body.reason,
+          confirmed: body.confirmed,
+        }),
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as { message?: unknown }
+    if (!res.ok) {
+      const msg =
+        data.message != null ? String(data.message) : res.statusText
+      return { ok: false, message: msg || "Could not remove this record." }
     }
     return { ok: true }
   } catch {

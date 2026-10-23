@@ -42,6 +42,7 @@ import {
   catalogPackagePriceCents,
   countDealCoGps,
   couponCheckoutLineCents,
+  couponDurationAppliesToOneTime,
   differenceRepeatPriceCents,
   priceGapCents,
   stripePriceIdForPlatformAmount,
@@ -1141,6 +1142,9 @@ function couponHoldFromMetadata(
 
 function couponFailureMessage(message: string): string {
   const text = message.toLowerCase();
+  if (text.includes("cannot be applied to one-time")) {
+    return "A repeating coupon applies to the subscription. The difference due is already reduced.";
+  }
   if (text.includes("already used a coupon")) return "Coupon redeemed";
   if (text.includes("expired")) return "Expired";
   if (
@@ -1492,24 +1496,26 @@ export async function createCompanyCheckoutSession(params: {
             message: upgraded.message,
           };
         }
-        const redeemed = await redeemCoveredDifferenceCoupon({
-          stripe,
-          customerId: checkoutCustomerId,
-          amountCents: (paidCents ?? 0) + differenceCents,
-          creditCents: priced.repeatPriceCents,
-          promotionCodeId,
-          description: `Upgrade difference for ${deal.dealName?.trim() || "this deal"}`,
-          metadata: upgradeMetadata,
-        });
-        if (!redeemed.ok) {
-          if (beforeUpgrade && upgraded.ok) {
-            try {
-              await restoreSubscriptionToSnapshot(beforeUpgrade);
-            } catch (restoreErr) {
-              console.warn("restore subscription after coupon redeem:", restoreErr);
+        if (couponDurationAppliesToOneTime(couponDuration)) {
+          const redeemed = await redeemCoveredDifferenceCoupon({
+            stripe,
+            customerId: checkoutCustomerId,
+            amountCents: (paidCents ?? 0) + differenceCents,
+            creditCents: priced.repeatPriceCents,
+            promotionCodeId,
+            description: `Upgrade difference for ${deal.dealName?.trim() || "this deal"}`,
+            metadata: upgradeMetadata,
+          });
+          if (!redeemed.ok) {
+            if (beforeUpgrade && upgraded.ok) {
+              try {
+                await restoreSubscriptionToSnapshot(beforeUpgrade);
+              } catch (restoreErr) {
+                console.warn("restore subscription after coupon redeem:", restoreErr);
+              }
             }
+            return { ok: false, status: 400, message: redeemed.message };
           }
-          return { ok: false, status: 400, message: redeemed.message };
         }
         if (upgraded.ok) {
           await applySubscriptionToCompany(cid, upgraded.subscription, {
@@ -1519,13 +1525,15 @@ export async function createCompanyCheckoutSession(params: {
         return { ok: true, url: "", upgraded: true };
       }
       const netDue = priced?.discountedDifferenceCents ?? differenceCents;
-      const lineAmount = promotion.preview
-        ? couponCheckoutLineCents({
-            dueCents: netDue,
-            percentOff: promotion.preview.percentOff,
-            amountOffCents: promotion.preview.amountOffCents,
-          })
-        : differenceCents;
+      const oneTimeCoupon = Boolean(promotionCodeId) && couponDuration === "once";
+      const lineAmount =
+        oneTimeCoupon && promotion.preview
+          ? couponCheckoutLineCents({
+              dueCents: netDue,
+              percentOff: promotion.preview.percentOff,
+              amountOffCents: promotion.preview.amountOffCents,
+            })
+          : netDue;
       const session = await stripe.checkout.sessions.create({
         mode: "payment",
         customer: checkoutCustomerId,
@@ -1552,7 +1560,7 @@ export async function createCompanyCheckoutSession(params: {
           description: `Upgrade difference for ${deal.dealName?.trim() || "this deal"}`,
           metadata: upgradeMetadata,
         },
-        ...(promotionCodeId
+        ...(oneTimeCoupon && promotionCodeId
           ? { discounts: [{ promotion_code: promotionCodeId }] }
           : {}),
       });

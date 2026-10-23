@@ -847,54 +847,100 @@
   font-size: 0.875rem;
 }
 
-/* Signed column — compact pill button (matches um_btn_secondary) */
-.deal_inv_signed_btn {
+/* Signed column — outline status pills */
+.deal_inv_signed_empty {
+  color: var(--portal-text-muted, #94a3b8);
+}
+
+.deal_inv_signed_pill {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 0.3rem;
   max-width: 100%;
-  padding: 0.28rem 0.65rem;
-  border: 1px solid var(--ui-button-border, var(--sidebar-active-text));
-  border-radius: var(--ui-button-border-radius, 4px);
-  background: var(--ui-button-background-add, var(--sidebar-bg-color));
+  margin: 0;
+  padding: 0.16rem 0.55rem 0.16rem 0.38rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
   font: inherit;
   font-size: 0.8125rem;
-  font-weight: 600;
-  line-height: 1.25;
-  color: var(--ui-button-text, var(--sidebar-active-text));
-  cursor: pointer;
-  text-align: center;
-  text-decoration: none;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
   box-sizing: border-box;
+  vertical-align: middle;
 }
 
-.deal_inv_signed_btn:hover:not(:disabled) {
-  background: var(--ui-button-hover);
-  color: var(--ui-button-text, var(--sidebar-active-text));
+button.deal_inv_signed_pill {
+  cursor: pointer;
 }
 
-.deal_inv_signed_btn:focus-visible {
-  outline: 2px solid var(--portal-primary, #2563eb);
+.deal_inv_signed_pill_icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.deal_inv_signed_pill_icon svg {
+  display: block;
+}
+
+.deal_inv_signed_pill_label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.deal_inv_signed_pill--done {
+  color: #16a34a;
+  background: #f0fdf4;
+  border-color: #86efac;
+}
+
+.deal_inv_signed_pill--viewed {
+  color: #2563eb;
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
+.deal_inv_signed_pill--sent {
+  color: #6b7280;
+  background: #f9fafb;
+  border-color: #e5e7eb;
+}
+
+button.deal_inv_signed_pill--done:hover {
+  background: #dcfce7;
+}
+
+button.deal_inv_signed_pill--viewed:hover {
+  background: #dbeafe;
+}
+
+button.deal_inv_signed_pill--sent:hover {
+  background: #f3f4f6;
+}
+
+.deal_inv_signed_pill:focus-visible {
+  outline: 2px solid currentColor;
   outline-offset: 2px;
 }
 
-.deal_inv_signed_btn--sent,
-.deal_inv_signed_btn--pending,
-.deal_inv_signed_btn--viewed,
-.deal_inv_signed_btn--signed,
-.deal_inv_signed_btn--completed {
-  color: var(--ui-button-text, var(--sidebar-active-text));
-  border-color: var(--ui-button-border, var(--sidebar-active-text));
-  background: var(--ui-button-background-add, var(--sidebar-bg-color));
+:root[data-theme="dark"] .deal_inv_signed_pill--done {
+  color: #4ade80;
+  background: rgb(22 163 74 / 16%);
+  border-color: rgb(74 222 128 / 40%);
 }
 
-.deal_inv_signed_btn--sent:hover:not(:disabled),
-.deal_inv_signed_btn--pending:hover:not(:disabled),
-.deal_inv_signed_btn--viewed:hover:not(:disabled),
-.deal_inv_signed_btn--signed:hover:not(:disabled),
-.deal_inv_signed_btn--completed:hover:not(:disabled) {
-  background: var(--ui-button-hover);
-  color: var(--ui-button-text, var(--sidebar-active-text));
+:root[data-theme="dark"] .deal_inv_signed_pill--viewed {
+  color: #93c5fd;
+  background: rgb(37 99 235 / 16%);
+  border-color: rgb(147 197 253 / 40%);
+}
+
+:root[data-theme="dark"] .deal_inv_signed_pill--sent {
+  color: #d1d5db;
+  background: rgb(255 255 255 / 6%);
+  border-color: rgb(255 255 255 / 16%);
 }
 
 .deal_esign_panel_head_row {

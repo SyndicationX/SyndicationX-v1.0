@@ -108,6 +108,11 @@ export interface ContactRow {
    * cannot be added to deals.
    */
   platformAdminOnly?: boolean
+  /**
+   * Self-serve signup answer for “Are you an”: Investor, Syndicator, or Both.
+   * Empty when this contact did not choose one.
+   */
+  signupRole?: string
   /** Linked to a portal `users` row for this email. */
   isPortalUser?: boolean
   /** True after a portal signup invitation was successfully emailed. */

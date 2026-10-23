@@ -6,6 +6,7 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
+import { users } from "../auth.schema/signin.js";
 import { userInvestorProfiles } from "../investing.schema/userProfileBook.schema.js";
 import { addDealForm } from "./add-deal-form.schema.js";
 
@@ -72,6 +73,23 @@ export const dealInvestment = pgTable("deal_investment", {
    * Does not archive the sponsor's deal.
    */
   investorArchivedAt: timestamp("investor_archived_at", { withTimezone: true }),
+  /** Sponsor removed this investment. Hidden from rosters and active totals. */
+  removedAt: timestamp("removed_at", { withTimezone: true }),
+  removedByUserId: uuid("removed_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  removalReason: text("removal_reason").notNull().default(""),
+  removalAction: text("removal_action").notNull().default(""),
+  /**
+   * Sponsor removed the investor's association with this investment.
+   * The row stays for audit; it is hidden from rosters and active totals.
+   */
+  investorUnlinkedAt: timestamp("investor_unlinked_at", { withTimezone: true }),
+  investorUnlinkedByUserId: uuid("investor_unlinked_by_user_id").references(
+    () => users.id,
+    { onDelete: "set null" },
+  ),
+  investorUnlinkReason: text("investor_unlink_reason").notNull().default(""),
   extraContributionAmounts: jsonb("extra_contribution_amounts")
     .$type<string[]>()
     .notNull(),

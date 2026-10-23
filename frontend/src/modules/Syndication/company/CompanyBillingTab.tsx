@@ -374,6 +374,166 @@ function planPrice(
   return priceFromTable(table, tierId, coGpCount);
 }
 
+const PREVIOUS_PLAN_SHEET: readonly {
+  product: string;
+  size: string;
+  seats: readonly { monthly: number; annual: number }[];
+}[] = [
+  {
+    product: "Starter",
+    size: "Up to $3M equity",
+    seats: [
+      { monthly: 49, annual: 490 },
+      { monthly: 69, annual: 690 },
+      { monthly: 89, annual: 890 },
+    ],
+  },
+  {
+    product: "Running",
+    size: "Up to $5M deal",
+    seats: [
+      { monthly: 99, annual: 990 },
+      { monthly: 129, annual: 1290 },
+      { monthly: 149, annual: 1490 },
+    ],
+  },
+  {
+    product: "Growth",
+    size: "Up to $10M deal",
+    seats: [
+      { monthly: 149, annual: 1490 },
+      { monthly: 169, annual: 1690 },
+      { monthly: 189, annual: 1890 },
+    ],
+  },
+];
+
+const PREVIOUS_PLAN_SEATS = ["5 Co-GP", "10 Co-GP", "10+ Co-GP"] as const;
+
+function PreviousPlanPricesModal({ onClose }: { onClose: () => void }) {
+  const titleId = useId();
+
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="deal_stage_modal_overlay portal_modal_z_boost"
+      role="presentation"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="deal_stage_modal deal_stage_modal--prev_plans"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="deal_stage_modal_head">
+          <div className="deal_stage_modal_icon_wrap" aria-hidden>
+            <Info size={22} strokeWidth={2} />
+          </div>
+          <div className="deal_stage_modal_head_text">
+            <p className="deal_stage_modal_eyebrow">Pricing per deal</p>
+            <h2 id={titleId} className="deal_stage_modal_title">
+              Previous pricing
+            </h2>
+          </div>
+          <button
+            type="button"
+            className="deal_stage_modal_close"
+            aria-label="Close"
+            onClick={onClose}
+          >
+            <X size={20} strokeWidth={2} aria-hidden />
+          </button>
+        </header>
+        <div className="deal_stage_modal_body">
+          <p className="deal_stage_modal_desc">
+            Price per deal. Each package shows the monthly price, then the
+            annual price.
+          </p>
+          <div className="cp_billing_prev_plans_wrap">
+            <table className="cp_billing_deal_mrr_table cp_billing_prev_plans">
+              <thead>
+                <tr>
+                  <th scope="col">Product</th>
+                  {PREVIOUS_PLAN_SEATS.map((seat) => (
+                    <th scope="col" key={seat}>
+                      {seat}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {PREVIOUS_PLAN_SHEET.map((row) => (
+                  <tr key={row.product}>
+                    <th scope="row">
+                      <span className="cp_billing_prev_product">{row.product}</span>
+                      <span className="cp_billing_prev_size">{row.size}</span>
+                    </th>
+                    {row.seats.map((price, index) => (
+                      <td key={PREVIOUS_PLAN_SEATS[index]}>
+                        <span className="cp_billing_prev_price">
+                          ${formatPlanPrice(price.monthly)}
+                          <span>/mo</span>
+                        </span>
+                        <span className="cp_billing_prev_price">
+                          ${formatPlanPrice(price.annual)}
+                          <span>/yr</span>
+                        </span>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function PreviousPlanPricesButton() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <span className="cp_billing_prev_plans_tip">
+        <button
+          type="button"
+          className="cp_billing_prev_plans_btn"
+          aria-label="Previous pricing"
+          title="Previous pricing"
+          aria-expanded={open}
+          onClick={() => setOpen(true)}
+        >
+          <Info size={16} strokeWidth={2} aria-hidden />
+        </button>
+        <span className="cp_billing_prev_plans_tip_label" role="tooltip">
+          Previous pricing
+        </span>
+      </span>
+      {open ? (
+        <PreviousPlanPricesModal onClose={() => setOpen(false)} />
+      ) : null}
+    </>
+  );
+}
+
 function previousPlanPrice(
   tierId: DealTier["id"],
   cycle: "monthly" | "annually",
@@ -549,15 +709,14 @@ function billingPlanLabel(planId: string | null | undefined): string {
   return id.charAt(0).toUpperCase() + id.slice(1);
 }
 
-/** Unpaid deals follow the current offering size. A paid subscription keeps its plan. */
+/** The plan follows the offering size. Co-sponsor count changes the seat price only. */
 function dealPlanId(
-  row: Pick<CompanyDealBillingRow, "planId" | "suggestedPlanId" | "billed">,
+  row: Pick<CompanyDealBillingRow, "planId" | "suggestedPlanId">,
 ): string | null {
   const suggested = String(row.suggestedPlanId ?? "").trim();
-  if (!row.billed && suggested) return suggested;
+  if (suggested) return suggested;
   const paid = String(row.planId ?? "").trim();
-  if (paid) return paid;
-  return suggested || null;
+  return paid || null;
 }
 
 function suggestedPlanIdForDeal(
@@ -1859,6 +2018,10 @@ function BillingPricingPanel({
   const appropriatePlanId = suggestedPlanIdForDeal(selectedDeal);
 
   useEffect(() => {
+    if (selectedDeal?.includedCoGps === null) {
+      setExtraCompanyUsers(0);
+      return;
+    }
     const count = Math.max(0, Number(selectedDeal?.coGpCount ?? 0) || 0);
     if (seatBand === "5" || seatBand === "10") {
       const included = seatBand === "10" ? 10 : 5;
@@ -1874,6 +2037,7 @@ function BillingPricingPanel({
   }, [
     selectedDeal?.id,
     selectedDeal?.coGpCount,
+    selectedDeal?.includedCoGps,
     selectedDeal?.extraCompanyUsersDue,
     seatBand,
   ]);
@@ -2071,7 +2235,10 @@ function BillingPricingPanel({
   return (
     <>
       <div className="cp_billing_header">
-        <h3 className="cp_settings_billing_tab_title">Billing</h3>
+        <div className="cp_billing_title_row">
+          <h3 className="cp_settings_billing_tab_title">Billing</h3>
+          {isPlatformAdmin() ? <PreviousPlanPricesButton /> : null}
+        </div>
         <p className="cp_billing_subtitle">
           {allowPayment
             ? "Pay when the deal is raising capital or asset managing — "
@@ -2808,10 +2975,27 @@ function BillingPaymentMethodsPanel({
 function DealMrrPaymentHistory({
   deal,
   invoices,
+  loading = false,
 }: {
   deal: CompanyDealBillingRow;
   invoices: CompanyBillingInvoice[];
+  loading?: boolean;
 }) {
+  if (loading) {
+    return (
+      <div className="cp_billing_deal_mrr_history" role="status" aria-live="polite">
+        <p className="cp_billing_deal_mrr_history_empty cp_billing_deal_mrr_loading">
+          <Loader2
+            size={16}
+            strokeWidth={2}
+            className="deals_create_btn_spin"
+            aria-hidden
+          />
+          Loading payments…
+        </p>
+      </div>
+    );
+  }
   const extra = extraCoGpDetail(deal);
   const mrrInvoices = invoices.filter(
     (inv) => inv.billingScope !== "extra_company_user",
@@ -3091,6 +3275,10 @@ function BillingDealDetailsPanel({
   const [startDateBusy, setStartDateBusy] = useState(false);
   const [expandedDealId, setExpandedDealId] = useState<string | null>(null);
   const [invoices, setInvoices] = useState<CompanyBillingInvoice[]>([]);
+  const [invoicesLoading, setInvoicesLoading] = useState(false);
+  const [invoiceLoadingOrgId, setInvoiceLoadingOrgId] = useState<string | null>(
+    null,
+  );
   /** Firefox scrolls the window when a sticky-table control is focused or the org table is replaced. */
   const pendingScrollTopRef = useRef<number | null>(null);
   const companyIdsKey = (companyIds ?? [])
@@ -3151,6 +3339,8 @@ function BillingDealDetailsPanel({
         setOrganizations([]);
         setOrgPaidTotals(new Map());
         setInvoices([]);
+        setInvoicesLoading(false);
+        setInvoiceLoadingOrgId(null);
         return;
       }
       setOrganizations(
@@ -3204,6 +3394,7 @@ function BillingDealDetailsPanel({
     if (dealCompanyIds.length === 0) {
       setDeals([]);
       setInvoices([]);
+      setInvoicesLoading(false);
       return;
     }
     let cancelled = false;
@@ -3223,6 +3414,7 @@ function BillingDealDetailsPanel({
         );
         setDeals([]);
         setInvoices([]);
+        setInvoicesLoading(false);
         return;
       }
       const seenDealIds = new Set<string>();
@@ -3237,6 +3429,8 @@ function BillingDealDetailsPanel({
         ),
       );
       setResolvedScope(okDeals[0].viewerScope);
+      setLoading(false);
+      setInvoicesLoading(true);
 
       const invoiceResults = await Promise.all(
         dealCompanyIds.map((id) => fetchCompanyBillingInvoices(id)),
@@ -3254,7 +3448,7 @@ function BillingDealDetailsPanel({
             : [],
         ),
       );
-      setLoading(false);
+      setInvoicesLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -3272,13 +3466,17 @@ function BillingDealDetailsPanel({
       return;
     }
     let cancelled = false;
+    setInvoiceLoadingOrgId(cid);
     void fetchCompanyBillingInvoices(cid).then((result) => {
-      if (cancelled || !result.ok) return;
-      setInvoices((current) => {
-        const seen = new Set(current.map((inv) => inv.id));
-        const next = result.invoices.filter((inv) => !seen.has(inv.id));
-        return next.length === 0 ? current : [...current, ...next];
-      });
+      if (cancelled) return;
+      if (result.ok) {
+        setInvoices((current) => {
+          const seen = new Set(current.map((inv) => inv.id));
+          const next = result.invoices.filter((inv) => !seen.has(inv.id));
+          return next.length === 0 ? current : [...current, ...next];
+        });
+      }
+      setInvoiceLoadingOrgId((current) => (current === cid ? null : current));
     });
     return () => {
       cancelled = true;
@@ -3782,6 +3980,19 @@ function BillingDealDetailsPanel({
     [companyId],
   );
 
+  const dealPaymentsLoading = useCallback(
+    (row: CompanyDealBillingRow) => {
+      if (platformAdmin) {
+        const orgId =
+          String(row.displayGroupId ?? "").trim() ||
+          dealBillingCompanyId(row, "");
+        return Boolean(orgId) && invoiceLoadingOrgId === orgId;
+      }
+      return invoicesLoading;
+    },
+    [invoiceLoadingOrgId, invoicesLoading, platformAdmin],
+  );
+
   const columns: DataTableColumn<CompanyDealBillingRow>[] = useMemo(
     () => [
       {
@@ -3816,7 +4027,16 @@ function BillingDealDetailsPanel({
                   <span className="cp_billing_invoice_number">
                     {row.dealName.trim() || "Untitled deal"}
                   </span>
-                  <ChevronDown size={16} aria-hidden />
+                  {open && dealPaymentsLoading(row) ? (
+                    <Loader2
+                      size={16}
+                      strokeWidth={2}
+                      className="deals_create_btn_spin"
+                      aria-hidden
+                    />
+                  ) : (
+                    <ChevronDown size={16} aria-hidden />
+                  )}
                 </button>
               </div>
             </div>
@@ -4055,6 +4275,7 @@ function BillingDealDetailsPanel({
       canPay,
       companyId,
       cycleBusyId,
+      dealPaymentsLoading,
       expandedDealId,
       invoices,
       onPaid,
@@ -4285,6 +4506,7 @@ function BillingDealDetailsPanel({
                             invoices={invoices.filter(
                               (inv) => inv.dealId === deal.id,
                             )}
+                            loading={dealPaymentsLoading(deal)}
                           />
                         ) : null
                       }
@@ -4318,6 +4540,7 @@ function BillingDealDetailsPanel({
                 <DealMrrPaymentHistory
                   deal={row}
                   invoices={invoices.filter((inv) => inv.dealId === row.id)}
+                  loading={dealPaymentsLoading(row)}
                 />
               ) : null
             }

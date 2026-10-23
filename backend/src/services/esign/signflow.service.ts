@@ -304,6 +304,38 @@ export async function ensureSignFlowInvestorPhaseRecorded(
 }
 
 /** Create or reuse a signing session token for embedded investor signing. */
+/**
+ * Remove the investor signature on a live SignFlow document so they can sign again.
+ * SignFlow rejects this after a sponsor signature is stored.
+ */
+export async function resetSignFlowInvestorSignature(params: {
+  documentId: string;
+  recipientEmail: string;
+  /** Keep answers already entered so the investor can change them. */
+  preserveFieldValues?: boolean;
+}): Promise<void> {
+  const documentId = params.documentId.trim();
+  const recipientEmail = params.recipientEmail.trim().toLowerCase();
+  if (!documentId) {
+    throw new Error("SignFlow documentId is required");
+  }
+  if (!recipientEmail) {
+    throw new Error("recipientEmail is required");
+  }
+
+  await signflowRequest(
+    `/documents/${encodeURIComponent(documentId)}/embed/reset-investor-signature`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipientEmail,
+        preserveFieldValues: params.preserveFieldValues === true,
+      }),
+    },
+  );
+}
+
 export async function createSignFlowEmbedSigningSession(params: {
   documentId: string;
   recipientEmail?: string;
@@ -454,6 +486,20 @@ export async function createSignFlowSponsorEmbedSigningSession(params: {
 /** Stable embed recipient ids — must match SignFlow `EMBED_DEFAULT_RECIPIENTS`. */
 export const SIGNFLOW_EMBED_INVESTOR_RECIPIENT_ID = "rec_investor";
 export const SIGNFLOW_EMBED_SPONSOR_RECIPIENT_ID = "rec_sponsor";
+/** Generic template sponsor. Any deal sponsor may claim this slot until one has signed. */
+export const SIGNFLOW_OPEN_SPONSOR_RECIPIENT_ID = "rec_sponsor_open";
+export const SIGNFLOW_OPEN_SPONSOR_NAME = "Anyone can sign";
+export const SIGNFLOW_OPEN_SPONSOR_EMAIL = "sponsor@embed.local";
+/** Kept on the sent copy so the slot stays open after a sponsor's name is filled in. */
+export const SIGNFLOW_OPEN_SPONSOR_ROLE = "open-sponsor";
+/** Invisible suffix so a claimed slot stays open until that sponsor signs. */
+const SIGNFLOW_OPEN_SPONSOR_MARK = "\u2060";
+
+export function signFlowOpenSponsorSignerName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.includes(SIGNFLOW_OPEN_SPONSOR_MARK)) return trimmed;
+  return `${trimmed}${SIGNFLOW_OPEN_SPONSOR_MARK}`;
+}
 /**
  * Holds alternate signature lines (an "OR" block) that are not this signer's.
  * Not a real recipient, so SignFlow does not ask anyone to sign those lines.
@@ -477,9 +523,7 @@ export function resolveSignFlowInvestorRecipientId(doc: SignFlowDocument): strin
 
 export function resolveSignFlowSponsorRecipientId(doc: SignFlowDocument): string {
   const recipients = doc.recipients ?? [];
-  const seller = recipients.find(
-    (r) => String(r.role ?? "").trim().toLowerCase() === "seller",
-  );
+  const seller = recipients.find((r) => matchSignFlowPartyRole(r, "sponsor"));
   const byClientId = recipients.find(
     (r) => r.id?.trim() === SIGNFLOW_EMBED_SPONSOR_RECIPIENT_ID,
   );
@@ -540,8 +584,8 @@ const EMBED_TEMPLATE_RECIPIENTS = [
   },
   {
     id: SIGNFLOW_EMBED_SPONSOR_RECIPIENT_ID,
-    name: "Sponsor",
-    email: "sponsor@embed.local",
+    name: SIGNFLOW_OPEN_SPONSOR_NAME,
+    email: SIGNFLOW_OPEN_SPONSOR_EMAIL,
     role: "seller",
     color: "#2563eb",
     order: 2,
@@ -614,7 +658,7 @@ export async function ensureSignFlowEmbedRecipients(documentId: string): Promise
     },
     {
       id: SIGNFLOW_EMBED_SPONSOR_RECIPIENT_ID,
-      name: existingSeller?.name?.trim() || EMBED_TEMPLATE_RECIPIENTS[1].name,
+      name: openSponsorDisplayName(existingSeller?.name),
       email: existingSeller?.email?.trim() || EMBED_TEMPLATE_RECIPIENTS[1].email,
       role: "seller",
       color: existingSeller?.color ?? EMBED_TEMPLATE_RECIPIENTS[1].color,
@@ -1056,15 +1100,10 @@ export type SignFlowSponsorSigningGroup = {
   name: string;
   email: string;
   color?: string;
-  /** Generic template sponsor. The send path fills in the lead sponsor. */
+  /** Generic template sponsor. Any deal sponsor may sign; the first signature closes the slot. */
   placeholder: boolean;
   fields: SignFlowField[];
 };
-
-function isPlaceholderSponsorEmail(email: string): boolean {
-  const value = email.trim().toLowerCase();
-  return !value.includes("@") || value.endsWith("@embed.local");
-}
 
 /** One signing party per sponsor who has fields on the template. */
 export function collectSignFlowSponsorSigningGroups(
@@ -1084,13 +1123,19 @@ export function collectSignFlowSponsorSigningGroups(
     );
     if (owned.length === 0) return;
     const email = String(seller.email ?? "").trim().toLowerCase();
+    const name = String(seller.name ?? "").trim() || email || "Sponsor";
     const clientRecipientId = `rec_sponsor_${index + 1}`;
     groups.push({
       clientRecipientId,
-      name: String(seller.name ?? "").trim() || email || "Sponsor",
+      name,
       email,
       color: seller.color,
-      placeholder: isPlaceholderSponsorEmail(email),
+      placeholder: isSignFlowOpenSponsorRecipient({
+        id: seller.id,
+        email,
+        name,
+        role: seller.role,
+      }),
       fields: owned.map((field) => {
         const { templatePage, pageHash } = resolveSignFlowFieldTemplateAnchor(field);
         return {
@@ -1177,12 +1222,14 @@ export function signFlowRecipientHasSigned(recipient: {
   status?: string;
   signedAt?: string | null;
 }): boolean {
-  if (recipient.signed === true) return true;
-  if (recipient.signedAt?.trim()) return true;
   const status = String(recipient.signingStatus ?? recipient.status ?? "")
     .trim()
     .toLowerCase();
-  return status === "signed" || status === "completed";
+  if (status === "signed" || status === "completed") return true;
+  if (recipient.signed === true) return true;
+  // A pending recipient can still carry a timestamp from an earlier view.
+  if (recipient.signed === false) return false;
+  return Boolean(recipient.signedAt?.trim());
 }
 
 function recipientHasSigned(
@@ -1195,6 +1242,70 @@ export function signFlowAnySponsorHasSigned(doc: SignFlowDocument): boolean {
   return (doc.recipients ?? [])
     .filter((recipient) => matchSignFlowPartyRole(recipient, "sponsor"))
     .some(recipientHasSigned);
+}
+
+export function isSignFlowOpenSponsorName(name: string | null | undefined): boolean {
+  return String(name ?? "").trim().toLowerCase() === SIGNFLOW_OPEN_SPONSOR_NAME.toLowerCase();
+}
+
+function openSponsorDisplayName(name: string | null | undefined): string {
+  const label = String(name ?? "").trim();
+  if (!label || label.toLowerCase() === "sponsor") return SIGNFLOW_OPEN_SPONSOR_NAME;
+  return label;
+}
+
+/** Generic Sponsor recipient: any deal sponsor may sign until one signature is recorded. */
+export function isSignFlowOpenSponsorRecipient(recipient: {
+  id?: string | null;
+  email?: string | null;
+  name?: string | null;
+  role?: string | null;
+}): boolean {
+  const role = String(recipient.role ?? "").trim().toLowerCase();
+  if (role === SIGNFLOW_OPEN_SPONSOR_ROLE) return true;
+  if (String(recipient.name ?? "").includes(SIGNFLOW_OPEN_SPONSOR_MARK)) return true;
+  const id = String(recipient.id ?? "").trim().toLowerCase();
+  if (id === SIGNFLOW_OPEN_SPONSOR_RECIPIENT_ID) return true;
+  if (isSignFlowOpenSponsorName(recipient.name)) return true;
+  const email = String(recipient.email ?? "").trim().toLowerCase();
+  // SignFlow labels this dropdown choice "Any sponsor".
+  if (!email.includes("@") || email.endsWith("@embed.local")) return true;
+  const name = String(recipient.name ?? "").trim().toLowerCase();
+  return name === "any sponsor" || name === "sponsor";
+}
+
+/** Who may still counter-sign. An open slot stays available to every deal sponsor. */
+export function signFlowPendingSponsorSignAudience(doc: SignFlowDocument): {
+  openToAnySponsor: boolean;
+  namedEmails: string[];
+  allSponsorSlotsSigned: boolean;
+} {
+  const sponsors = (doc.recipients ?? []).filter((recipient) =>
+    matchSignFlowPartyRole(recipient, "sponsor"),
+  );
+  if (sponsors.length === 0) {
+    return {
+      openToAnySponsor: false,
+      namedEmails: [],
+      allSponsorSlotsSigned: true,
+    };
+  }
+  const unsigned = sponsors.filter((recipient) => !recipientHasSigned(recipient));
+  const namedEmails = [
+    ...new Set(
+      unsigned
+        .filter((recipient) => !isSignFlowOpenSponsorRecipient(recipient))
+        .map((recipient) => String(recipient.email ?? "").trim().toLowerCase())
+        .filter((email) => email.includes("@") && !email.endsWith("@embed.local")),
+    ),
+  ];
+  return {
+    openToAnySponsor: unsigned.some((recipient) =>
+      isSignFlowOpenSponsorRecipient(recipient),
+    ),
+    namedEmails,
+    allSponsorSlotsSigned: unsigned.length === 0,
+  };
 }
 
 function matchSignFlowPartyRole(
@@ -1216,6 +1327,7 @@ function matchSignFlowPartyRole(
     role.includes("sponsor") ||
     role.includes("seller") ||
     id === "rec_sponsor" ||
+    id === SIGNFLOW_OPEN_SPONSOR_RECIPIENT_ID ||
     id === "rec_2" ||
     role === "recipient_b"
   );
@@ -1274,7 +1386,7 @@ export function evaluateSignFlowRecipientSignAccess(
       code: "waiting_for_prior_signer",
       waitingFor: "sponsor",
       message:
-        "The lead sponsor must sign first. You will be able to sign after they complete their signature.",
+        "A sponsor must sign first. You will be able to sign after a sponsor completes their signature.",
     };
   }
 

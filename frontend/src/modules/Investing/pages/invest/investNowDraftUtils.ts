@@ -30,6 +30,7 @@ export function isInvestNowDraftInvestorRow(
   viewerEmailNorm: string,
 ): boolean {
   if (!investorRowMatchesViewerEmail(row, viewerEmailNorm)) return false
+  if (row.sponsorRemoved) return false
   if (row.investorKind === "lp_roster") return false
   if (investorInvestmentProfileIsComplete(row)) return false
   if (investorEsignWasSent(row)) return true
@@ -94,6 +95,7 @@ export function dealHasFullyCompletedProfileEsign(
   return investors.some(
     (row) =>
       investorRowMatchesViewerEmail(row, em) &&
+      !row.sponsorRemoved &&
       investorInvestmentProfileIsComplete(row),
   )
 }

@@ -746,6 +746,7 @@ export default function InvestmentsPage() {
           const investorArchived = investmentRowArchivedForInvestorView(r)
           const showResume =
             !investorArchived &&
+            !r.sponsorRemoved &&
             onPendingTab &&
             Boolean(r.hasInvestNowDraft && r.investNowResumeScope)
           const showInvestNow =
@@ -780,12 +781,15 @@ export default function InvestmentsPage() {
                         : "It is in Archives. The sponsor could not be emailed.",
                   )
                 }
-                onInvestorRestored={() =>
-                  void saveDealParticipation(
-                    "Deal restored",
-                    () => patchMyInvestorDealParticipation(dealId, false),
-                    () => "It is back in your active investments.",
-                  )
+                onInvestorRestored={
+                  r.sponsorRemoved
+                    ? undefined
+                    : () =>
+                        void saveDealParticipation(
+                          "Deal restored",
+                          () => patchMyInvestorDealParticipation(dealId, false),
+                          () => "It is back in your active investments.",
+                        )
                 }
                 onInvestorDeleted={async () => {
                   const result = await deleteMyInvestorDealParticipation(dealId)

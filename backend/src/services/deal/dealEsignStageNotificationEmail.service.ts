@@ -27,6 +27,11 @@ import {
   type InvestorEsignRowTarget,
 } from "./dealMemberEsignStatus.service.js";
 import { resolveEmailForContactMemberId } from "./dealMemberInvitationEmail.service.js";
+import { listDealSponsorSignerOptions } from "./dealEsignSigningWorkflow.service.js";
+import {
+  getSignFlowDocument,
+  signFlowPendingSponsorSignAudience,
+} from "../esign/signflow.service.js";
 
 const SENDER_DISPLAY_NAME =
   process.env.SENDER_DISPLAY_NAME?.trim() || "SyndicationX";
@@ -181,30 +186,52 @@ export async function notifySponsorsOfInvestorEsignSigned(params: {
     dealId,
     params.target,
   );
-  const sponsor = await resolveDealInvestorAssociatedSponsor({
-    dealId,
-    contactId: audienceIds[0] ?? params.target.id,
-    investmentId: params.target.id,
-    investorEmail: entry?.email,
-  });
-  if (!sponsor) return;
   const portalUrl = sponsorDealDocumentsUrl(dealId);
-  const result = await sendStageEmail({
-    toEmail: sponsor.email,
-    recipientDisplayName: sponsor.name,
-    dealName,
-    documentNames: docNames,
-    investorDisplayName: investorName,
-    portalDealUrl: portalUrl,
-    stage: "investor_signed",
-  });
-  if (result.ok) {
+  const notify = new Map<string, string>();
+  try {
+    const doc = await getSignFlowDocument(sigId);
+    const audience = signFlowPendingSponsorSignAudience(doc);
+    if (audience.openToAnySponsor) {
+      const sponsors = await listDealSponsorSignerOptions(dealId);
+      for (const sponsor of sponsors) {
+        notify.set(sponsor.email, sponsor.name);
+      }
+    }
+    for (const email of audience.namedEmails) {
+      if (!notify.has(email)) notify.set(email, email);
+    }
+  } catch (err) {
+    console.warn("notifySponsorsOfInvestorEsignSigned audience:", err);
+  }
+  if (notify.size === 0) {
+    const sponsor = await resolveDealInvestorAssociatedSponsor({
+      dealId,
+      contactId: audienceIds[0] ?? params.target.id,
+      investmentId: params.target.id,
+      investorEmail: entry?.email,
+    });
+    if (sponsor?.email) notify.set(sponsor.email, sponsor.name);
+  }
+  if (notify.size === 0) return;
+  let notified = false;
+  for (const [toEmail, recipientDisplayName] of notify) {
+    const result = await sendStageEmail({
+      toEmail,
+      recipientDisplayName,
+      dealName,
+      documentNames: docNames,
+      investorDisplayName: investorName,
+      portalDealUrl: portalUrl,
+      stage: "investor_signed",
+    });
+    if (result.ok) notified = true;
+    else console.warn("notifySponsorsOfInvestorEsignSigned:", result.error);
+  }
+  if (notified) {
     await updateDealInvestorEsignSend(dealId, params.target, sigId, (current) => ({
       ...current,
       sponsorNotifiedAtInvestorSigned: new Date().toISOString(),
     }));
-  } else {
-    console.warn("notifySponsorsOfInvestorEsignSigned:", result.error);
   }
 }
 

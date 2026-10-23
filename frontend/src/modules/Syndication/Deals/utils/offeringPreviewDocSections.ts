@@ -190,6 +190,10 @@ export type NestedPreviewDocument = {
   esignTemplateFileId?: string
   esignAwaitingSponsorSignature?: boolean
   esignSponsorSigned?: boolean
+  /** Generic Sponsor slot is still unsigned, so any deal sponsor may sign. */
+  esignOpenSponsorSign?: boolean
+  /** Specific sponsors who still need to sign. Empty when the slot is open to any sponsor. */
+  esignSponsorSignerEmails?: string[]
   /** Portal user who uploaded this file from the Documents tab. */
   uploadedByUserId?: string
   /** Co-sponsor uploads stay hidden from lead / admin sponsors unless shared with them. */
@@ -776,6 +780,12 @@ function normalizeNested(
       : undefined
   const esignAwaitingSponsorSignature = Boolean(raw.esignAwaitingSponsorSignature)
   const esignSponsorSigned = Boolean(raw.esignSponsorSigned)
+  const esignOpenSponsorSign = raw.esignOpenSponsorSign === true
+  const esignSponsorSignerEmails = Array.isArray(raw.esignSponsorSignerEmails)
+    ? raw.esignSponsorSignerEmails
+        .map((value) => (typeof value === "string" ? value.trim().toLowerCase() : ""))
+        .filter((email) => email.includes("@"))
+    : []
   const uploadedByUserId =
     typeof raw.uploadedByUserId === "string" && raw.uploadedByUserId.trim()
       ? raw.uploadedByUserId.trim()
@@ -805,6 +815,8 @@ function normalizeNested(
     ...(esignTemplateFileId ? { esignTemplateFileId } : {}),
     ...(esignAwaitingSponsorSignature ? { esignAwaitingSponsorSignature: true } : {}),
     ...(esignSponsorSigned ? { esignSponsorSigned: true } : {}),
+    ...(esignOpenSponsorSign ? { esignOpenSponsorSign: true } : {}),
+    ...(esignSponsorSignerEmails.length > 0 ? { esignSponsorSignerEmails } : {}),
     ...(uploadedByUserId ? { uploadedByUserId } : {}),
     ...(uploadedByIsCoSponsor ? { uploadedByIsCoSponsor: true } : {}),
   }

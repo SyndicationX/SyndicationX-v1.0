@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import emailConfig, {
   outgoingMailCcBcc,
   smtpEnvelopeForSendMail,
@@ -152,7 +152,58 @@ async function ownedRows(
   const rows = await db
     .select()
     .from(dealInvestment)
-    .where(eq(dealInvestment.dealId, dealId));
+    .where(
+      and(
+        eq(dealInvestment.dealId, dealId),
+        isNull(dealInvestment.removedAt),
+        isNull(dealInvestment.investorUnlinkedAt),
+      ),
+    );
+
+  const owned: DealInvestmentRow[] = [];
+  for (const row of rows) {
+    const cid = String(row.contactId ?? "").trim().toLowerCase();
+    if (cid && keys.has(cid)) {
+      owned.push(row);
+      continue;
+    }
+    if (!cid) continue;
+    const email = await resolveEmailForContactMemberId(row.contactId);
+    if (email && email === viewerEmail) owned.push(row);
+  }
+  return owned;
+}
+
+/**
+ * Investments a sponsor or platform admin removed. Only the owning investor
+ * receives these, so they can see the commitment in Archives. They cannot restore it.
+ */
+export async function listSponsorRemovedInvestmentsForViewer(
+  dealId: string,
+  viewerUserId: string,
+  viewerEmail: string,
+): Promise<DealInvestmentRow[]> {
+  const resolved = await resolveInvestNowViewerContactOnDeal({
+    dealId,
+    viewerEmailNorm: viewerEmail,
+    viewerUserId,
+  });
+  const keys = new Set<string>();
+  if (viewerUserId.trim()) keys.add(viewerUserId.trim().toLowerCase());
+  const contactId = String(resolved.contactMemberId ?? "").trim().toLowerCase();
+  if (contactId) keys.add(contactId);
+
+  const rows = await db
+    .select()
+    .from(dealInvestment)
+    .where(
+      and(
+        eq(dealInvestment.dealId, dealId),
+        eq(dealInvestment.isDraft, false),
+        eq(dealInvestment.removalAction, "remove_investment"),
+        isNotNull(dealInvestment.removedAt),
+      ),
+    );
 
   const owned: DealInvestmentRow[] = [];
   for (const row of rows) {
@@ -544,6 +595,27 @@ export async function setMyProfileArchived(params: {
   const wantedId = params.investmentId.trim().toLowerCase();
   const row = rows.find((item) => item.id.toLowerCase() === wantedId);
   if (!row) {
+    if (!params.archived) {
+      const [removed] = await db
+        .select({ id: dealInvestment.id, removedAt: dealInvestment.removedAt })
+        .from(dealInvestment)
+        .where(
+          and(
+            eq(dealInvestment.id, params.investmentId.trim()),
+            eq(dealInvestment.dealId, params.dealId),
+            isNotNull(dealInvestment.removedAt),
+          ),
+        )
+        .limit(1);
+      if (removed) {
+        return {
+          ok: false,
+          status: 409,
+          message:
+            "This investment was removed by the sponsor and cannot be restored.",
+        };
+      }
+    }
     return { ok: false, status: 404, message: "That profile is not on this deal." };
   }
 

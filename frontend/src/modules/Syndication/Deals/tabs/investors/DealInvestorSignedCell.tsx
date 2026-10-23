@@ -1,3 +1,4 @@
+import { CircleCheck, Clock3, Eye } from "lucide-react"
 import type { DealInvestorRow } from "../../types/deal-investors.types"
 import {
   investorRowShowsEsignStatusLink,
@@ -10,15 +11,21 @@ export interface DealInvestorSignedCellProps {
   onOpenEsignStatus?: (row: DealInvestorRow) => void
 }
 
-function signedColumnButtonClass(display: string): string {
+type SignedTone = "done" | "viewed" | "sent"
+
+function signedTone(display: string): SignedTone | null {
   const value = display.trim().toLowerCase()
-  if (value === "sent" || value === "pending") {
-    return "deal_inv_signed_btn deal_inv_signed_btn--sent"
-  }
-  if (value === "viewed") return "deal_inv_signed_btn deal_inv_signed_btn--viewed"
-  if (value === "signed") return "deal_inv_signed_btn deal_inv_signed_btn--signed"
-  if (value === "completed") return "deal_inv_signed_btn deal_inv_signed_btn--completed"
-  return "deal_inv_signed_btn"
+  if (!value || value === "—") return null
+  if (value === "sent" || value === "pending") return "sent"
+  if (value === "viewed") return "viewed"
+  return "done"
+}
+
+function SignedStatusIcon({ tone }: { tone: SignedTone }) {
+  const props = { size: 14, strokeWidth: 2, "aria-hidden": true as const }
+  if (tone === "sent") return <Clock3 {...props} />
+  if (tone === "viewed") return <Eye {...props} />
+  return <CircleCheck {...props} />
 }
 
 export function DealInvestorSignedCell({
@@ -41,13 +48,25 @@ export function DealInvestorSignedCell({
     })
   }
 
+  const tone = signedTone(display)
+  if (!tone) {
+    return <span className="deal_inv_signed_empty">—</span>
+  }
+
+  const className = `deal_inv_signed_pill deal_inv_signed_pill--${tone}`
+  const label = (
+    <>
+      <span className="deal_inv_signed_pill_icon">
+        <SignedStatusIcon tone={tone} />
+      </span>
+      <span className="deal_inv_signed_pill_label">{display}</span>
+    </>
+  )
+
   if (!clickable) {
     return (
-      <span
-        className="deal_inv_ellipsis_text"
-        title={display !== "—" ? display : undefined}
-      >
-        {display}
+      <span className={className} title={display}>
+        {label}
       </span>
     )
   }
@@ -55,7 +74,7 @@ export function DealInvestorSignedCell({
   return (
     <button
       type="button"
-      className={signedColumnButtonClass(display)}
+      className={className}
       title={`eSign status: ${display}. Click for details.`}
       onClick={(e) => {
         e.stopPropagation()
@@ -64,7 +83,7 @@ export function DealInvestorSignedCell({
         queueMicrotask(() => onOpenEsignStatus?.(targetRow))
       }}
     >
-      <span className="deal_inv_ellipsis_text">{display}</span>
+      {label}
     </button>
   )
 }

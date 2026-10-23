@@ -626,12 +626,27 @@ async function contactRowBelongsToOrganization(
   return false;
 }
 
+export async function stampContactsSignupAsByEmail(
+  emailNorm: string,
+  signupAs: string,
+): Promise<void> {
+  const email = normalizeContactEmailForScope(emailNorm);
+  const stored = String(signupAs ?? "").trim().toLowerCase();
+  if (!email.includes("@")) return;
+  if (stored !== "investor" && stored !== "syndicator" && stored !== "both") return;
+  await db
+    .update(contact)
+    .set({ signupAs: stored })
+    .where(sql`lower(trim(${contact.email})) = ${email}`);
+}
+
 export async function ensureSelfRegisteredInvestorContact(params: {
   userId: string;
   emailNorm: string;
   firstName: string;
   lastName: string;
   phone: string;
+  signupAs?: string;
 }): Promise<string | null> {
   const userId = String(params.userId ?? "").trim();
   const emailNorm = normalizeContactEmailForScope(params.emailNorm);
@@ -646,6 +661,13 @@ export async function ensureSelfRegisteredInvestorContact(params: {
 
   const firstName = String(params.firstName ?? "").trim();
   const lastName = String(params.lastName ?? "").trim();
+  const signupAsRaw = String(params.signupAs ?? "").trim().toLowerCase();
+  const signupAs =
+    signupAsRaw === "investor" ||
+    signupAsRaw === "syndicator" ||
+    signupAsRaw === "both"
+      ? signupAsRaw
+      : "";
 
   const [existing] = await db
     .select()
@@ -670,6 +692,7 @@ export async function ensureSelfRegisteredInvestorContact(params: {
           ? { fullName: buildContactFullName(nextFirstName, nextLastName) }
           : {}),
         ...(phoneStored ? { phone: phoneStored } : {}),
+        ...(signupAs ? { signupAs } : {}),
       })
       .where(eq(contact.id, existing.id))
       .returning();
@@ -699,6 +722,7 @@ export async function ensureSelfRegisteredInvestorContact(params: {
       visibleToUsers: false,
       relationship506b: "NO",
       importSource: "portal_signup",
+      ...(signupAs ? { signupAs } : {}),
     })
     .returning();
   if (inserted) queueGhlContactRowSync(inserted);

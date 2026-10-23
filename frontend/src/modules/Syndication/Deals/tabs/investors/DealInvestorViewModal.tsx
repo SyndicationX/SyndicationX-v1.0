@@ -102,6 +102,9 @@ interface DealInvestorViewModalProps {
   dealAllClassNamesLine: string
   /** When omitted, the Edit button is hidden (e.g. Distribution Details). */
   onEdit?: (row: DealInvestorRow) => void
+  /** Lead and admin sponsors cannot edit a co-sponsor's investor from this popup. */
+  editDisabled?: boolean
+  editDisabledTitle?: string
   /** When set, shows this-run payment snapshot above the history list. */
   distributionContext?: DealInvestorViewDistributionContext | null
   /** Deal id — loads compact distribution history in the Distributions tab. */
@@ -238,6 +241,8 @@ export function DealInvestorViewModal({
   investorClasses,
   dealAllClassNamesLine,
   onEdit,
+  editDisabled = false,
+  editDisabledTitle = "This investor was added by a co-sponsor. Only view is available.",
   distributionContext = null,
   dealId = null,
   initialSectionTab,
@@ -494,6 +499,7 @@ export function DealInvestorViewModal({
   const investedAmount = displayInvestorCommittedAmount(investorRow)
 
   function handleEdit() {
+    if (editDisabled) return
     onEdit?.(investorRow)
     onClose()
   }
@@ -887,6 +893,8 @@ export function DealInvestorViewModal({
                 <button
                   type="button"
                   className="um_btn_primary"
+                  disabled={editDisabled}
+                  title={editDisabled ? editDisabledTitle : undefined}
                   onClick={handleEdit}
                 >
                   <Pencil size={16} strokeWidth={2} aria-hidden />

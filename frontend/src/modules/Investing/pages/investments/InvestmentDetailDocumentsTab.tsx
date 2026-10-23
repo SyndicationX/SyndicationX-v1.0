@@ -1,11 +1,21 @@
-import { Download, Eye, FileSignature, FileText, Search } from "lucide-react"
+import {
+  Download,
+  Eye,
+  FileSignature,
+  FileText,
+  Pencil,
+  Search,
+  Trash2,
+} from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { InvestmentEsignSignModal } from "./InvestmentEsignSignModal"
 import { InvestorOfferingDocumentsList } from "./components/InvestorOfferingDocumentsList"
 import {
   fetchDealMyEsignDocuments,
+  postDealMyEsignWithdrawSignature,
   type DealMyEsignScopeQuery,
 } from "@/modules/Syndication/Deals/api/dealsApi"
+import { ConfirmDeleteModal } from "@/common/components/ConfirmDeleteModal"
 import "@/modules/Syndication/Deals/deal-offering-details.css"
 import { OFFERING_PREVIEW_SECTIONS_CHANGED_EVENT } from "@/modules/Syndication/Deals/utils/offeringPreviewDocSections"
 import type { DealInvestorRow } from "@/modules/Syndication/Deals/types/deal-investors.types"
@@ -153,6 +163,8 @@ function mapMyEsignApiDocuments(
       canSign: !signed && Boolean(d.signatureRequestId?.trim()),
       signatureRequestId: d.signatureRequestId?.trim() || undefined,
       categoryId: categoryId || undefined,
+      canRevise: Boolean(d.canRevise) && signed,
+      sponsorSigned: Boolean(d.sponsorSigned),
     }
   })
 }
@@ -321,6 +333,14 @@ export function InvestmentDetailDocumentsTab({
   const [signModalEsignScope, setSignModalEsignScope] = useState<
     DealMyEsignScopeQuery | undefined
   >(undefined)
+  const [revisePrompt, setRevisePrompt] = useState<{
+    mode: "edit" | "remove"
+    documentName: string
+    signatureRequestId: string
+    esignScope: DealMyEsignScopeQuery
+  } | null>(null)
+  const [reviseBusy, setReviseBusy] = useState(false)
+  const [reviseError, setReviseError] = useState<string | null>(null)
   const fetchGenRef = useRef(0)
   const autoEsignTabRef = useRef(false)
 
@@ -360,6 +380,66 @@ export function InvestmentDetailDocumentsTab({
     },
     [],
   )
+
+  const requestEsignRevise = useCallback(
+    (
+      mode: "edit" | "remove",
+      doc: InvestmentDetailDocumentRow,
+      esignScope: DealMyEsignScopeQuery,
+    ) => {
+      const signatureRequestId = doc.signatureRequestId?.trim()
+      if (!signatureRequestId || !doc.canRevise || reviseBusy) return
+      setReviseError(null)
+      setRevisePrompt({
+        mode,
+        documentName: doc.name,
+        signatureRequestId,
+        esignScope,
+      })
+    },
+    [reviseBusy],
+  )
+
+  const confirmEsignRevise = useCallback(async () => {
+    const prompt = revisePrompt
+    const id = dealId.trim()
+    if (!prompt || !id || reviseBusy) return
+    setReviseBusy(true)
+    setReviseError(null)
+    const result = await postDealMyEsignWithdrawSignature(
+      id,
+      prompt.signatureRequestId,
+      prompt.esignScope,
+      prompt.mode === "edit" ? { preserveFieldValues: true } : undefined,
+    )
+    if (!result.ok) {
+      setReviseError(result.message)
+      setReviseBusy(false)
+      return
+    }
+    let aud = audience
+    try {
+      aud = await buildInvestmentDocumentAudience(id)
+      setAudience(aud)
+    } catch {
+      /* keep prior audience */
+    }
+    await reloadEsignProfileCards(id, aud.viewerRows, profileNameByBookId)
+    setSectionsRevision((n) => n + 1)
+    setReviseBusy(false)
+    setRevisePrompt(null)
+    if (prompt.mode === "edit") {
+      openSignModal(prompt.signatureRequestId, prompt.esignScope)
+    }
+  }, [
+    revisePrompt,
+    dealId,
+    reviseBusy,
+    audience,
+    reloadEsignProfileCards,
+    profileNameByBookId,
+    openSignModal,
+  ])
 
   useEffect(() => {
     const id = dealId.trim()
@@ -589,6 +669,7 @@ export function InvestmentDetailDocumentsTab({
               onSearchQueryChange={setQuery}
               firstPendingSign={firstPendingSign}
               onOpenSignModal={openSignModal}
+              onRequestRevise={requestEsignRevise}
             />
           )}
         </div>
@@ -617,6 +698,34 @@ export function InvestmentDetailDocumentsTab({
             await reloadEsignProfileCards(id, aud.viewerRows, profileNameByBookId)
             setSectionsRevision((n) => n + 1)
           })()
+        }}
+      />
+
+      <ConfirmDeleteModal
+        open={revisePrompt != null}
+        title={
+          revisePrompt?.mode === "edit" ? "Edit signature" : "Remove signature"
+        }
+        message={
+          revisePrompt?.mode === "edit"
+            ? `Your filled information stays on this document so you can update it. This stays available until the sponsor signs.${
+                reviseError ? ` ${reviseError}` : ""
+              }`
+            : `This removes your completed signature. The document stays here so you can sign it again. This stays available until the sponsor signs.${
+                reviseError ? ` ${reviseError}` : ""
+              }`
+        }
+        itemLabel={revisePrompt?.documentName}
+        busy={reviseBusy}
+        confirmLabel={revisePrompt?.mode === "edit" ? "Edit" : "Remove"}
+        busyLabel={revisePrompt?.mode === "edit" ? "Opening…" : "Removing…"}
+        onCancel={() => {
+          if (reviseBusy) return
+          setRevisePrompt(null)
+          setReviseError(null)
+        }}
+        onConfirm={() => {
+          void confirmEsignRevise()
         }}
       />
     </div>
@@ -725,11 +834,17 @@ function OfferingDocumentsPanel({
 function EsignProfileTypeCardsGrid({
   cards,
   onOpenSignModal,
+  onRequestRevise,
 }: {
   cards: EsignProfileCardData[]
   onOpenSignModal: (
     signatureRequestId?: string | null,
     esignScope?: DealMyEsignScopeQuery,
+  ) => void
+  onRequestRevise: (
+    mode: "edit" | "remove",
+    doc: InvestmentDetailDocumentRow,
+    esignScope: DealMyEsignScopeQuery,
   ) => void
 }) {
   return (
@@ -776,6 +891,11 @@ function EsignProfileTypeCardsGrid({
                 {card.documents.map((doc) => {
                   const url = doc.url?.trim() || ""
                   const canSign = Boolean(doc.canSign)
+                  const canRevise = Boolean(
+                    doc.canRevise && doc.signatureRequestId?.trim(),
+                  )
+                  const viewOnly =
+                    doc.esignStatus === "signed" && !canRevise
                   const canViewFile =
                     Boolean(url) &&
                     (doc.source !== "esign" || doc.esignStatus === "signed")
@@ -806,31 +926,71 @@ function EsignProfileTypeCardsGrid({
                           aria-label={`${doc.name} actions`}
                         >
                           {canViewFile ? (
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="deal_docs_ui_doc_icon_btn deal_docs_ui_doc_icon_link"
+                              title="View"
+                              aria-label={`View ${doc.name}`}
+                            >
+                              <Eye size={16} strokeWidth={2} aria-hidden />
+                            </a>
+                          ) : null}
+                          {canViewFile && !viewOnly ? (
+                            <a
+                              href={url}
+                              download={safeDownloadFilename(doc.name)}
+                              rel="noopener noreferrer"
+                              className="deal_docs_ui_doc_icon_btn deal_docs_ui_doc_icon_link"
+                              title="Download"
+                              aria-label={`Download ${doc.name}`}
+                            >
+                              <Download
+                                size={16}
+                                strokeWidth={2}
+                                aria-hidden
+                              />
+                            </a>
+                          ) : null}
+                          {canRevise ? (
                             <>
-                              <a
-                                href={url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="deal_docs_ui_doc_icon_btn deal_docs_ui_doc_icon_link"
-                                title="View"
-                                aria-label={`View ${doc.name}`}
+                              <button
+                                type="button"
+                                className="investment_detail_esign_card_doc_sign_btn"
+                                aria-label={`Edit ${doc.name}`}
+                                title="Edit signature before the sponsor signs"
+                                onClick={() =>
+                                  onRequestRevise("edit", doc, card.esignScope)
+                                }
                               >
-                                <Eye size={16} strokeWidth={2} aria-hidden />
-                              </a>
-                              <a
-                                href={url}
-                                download={safeDownloadFilename(doc.name)}
-                                rel="noopener noreferrer"
-                                className="deal_docs_ui_doc_icon_btn deal_docs_ui_doc_icon_link"
-                                title="Download"
-                                aria-label={`Download ${doc.name}`}
-                              >
-                                <Download
-                                  size={16}
+                                <Pencil
+                                  size={15}
                                   strokeWidth={2}
                                   aria-hidden
                                 />
-                              </a>
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                className="investment_detail_esign_card_doc_sign_btn investment_detail_esign_card_doc_sign_btn--remove"
+                                aria-label={`Remove ${doc.name}`}
+                                title="Remove your signature before the sponsor signs"
+                                onClick={() =>
+                                  onRequestRevise(
+                                    "remove",
+                                    doc,
+                                    card.esignScope,
+                                  )
+                                }
+                              >
+                                <Trash2
+                                  size={15}
+                                  strokeWidth={2}
+                                  aria-hidden
+                                />
+                                Remove
+                              </button>
                             </>
                           ) : null}
                           {canSign ? (
@@ -853,7 +1013,7 @@ function EsignProfileTypeCardsGrid({
                               Sign
                             </button>
                           ) : null}
-                          {!url && !canSign ? (
+                          {!url && !canSign && !canRevise ? (
                             <span className="investment_detail_offering_doc_unavailable">
                               Unavailable
                             </span>
@@ -883,6 +1043,7 @@ function EsignaturesDocumentsPanel({
   onSearchQueryChange,
   firstPendingSign,
   onOpenSignModal,
+  onRequestRevise,
 }: {
   esignPending: boolean
   esignLoadError: string | null
@@ -899,6 +1060,11 @@ function EsignaturesDocumentsPanel({
   onOpenSignModal: (
     signatureRequestId?: string | null,
     esignScope?: DealMyEsignScopeQuery,
+  ) => void
+  onRequestRevise: (
+    mode: "edit" | "remove",
+    doc: InvestmentDetailDocumentRow,
+    esignScope: DealMyEsignScopeQuery,
   ) => void
 }) {
   const hasAny = esignProfileCards.length > 0
@@ -1010,6 +1176,7 @@ function EsignaturesDocumentsPanel({
               <EsignProfileTypeCardsGrid
                 cards={esignProfileCards}
                 onOpenSignModal={onOpenSignModal}
+                onRequestRevise={onRequestRevise}
               />
             </>
           )}

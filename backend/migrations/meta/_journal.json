@@ -764,6 +764,34 @@
       "when": 1896000000000,
       "tag": "0109_investor_deal_participation",
       "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1896050000000,
+      "tag": "0110_deal_member_removal_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1896100000000,
+      "tag": "0111_user_signup_as",
+      "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1896150000000,
+      "tag": "0112_contact_signup_as",
+      "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1896160000000,
+      "tag": "0113_investor_investment_removal",
+      "breakpoints": true
     }
   ]
 }

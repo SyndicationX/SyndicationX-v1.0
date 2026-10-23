@@ -288,6 +288,7 @@ export async function getDealMyEsignSignSession(params: {
       const refreshed = applyEditableSigningDatePrefill(
         limited.fields,
         investorRecipientId,
+        { fillEmptyOnly: true },
       );
       if (restored.changed || limited.changed || refreshed.changed) {
         liveDoc = await patchSignFlowDocument(sigId, {

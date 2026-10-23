@@ -99,6 +99,13 @@ function normalizeNested(
       : undefined;
   const esignAwaitingSponsorSignature = Boolean(raw.esignAwaitingSponsorSignature);
   const esignSponsorSigned = Boolean(raw.esignSponsorSigned);
+  const esignOpenSponsorSign = raw.esignOpenSponsorSign === true;
+  const esignSponsorSignerEmails = Array.isArray(raw.esignSponsorSignerEmails)
+    ? raw.esignSponsorSignerEmails
+        .map((value) => (typeof value === "string" ? value.trim().toLowerCase() : ""))
+        .filter((email) => email.includes("@"))
+        .slice(0, 40)
+    : [];
   const uploadedByUserId =
     typeof raw.uploadedByUserId === "string" && raw.uploadedByUserId.trim()
       ? clipStr(raw.uploadedByUserId.trim(), 120)
@@ -126,6 +133,10 @@ function normalizeNested(
       ? { esignAwaitingSponsorSignature: true }
       : {}),
     ...(esignSponsorSigned ? { esignSponsorSigned: true } : {}),
+    ...(esignOpenSponsorSign ? { esignOpenSponsorSign: true } : {}),
+    ...(esignSponsorSignerEmails.length > 0
+      ? { esignSponsorSignerEmails }
+      : {}),
   };
 }
 

@@ -38,6 +38,10 @@ export type InvestmentDetailDocumentRow = {
   categoryId?: string
   /** Per-document signature state (E-signatures sub-tab only). */
   esignStatus?: "pending" | "signed"
+  /** Investor finished signing and the sponsor has not. */
+  canRevise?: boolean
+  /** Sponsor signature is stored. View only. */
+  sponsorSigned?: boolean
 }
 
 export type InvestmentDetailDocumentSectionGroup = {

@@ -20,6 +20,7 @@ import {
   type MouseEvent,
 } from "react"
 import { createPortal } from "react-dom"
+import { FormTooltip } from "@/common/components/form-tooltip/FormTooltip"
 import { toast } from "@/common/components/Toast"
 import {
   postDealEsignAddInvestorDataField,
@@ -641,12 +642,26 @@ export function SignFlowEmbeddedEditor({
                 Select which investor profile value should auto-populate, choose
                 which profiles see it, then add it to the PDF.
               </p>
-              <label
-                htmlFor={fieldSelectId}
-                className="signflow_editor_data_panel_label"
-              >
-                Choose field
-              </label>
+              <div className="signflow_editor_data_panel_label_row">
+                <label
+                  htmlFor={fieldSelectId}
+                  className="signflow_editor_data_panel_label"
+                >
+                  Choose field
+                </label>
+                <FormTooltip
+                  label="How chosen fields are filled"
+                  placement="bottom"
+                  panelAlign="start"
+                  content={
+                    <div className="signflow_editor_field_sides_tip">
+                      <p>
+                        Fields chosen will auto-fill with the investor’s data.
+                      </p>
+                    </div>
+                  }
+                />
+              </div>
               <div
                 className="signflow_editor_field_picker"
                 ref={fieldPickerRef}

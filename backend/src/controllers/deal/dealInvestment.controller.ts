@@ -6,7 +6,10 @@ import {
   resolveDealViewerScope,
 } from "../../services/deal/dealAccess.service.js";
 import { resolveLpViewerEmailNorm } from "../../services/deal/dealLpViewerIdentity.service.js";
-import { omitArchivedCommitmentsHiddenFromViewer } from "../../services/deal/investorParticipation.service.js";
+import {
+  listSponsorRemovedInvestmentsForViewer,
+  omitArchivedCommitmentsHiddenFromViewer,
+} from "../../services/deal/investorParticipation.service.js";
 import { requestedOrganizationIdFromRequest } from "../../services/org/orgResolution.service.js";
 import {
   filterRowsBySearch,
@@ -296,8 +299,37 @@ export async function getDealInvestors(
       user.id,
       withAddedBy,
     );
+    const sponsorRemoved = await listSponsorRemovedInvestmentsForViewer(
+      dealId,
+      user.id,
+      viewerEmail,
+    );
+    const removedContacts = new Set(
+      sponsorRemoved
+        .map((row) => String(row.contactId ?? "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const mappedRemoved =
+      sponsorRemoved.length > 0
+        ? await mapDealInvestmentsToInvestorApi(sponsorRemoved)
+        : [];
+    const investorsForViewer = [
+      ...investors.filter((inv) => {
+        const kind = String(
+          (inv as { investorKind?: string }).investorKind ?? "",
+        );
+        if (kind !== "lp_roster" && kind !== "lp_investor") return true;
+        const cid = String(inv.contactId ?? "").trim().toLowerCase();
+        return !removedContacts.has(cid);
+      }),
+      ...mappedRemoved.map((row) => ({
+        ...row,
+        investorArchived: false,
+        sponsorRemoved: true,
+      })),
+    ];
     const kpis = buildInvestorKpisFromRows(rows);
-    const page = pageInvestorRows(investors, pageQuery);
+    const page = pageInvestorRows(investorsForViewer, pageQuery);
     res.status(200).json({
       kpis,
       investors: page.items,

@@ -96,10 +96,10 @@ a.sponsor_dash_add_link.um_btn_secondary {
   margin-bottom: 2rem;
 }
 
-/* Investing dashboard has 4 KPIs — span full content width (not syndicating's 5-col grid). */
+/* Investing dashboard uses the same 3-card row as the syndicating dashboard. */
 @media (min-width: 1024px) {
   .sponsor_dash_investing .sponsor_dash_metrics {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 

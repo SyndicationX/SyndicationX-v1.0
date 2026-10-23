@@ -194,16 +194,25 @@
   }
 }
 
-/* Investors / Members: always allow horizontal scroll when columns exceed the card width. */
+/* Investors / General Partners: the scroll region is the only horizontal scroller.
+   The card shell stays clipped so the arrow buttons move the columns, not an outer box. */
+.deal_inv_table_panel .um_table_wrap.data_table_shell {
+  overflow-x: hidden;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .deal_inv_table_panel
   .um_table_wrap.data_table_shell
   .data_table_scroll_region.data_table_scroll_region_sticky_first,
 .deal_inv_table_panel
   .um_table_wrap.data_table_shell
   .data_table_scroll_region:has(.um_table.deal_inv_table),
-.deal_inv_table_panel .data_table_scroll_region,
-.deal_inv_table_panel .um_table_wrap.data_table_shell {
+.deal_inv_table_panel .data_table_scroll_region {
   overflow-x: auto;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-x: contain;
 }
@@ -1396,4 +1405,273 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+.deal_inv_company_groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  /* padding: 0.85rem 1rem 1.1rem; */
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.deal_inv_company_groups_bar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.deal_inv_company_groups_toggle_all {
+  margin: 0;
+  padding: 0.1rem 0.15rem;
+  border: 0;
+  background: none;
+  color: var(--portal-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.deal_inv_company_groups_toggle_all:hover {
+  color: var(--portal-text);
+}
+
+.deal_inv_company_groups_toggle_all:focus-visible {
+  outline: 2px solid var(--portal-gold-accent, #d4af37);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.deal_inv_company_group {
+  border: 1px solid var(--portal-border);
+  border-radius: 10px;
+  background: var(--portal-surface, #fff);
+  overflow: hidden;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  /* Opening the group must not stretch the card to the table's content width. */
+  contain: inline-size;
+}
+
+.deal_inv_company_group_toggle {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0;
+  padding: 0.8rem 0.95rem;
+  border: 0;
+  background: color-mix(
+    in srgb,
+    var(--portal-surface, #fff) 88%,
+    var(--portal-text, #0f172a) 5%
+  );
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.deal_inv_company_group_toggle:hover {
+  background: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 12%,
+    var(--portal-surface, #fff)
+  );
+}
+
+.deal_inv_company_group_toggle:focus-visible {
+  outline: 2px solid var(--portal-gold-accent, #d4af37);
+  outline-offset: -2px;
+}
+
+.deal_inv_company_group_chevron {
+  flex-shrink: 0;
+  color: var(--portal-text-muted);
+  transform: rotate(-90deg);
+  transition: transform 0.16s ease;
+}
+
+.deal_inv_company_group_chevron.is-open {
+  transform: rotate(0deg);
+  color: var(--portal-text);
+}
+
+.deal_inv_company_group_mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex-shrink: 0;
+  border-radius: 0.45rem;
+  background: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 18%,
+    transparent
+  );
+  color: var(--portal-text);
+}
+
+.deal_inv_company_group_name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--portal-text);
+}
+
+.deal_inv_company_group_aside {
+  margin-left: auto;
+  display: grid;
+  grid-template-columns: var(--deal-inv-company-count-w, 8.75rem) max-content;
+  align-items: center;
+  column-gap: 0.85rem;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.deal_inv_company_group_count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: var(--deal-inv-company-count-w, 8.75rem);
+  padding: 0.22rem 0.65rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--portal-border, #e2e8f0) 75%, transparent);
+  color: var(--portal-text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.deal_inv_company_group_committed {
+  display: grid;
+  grid-template-columns: max-content var(--deal-inv-company-committed-w, 8.5rem);
+  align-items: baseline;
+  column-gap: 0.4rem;
+  color: var(--portal-text);
+}
+
+.deal_inv_company_group_committed_label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--portal-text-muted);
+}
+
+.deal_inv_company_group_committed_value {
+  width: var(--deal-inv-company-committed-w, 8.5rem);
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.deal_inv_company_group_aside_sponsor {
+  grid-template-columns: max-content max-content max-content;
+  column-gap: 1.15rem;
+}
+
+.deal_inv_company_group_metric {
+  display: grid;
+  align-items: baseline;
+  column-gap: 0.4rem;
+}
+
+.deal_inv_company_group_metric_count {
+  grid-template-columns: max-content var(--deal-inv-company-count-w, 2.5rem);
+}
+
+.deal_inv_company_group_metric_sponsor {
+  grid-template-columns: max-content var(--deal-inv-company-sponsor-w, 8.5rem);
+}
+
+.deal_inv_company_group_metric_investors {
+  grid-template-columns: max-content var(--deal-inv-company-investor-w, 8.5rem);
+}
+
+.deal_inv_company_group_count_value {
+  width: var(--deal-inv-company-count-w, 2.5rem);
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--portal-text);
+}
+
+.deal_inv_company_group_metric_sponsor .deal_inv_company_group_committed_value {
+  width: var(--deal-inv-company-sponsor-w, 8.5rem);
+}
+
+.deal_inv_company_group_metric_investors .deal_inv_company_group_committed_value {
+  width: var(--deal-inv-company-investor-w, 8.5rem);
+}
+
+.deal_inv_company_group.is-open .deal_inv_company_group_count {
+  background: color-mix(
+    in srgb,
+    var(--portal-gold-accent, #d4af37) 20%,
+    transparent
+  );
+  color: var(--portal-text);
+}
+
+.deal_inv_company_group_body {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.deal_inv_company_group_body .um_table_wrap.data_table_shell,
+.deal_inv_company_group_body .data_table_scroll_region {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.deal_inv_company_group_body .um_table_wrap.data_table_shell {
+  overflow-x: hidden;
+}
+
+.deal_inv_company_group_body .data_table_scroll_region {
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+}
+
+.deal_inv_company_group_body .um_table_wrap.data_table_shell {
+  border: none;
+  border-radius: 0;
+  border-top: 1px solid var(--portal-border);
+  box-shadow: none;
+}
+
+.deal_inv_company_groups_empty {
+  margin: 0;
+  padding: 2.5rem 1rem;
+  text-align: center;
+  color: var(--portal-text-muted);
+  font-size: 0.9375rem;
 }

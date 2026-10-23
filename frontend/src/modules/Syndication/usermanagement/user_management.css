@@ -41,6 +41,13 @@
   padding-bottom: 0.45em;
 }
 
+.um_users_roles_scope {
+  margin: -0.15em 0 0.85em;
+  color: var(--portal-text-muted, #64748b);
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
 .um_header_row {
   display: flex;
   flex-wrap: wrap;
@@ -1047,6 +1054,23 @@ select option {
   padding-right: 0.5em;
 }
 
+.um_th_serial,
+.um_td_serial {
+  width: 3.25rem;
+  min-width: 3.25rem;
+  max-width: 3.25rem;
+  text-align: center;
+  vertical-align: middle;
+  font-variant-numeric: tabular-nums;
+  color: var(--portal-text-muted, #64748b);
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+  box-sizing: border-box;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
 /* Row selection (Members & Contacts datatables) */
 .um_th_checkbox,
 .um_td_checkbox {
@@ -1744,7 +1768,7 @@ a.um_member_subpage_cancel.um_btn_secondary {
 
 /* Sortable headers: no th padding so the control fills the full column cell.
    Exclude checkbox + actions so header select-all aligns with row checkboxes. */
-.um_table_sortable thead th:not(.um_th_actions):not(.um_th_checkbox) {
+.um_table_sortable thead th:not(.um_th_actions):not(.um_th_checkbox):not(.um_th_serial) {
   padding: 0;
   vertical-align: middle;
   /* position: relative; */

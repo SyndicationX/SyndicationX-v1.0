@@ -96,6 +96,11 @@ export interface DealInvestorRow {
   investedAtIso?: string
   /** Set when the investor archived this commitment in Investing. */
   investorArchived?: boolean
+  /**
+   * A sponsor or platform admin removed this investment. It stays in the
+   * investor's archive and cannot be restored.
+   */
+  sponsorRemoved?: boolean
   /** Set when Invest Now Finish records the commitment. */
   commitmentCompletedAtIso?: string
   /** Portal user who added this investor (`deal_lp_investor` / `deal_member.added_by`). */

@@ -490,7 +490,7 @@ export function normalizeSignFlowChoiceFieldOptionNumbers(
     groupByOriginalIndex.set(
       entry.index,
       entry.explicitGroup
-        ? `${entry.type}|${entry.recipientId}|${entry.page}|explicit-${entry.explicitGroup}`
+        ? `${entry.type}|${entry.recipientId}|explicit-${entry.explicitGroup}`
         : `${entry.type}|${entry.recipientId}|${entry.page}|field-${entry.index}`,
     );
   }

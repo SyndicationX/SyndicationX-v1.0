@@ -192,7 +192,7 @@ export async function getUsers(req: Request, res: Response): Promise<void> {
       ? String(actor.organizationId).trim()
       : undefined;
   let filterOrganizationId = isPlatformAdminRole(role)
-    ? orgFromQuery ?? orgFromActor
+    ? orgFromQuery
     : undefined;
 
   if (isCompanyAdminRole(role) && orgFromQuery && ORG_UUID_RE.test(orgFromQuery)) {

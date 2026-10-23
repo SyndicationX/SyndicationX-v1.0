@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db, pool } from "../../database/db.js";
 import { contact, dealMember, users } from "../../schema/schema.js";
 import {
@@ -347,6 +347,13 @@ export function syntheticInvestmentFromDealLpInvestor(
     commitmentInvestorEmailSentAt: null,
     commitmentSponsorEmailSentAt: null,
     investorArchivedAt: null,
+    removedAt: null,
+    removedByUserId: null,
+    removalReason: "",
+    removalAction: "",
+    investorUnlinkedAt: null,
+    investorUnlinkedByUserId: null,
+    investorUnlinkReason: "",
     extraContributionAmounts: [],
     documentStoragePath: null,
     createdAt: m.createdAt,
@@ -367,7 +374,11 @@ export async function mergeDealLpRosterIntoFullInvestorRows(
     .select()
     .from(dealLpInvestor)
     .where(
-      and(eq(dealLpInvestor.dealId, dealId), eq(dealLpInvestor.isDraft, false)),
+      and(
+        eq(dealLpInvestor.dealId, dealId),
+        eq(dealLpInvestor.isDraft, false),
+        isNull(dealLpInvestor.removedAt),
+      ),
     );
 
   const withInvestmentContact = new Set<string>();
@@ -447,7 +458,11 @@ export async function listMergedLpInvestorsForDeal(
     .select()
     .from(dealLpInvestor)
     .where(
-      and(eq(dealLpInvestor.dealId, dealId), eq(dealLpInvestor.isDraft, false)),
+      and(
+        eq(dealLpInvestor.dealId, dealId),
+        eq(dealLpInvestor.isDraft, false),
+        isNull(dealLpInvestor.removedAt),
+      ),
     )
     .orderBy(desc(dealLpInvestor.updatedAt));
 
@@ -575,7 +590,11 @@ export async function resolveLpRosterIdSet(
     .select({ id: dealLpInvestor.id })
     .from(dealLpInvestor)
     .where(
-      and(eq(dealLpInvestor.dealId, dealId), eq(dealLpInvestor.isDraft, false)),
+      and(
+        eq(dealLpInvestor.dealId, dealId),
+        eq(dealLpInvestor.isDraft, false),
+        isNull(dealLpInvestor.removedAt),
+      ),
     );
   const allowed = new Set(lpDb.map((r) => String(r.id).toLowerCase()));
   const out = new Set<string>();
@@ -602,7 +621,11 @@ export async function buildLpInvestorsFromMerged(
     .select()
     .from(dealLpInvestor)
     .where(
-      and(eq(dealLpInvestor.dealId, dealId), eq(dealLpInvestor.isDraft, false)),
+      and(
+        eq(dealLpInvestor.dealId, dealId),
+        eq(dealLpInvestor.isDraft, false),
+        isNull(dealLpInvestor.removedAt),
+      ),
     );
 
   const {
@@ -703,7 +726,11 @@ export async function enrichFullInvestorApiFromLpRoster(
     .select()
     .from(dealLpInvestor)
     .where(
-      and(eq(dealLpInvestor.dealId, dealId), eq(dealLpInvestor.isDraft, false)),
+      and(
+        eq(dealLpInvestor.dealId, dealId),
+        eq(dealLpInvestor.isDraft, false),
+        isNull(dealLpInvestor.removedAt),
+      ),
     );
 
   if (roster.length === 0) return investors;
@@ -880,6 +907,13 @@ export async function upsertDealLpInvestor(
         sendInvitationMail: sendToStore,
         isDraft: input.isDraft === true ? existing.isDraft : false,
         updatedAt: now,
+        ...(input.isDraft === true
+          ? {}
+          : {
+              removedAt: null,
+              removedByUserId: null,
+              removalReason: "",
+            }),
       })
       .where(eq(dealLpInvestor.id, existing.id))
       .returning();
@@ -1202,6 +1236,8 @@ export async function countExtraLpRosterOnlyByDealIds(
         and(
           eq(dealInvestment.dealId, dealId),
           inArray(dealInvestment.investor_role, [...LP_ROLE_SQL]),
+          isNull(dealInvestment.removedAt),
+          isNull(dealInvestment.investorUnlinkedAt),
         ),
       );
     const invKeys = new Set(
@@ -1214,6 +1250,7 @@ export async function countExtraLpRosterOnlyByDealIds(
         and(
           eq(dealLpInvestor.dealId, dealId),
           eq(dealLpInvestor.isDraft, false),
+          isNull(dealLpInvestor.removedAt),
         ),
       );
     let n = 0;

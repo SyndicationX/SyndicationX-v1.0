@@ -460,19 +460,31 @@ export async function applyMyInvestNowCommitmentAddon(
     if (scopedInvestmentId) {
         inv = invCandidates.find(
             (row) =>
+                !row.removedAt &&
                 isLpInvestorRole(row.investor_role) &&
                 String(row.id).trim().toLowerCase() ===
                     scopedInvestmentId.toLowerCase(),
         );
         if (!inv) {
-            return {
-                ok: false,
-                message: "The selected investment was not found for this deal.",
-            };
+            const removedMatch = invCandidates.find(
+                (row) =>
+                    Boolean(row.removedAt) &&
+                    isLpInvestorRole(row.investor_role) &&
+                    String(row.id).trim().toLowerCase() ===
+                        scopedInvestmentId.toLowerCase(),
+            );
+            if (!removedMatch) {
+                return {
+                    ok: false,
+                    message: "The selected investment was not found for this deal.",
+                };
+            }
         }
     }
     else {
         for (const row of invCandidates) {
+            if (row.removedAt)
+                continue;
             if (!isLpInvestorRole(row.investor_role))
                 continue;
             if (scopedUip) {
@@ -494,6 +506,8 @@ export async function applyMyInvestNowCommitmentAddon(
     }
     if (!inv && !scopedInvestmentId && !scopedUip && !scopedProfile) {
         for (const row of invCandidates) {
+            if (row.removedAt)
+                continue;
             if (isLpInvestorRole(row.investor_role)) {
                 inv = row;
                 break;

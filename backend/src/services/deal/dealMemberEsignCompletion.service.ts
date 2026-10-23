@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { PDFDocument } from "pdf-lib";
@@ -41,6 +41,7 @@ import {
   getSignFlowDocument,
   getSignFlowDocumentSummary,
   isSignFlowInvestorNotSignedError,
+  resetSignFlowInvestorSignature,
   signFlowDocumentInvestorHasSigned,
   signFlowSummaryInvestorHasSigned,
   type SignFlowDocumentSummary,
@@ -50,6 +51,10 @@ import {
   syncCompletedEsignDocumentsToDocumentsTab,
 } from "./dealEsignDocumentsWorkspaceSync.service.js";
 import { runEsignStageNotificationsForTarget } from "./dealEsignStageNotificationEmail.service.js";
+import {
+  readLiveInvestorFieldValues,
+  restoreInvestorEsignFieldsForEdit,
+} from "./dealEsignInvestorFieldRestore.service.js";
 import { appendEsignDocumentTrailCertificate } from "./esignDocumentTrailPdf.service.js";
 
 function latestWorkflowIso(
@@ -135,6 +140,10 @@ export type MyEsignDocumentListItem = {
   status: "pending" | "signed";
   categoryId?: string;
   signatureRequestId?: string;
+  /** Sponsor signature is stored. The investor can view the document only. */
+  sponsorSigned?: boolean;
+  /** Investor finished signing and the sponsor has not. Edit and remove are allowed. */
+  canRevise?: boolean;
 };
 
 function listSignedEsignDocumentsForSend(
@@ -558,6 +567,10 @@ async function applyProgressFromSignFlow(
       includeFull: true,
     });
 
+    const investorFieldValues = await investorAnswersForCompletedSend(
+      sigId,
+      existing,
+    );
     await updateDealInvestorEsignSend(dealId, target, sigId, (current) => ({
       ...current,
       viewedAt: current.viewedAt ?? summary.lastViewedAt ?? completedAt,
@@ -568,6 +581,7 @@ async function applyProgressFromSignFlow(
         completedAt,
       completedAt,
       signatureRequestId: sigId,
+      ...(investorFieldValues.length ? { investorFieldValues } : {}),
       ...(pdfs.investorPath
         ? withInvestorSignedPdfFields(current, pdfs.investorPath)
         : {}),
@@ -626,6 +640,9 @@ async function applyProgressFromSignFlow(
       }
     }
 
+    const investorFieldValues = investorSigned
+      ? await investorAnswersForCompletedSend(sigId, existing)
+      : [];
     await updateDealInvestorEsignSend(dealId, target, sigId, (current) => ({
       ...current,
       viewedAt: current.viewedAt ?? progressViewed,
@@ -633,6 +650,7 @@ async function applyProgressFromSignFlow(
         ? (current.signedAt ?? progressSigned)
         : (progressSigned ?? null),
       signatureRequestId: sigId,
+      ...(investorFieldValues.length ? { investorFieldValues } : {}),
       ...(signedRelativePath
         ? withInvestorSignedPdfFields(current, signedRelativePath)
         : {}),
@@ -641,6 +659,19 @@ async function applyProgressFromSignFlow(
   }
 
   return alreadyComplete;
+}
+
+async function investorAnswersForCompletedSend(
+  signatureRequestId: string,
+  existing: StoredDealInvestorEsignSend,
+): Promise<NonNullable<StoredDealInvestorEsignSend["investorFieldValues"]>> {
+  if (existing.investorFieldValues?.length) return existing.investorFieldValues;
+  try {
+    return await readLiveInvestorFieldValues(signatureRequestId, []);
+  } catch (err) {
+    console.warn("investorAnswersForCompletedSend:", err);
+    return [];
+  }
 }
 
 function esignProviderCanSync(): boolean {
@@ -1254,7 +1285,24 @@ export async function listMyEsignDocumentsForInvestor(
       "";
     const sponsorState = investorFirstCounterSign
       ? await resolveEsignSponsorSignState(send)
-      : { sponsorSigned: true, awaitingSponsorSignature: false };
+      : {
+          sponsorSigned: true,
+          awaitingSponsorSignature: false,
+          sponsorMaySignBeforeInvestor: false,
+          openToAnySponsor: false,
+          pendingNamedSponsorEmails: [],
+        };
+
+    const revisionState = await resolveEsignSponsorSignState(send);
+    const investorActionComplete = Boolean(
+      send.signedAt?.trim() || send.completedAt?.trim(),
+    );
+    const canRevise =
+      investorActionComplete &&
+      !revisionState.sponsorSigned &&
+      !send.fullSignedRelativePath?.trim() &&
+      !send.sponsorSignedRelativePath?.trim() &&
+      Boolean(sig);
 
     if (sendHasStoredOrRecordedSignature(send)) {
       const fullyCompleted = Boolean(send.completedAt?.trim());
@@ -1279,7 +1327,11 @@ export async function listMyEsignDocumentsForInvestor(
           url: resolveEsignDocumentListUrl(send, d, templates),
           status,
           ...(categoryId ? { categoryId } : {}),
-          ...(canSignNow && sig ? { signatureRequestId: sig } : {}),
+          ...((canSignNow || canRevise) && sig
+            ? { signatureRequestId: sig }
+            : {}),
+          sponsorSigned: revisionState.sponsorSigned,
+          canRevise,
         });
       }
       continue;
@@ -1299,6 +1351,8 @@ export async function listMyEsignDocumentsForInvestor(
           ? { categoryId: categoryId || d.categoryId?.trim() }
           : {}),
         ...(canSignNow && sig ? { signatureRequestId: sig } : {}),
+        sponsorSigned: revisionState.sponsorSigned,
+        canRevise: false,
       });
     }
   }
@@ -1401,4 +1455,195 @@ export async function getInvestorEsignStatusWithDropboxSync(
   }
 
   return { status, sends, dropbox, syncedAt };
+}
+
+const SPONSOR_ALREADY_SIGNED_MESSAGE =
+  "The sponsor has already signed this document. You can view it, but you can no longer edit or remove your signature.";
+
+async function removeStoredEsignPdf(
+  relativePath: string | null | undefined,
+): Promise<void> {
+  const rel = relativePath?.trim().replace(/^\/+/, "");
+  if (!rel) return;
+  const abs = path.join(getUploadsPhysicalRoot(), rel);
+  try {
+    await unlink(abs);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT") {
+      console.warn("removeStoredEsignPdf:", err);
+    }
+  }
+}
+
+function clearInvestorSignatureOnSend(
+  current: StoredDealInvestorEsignSend,
+): StoredDealInvestorEsignSend {
+  const next: StoredDealInvestorEsignSend = {
+    ...current,
+    signedAt: null,
+    completedAt: null,
+    documents: (current.documents ?? []).map((doc) => {
+      const copy = { ...doc };
+      delete copy.signedRelativePath;
+      return copy;
+    }),
+  };
+  delete next.fullSignedRelativePath;
+  delete next.sponsorSignedRelativePath;
+  delete next.sponsorNotifiedAtInvestorSigned;
+  delete next.investorNotifiedAtSponsorSigned;
+  delete next.promotedToInvestorDocumentsAt;
+  return next;
+}
+
+/**
+ * Investor withdraws a completed signature before the sponsor signs.
+ * The packet stays on the deal so they can sign it again.
+ */
+export async function withdrawInvestorEsignBeforeSponsorSign(params: {
+  dealId: string;
+  target: InvestorEsignRowTarget;
+  signatureRequestId: string;
+  investorEmail: string;
+  /** Edit keeps filled answers. Remove clears them. */
+  preserveFieldValues?: boolean;
+}): Promise<{ ok: true } | { ok: false; message: string; code?: string }> {
+  const dealId = params.dealId.trim();
+  const sigId = params.signatureRequestId.trim();
+  const investorEmail = params.investorEmail.trim().toLowerCase();
+  if (!dealId || !sigId) {
+    return { ok: false, message: "Missing signature request" };
+  }
+
+  const raw = await readInvestorEsignStatusJson(dealId, params.target);
+  const bundle = parseEsignStatusBundle(raw);
+  const send = bundle
+    ? findEsignSendBySignatureRequestId(bundle, sigId)
+    : null;
+  if (!send) {
+    return { ok: false, message: "That e-sign document was not found" };
+  }
+
+  const investorSigned = Boolean(
+    send.signedAt?.trim() ||
+      send.completedAt?.trim() ||
+      (send.documents ?? []).some((doc) => doc.signedRelativePath?.trim()),
+  );
+  if (!investorSigned) {
+    return {
+      ok: false,
+      message: "Sign this document before editing or removing it",
+      code: "not_signed",
+    };
+  }
+
+  if (
+    send.completedAt?.trim() ||
+    send.fullSignedRelativePath?.trim() ||
+    send.sponsorSignedRelativePath?.trim()
+  ) {
+    return {
+      ok: false,
+      message: SPONSOR_ALREADY_SIGNED_MESSAGE,
+      code: "sponsor_signed",
+    };
+  }
+
+  const sponsorState = await resolveEsignSponsorSignState(send);
+  if (sponsorState.sponsorSigned) {
+    return {
+      ok: false,
+      message: SPONSOR_ALREADY_SIGNED_MESSAGE,
+      code: "sponsor_signed",
+    };
+  }
+
+  if (getActiveEsignProvider() !== "signflow") {
+    return {
+      ok: false,
+      message:
+        "Editing or removing a completed signature is available only before the sponsor signs, and only for SignFlow documents.",
+      code: "not_supported",
+    };
+  }
+
+  const preserveFieldValues = params.preserveFieldValues === true;
+  let savedFieldValues = send.investorFieldValues ?? [];
+  if (preserveFieldValues) {
+    try {
+      savedFieldValues = await readLiveInvestorFieldValues(
+        sigId,
+        savedFieldValues,
+      );
+    } catch (err) {
+      console.warn("readLiveInvestorFieldValues:", err);
+    }
+  }
+
+  try {
+    await resetSignFlowInvestorSignature({
+      documentId: sigId,
+      recipientEmail: investorEmail,
+      preserveFieldValues,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err ?? "");
+    if (message.includes("SPONSOR_ALREADY_SIGNED")) {
+      return {
+        ok: false,
+        message: SPONSOR_ALREADY_SIGNED_MESSAGE,
+        code: "sponsor_signed",
+      };
+    }
+    console.error("withdrawInvestorEsignBeforeSponsorSign:", err);
+    return {
+      ok: false,
+      message: message || "Could not update this signature",
+    };
+  }
+
+  const storedPaths = new Set<string>();
+  for (const doc of send.documents ?? []) {
+    const rel = doc.signedRelativePath?.trim();
+    if (rel) storedPaths.add(rel);
+  }
+  const fullPath = send.fullSignedRelativePath?.trim();
+  if (fullPath) storedPaths.add(fullPath);
+  const sponsorPath = send.sponsorSignedRelativePath?.trim();
+  if (sponsorPath) storedPaths.add(sponsorPath);
+  for (const rel of storedPaths) {
+    await removeStoredEsignPdf(rel);
+  }
+
+  if (preserveFieldValues) {
+    try {
+      savedFieldValues = await restoreInvestorEsignFieldsForEdit({
+        dealId,
+        target: params.target,
+        signatureRequestId: sigId,
+        investorEmail,
+        savedValues: savedFieldValues,
+      });
+    } catch (err) {
+      console.warn("restoreInvestorEsignFieldsForEdit:", err);
+    }
+  }
+
+  await updateDealInvestorEsignSend(dealId, params.target, sigId, (current) => {
+    const next = clearInvestorSignatureOnSend(current);
+    if (preserveFieldValues && savedFieldValues.length) {
+      return { ...next, investorFieldValues: savedFieldValues };
+    }
+    delete next.investorFieldValues;
+    return next;
+  });
+
+  try {
+    await syncCompletedEsignDocumentsToDocumentsTab(dealId);
+  } catch (err) {
+    console.warn("syncCompletedEsignDocumentsToDocumentsTab:", err);
+  }
+
+  return { ok: true };
 }

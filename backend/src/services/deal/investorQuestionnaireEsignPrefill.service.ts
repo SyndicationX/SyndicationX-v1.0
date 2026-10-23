@@ -634,6 +634,7 @@ export function applyEditableSigningDatePrefill<
 >(
   fields: T[],
   recipientId?: string,
+  options?: { fillEmptyOnly?: boolean },
 ): { fields: T[]; changed: boolean } {
   const today = resolveSigningDate();
   const rid = recipientId?.trim().toLowerCase();
@@ -646,6 +647,7 @@ export function applyEditableSigningDatePrefill<
     }
     const type = String(field.type ?? "").trim().toLowerCase();
     const value = String(field.value ?? "").trim();
+    if (options?.fillEmptyOnly && value) return field;
     if (type === "text" && value === today) return field;
     changed = true;
     return { ...field, type: "text", value: today };

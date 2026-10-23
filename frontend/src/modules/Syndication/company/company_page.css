@@ -46,11 +46,13 @@
   box-sizing: border-box;
 }
 
-/* Customers list: first column is company name (not a row-select checkbox). */
+/* Customers list: checkbox, serial number, then company name. */
 .company_page
-  .cp_companies_tab_panel.deal_inv_table_panel
+  .cp_companies_tab_panel.deals_list_table_panel
   .um_table.deal_inv_table.data_table_sticky_first {
-  --data-table-sticky-col-0-width: var(--cp-table-name-col-min, 16rem);
+  --data-table-sticky-col-0-width: 2.25rem;
+  --data-table-sticky-col-1-width: 3.25rem;
+  --data-table-sticky-col-2-width: var(--cp-table-name-col-min, 16rem);
 }
 
 .cp_company_list_name_th,
@@ -59,17 +61,68 @@
 }
 
 .company_page
-  .cp_companies_tab_panel.deal_inv_table_panel
+  .cp_companies_tab_panel.deals_list_table_panel
   .um_table.deal_inv_table.data_table_sticky_first
   th.data_table_col_sticky--0,
 .company_page
-  .cp_companies_tab_panel.deal_inv_table_panel
+  .cp_companies_tab_panel.deals_list_table_panel
   .um_table.deal_inv_table.data_table_sticky_first
   td.data_table_col_sticky--0 {
-  width: var(--data-table-sticky-col-0-width);
-  min-width: var(--data-table-sticky-col-0-width);
-  max-width: var(--data-table-sticky-col-0-width);
+  width: 2.25rem;
+  min-width: 2.25rem;
+  max-width: 2.25rem;
   box-sizing: border-box;
+  text-align: center;
+  vertical-align: middle;
+  padding-left: 0.35rem;
+  padding-right: 0.15rem;
+}
+
+.company_page
+  .cp_companies_tab_panel.deals_list_table_panel
+  .um_table.deal_inv_table.data_table_sticky_first
+  th.data_table_col_sticky--1,
+.company_page
+  .cp_companies_tab_panel.deals_list_table_panel
+  .um_table.deal_inv_table.data_table_sticky_first
+  td.data_table_col_sticky--1 {
+  left: 2.25rem;
+  width: var(--data-table-sticky-col-1-width);
+  min-width: var(--data-table-sticky-col-1-width);
+  max-width: var(--data-table-sticky-col-1-width);
+  box-sizing: border-box;
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+  text-align: center;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
+.company_page
+  .cp_companies_tab_panel.deals_list_table_panel
+  .um_table.deal_inv_table.data_table_sticky_first
+  th.data_table_col_sticky--2,
+.company_page
+  .cp_companies_tab_panel.deals_list_table_panel
+  .um_table.deal_inv_table.data_table_sticky_first
+  td.data_table_col_sticky--2 {
+  left: calc(
+    var(--data-table-sticky-col-0-width) + var(--data-table-sticky-col-1-width)
+  );
+  width: var(--data-table-sticky-col-2-width);
+  min-width: var(--data-table-sticky-col-2-width);
+  max-width: var(--data-table-sticky-col-2-width);
+  box-sizing: border-box;
+  padding-left: 0.35rem;
+}
+
+.company_page
+  .cp_companies_tab_panel.deals_list_table_panel
+  .um_table.deal_inv_table.data_table_sticky_first
+  th.data_table_col_sticky--1
+  .um_sort_header_ctl {
+  padding-left: 0.35rem;
 }
 
 .company_page
@@ -3554,6 +3607,12 @@ select.cp_settings_input_pill.um_field_select {
   background: var(--portal-surface, #fff);
 }
 
+.cp_billing_deal_mrr_loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .cp_billing_deal_mrr_history_empty,
 .cp_billing_deal_mrr_note {
   margin: 0;
@@ -3781,10 +3840,133 @@ select.cp_settings_input_pill.um_field_select {
   background: transparent;
 }
 .cp_settings_billing_tab_title {
-  margin: 0 0 0.25em;
+  margin: 0;
   font-size: 1.125em;
   font-weight: 600;
   color: var(--font-color-title, #0f172a);
+}
+
+.cp_billing_title_row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.25em;
+}
+
+.cp_billing_prev_plans_tip {
+  position: relative;
+  display: inline-flex;
+}
+
+.cp_billing_prev_plans_tip_label {
+  position: absolute;
+  left: calc(100% + 0.45rem);
+  top: 50%;
+  z-index: 2;
+  transform: translateY(-50%);
+  padding: 0.28rem 0.5rem;
+  border: 1px solid var(--portal-border, #e2e8f0);
+  border-radius: var(--portal-card-radius, 4px);
+  background: var(--portal-surface, #fff);
+  color: var(--portal-text, #0f172a);
+  box-shadow: 0 6px 16px color-mix(in srgb, #0f172a 12%, transparent);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.cp_billing_prev_plans_tip:hover .cp_billing_prev_plans_tip_label,
+.cp_billing_prev_plans_tip:focus-within .cp_billing_prev_plans_tip_label {
+  opacity: 1;
+}
+
+.cp_billing_prev_plans_btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--portal-border, #e2e8f0);
+  border-radius: var(--portal-pill-radius, 4px);
+  background: var(--portal-surface, #fff);
+  color: var(--portal-text-muted, #64748b);
+  cursor: pointer;
+}
+
+.cp_billing_prev_plans_btn:hover {
+  color: var(--portal-text, #0f172a);
+  background: var(--portal-primary-soft, #eff6ff);
+}
+
+.cp_billing_prev_plans_btn:focus-visible {
+  outline: 2px solid var(--portal-primary, #2563eb);
+  outline-offset: 2px;
+}
+
+.deal_stage_modal--prev_plans {
+  width: min(42rem, 100%);
+  max-height: min(90vh, 36rem);
+}
+
+.cp_billing_prev_plans_wrap {
+  overflow-x: auto;
+  border: 1px solid var(--portal-table-border, var(--portal-border, #e2e8f0));
+  border-radius: var(--portal-card-radius, 4px);
+}
+
+.cp_billing_prev_plans {
+  table-layout: auto;
+}
+
+.cp_billing_prev_plans tbody th {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.875rem;
+  font-weight: 400;
+  text-align: left;
+  background: transparent;
+}
+
+.cp_billing_prev_plans th:not(:first-child),
+.cp_billing_prev_plans td {
+  text-align: right;
+}
+
+.cp_billing_prev_product {
+  display: block;
+  font-weight: 600;
+  color: var(--portal-text, #0f172a);
+}
+
+.cp_billing_prev_size {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--portal-text-muted, #64748b);
+}
+
+.cp_billing_prev_price {
+  display: block;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--portal-text, #0f172a);
+}
+
+.cp_billing_prev_price + .cp_billing_prev_price {
+  margin-top: 0.15rem;
+}
+
+.cp_billing_prev_price span {
+  margin-left: 0.15rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--portal-text, #0f172a);
 }
 
 .cp_billing_header {
@@ -5018,6 +5200,27 @@ select.cp_settings_input_pill.um_field_select {
   margin-bottom: 1rem;
 }
 
+.cp_coupons_history .cp_coupons_status_tabs {
+  margin-bottom: 0.85rem;
+}
+
+.cp_coupons_history .cp_billing_deal_search_toolbar {
+  margin-bottom: 0.85rem;
+}
+
+.cp_coupon_sno_col {
+  width: 3.75rem;
+  min-width: 3.75rem;
+  max-width: 3.75rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.cp_coupon_discount_badge {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .cp_coupons_history .cp_billing_invoices_table_wrap {
   border: 0;
   box-shadow: none;
@@ -5090,8 +5293,9 @@ select.cp_settings_input_pill.um_field_select {
 }
 
 .cp_coupons_field {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto auto 2.6rem;
+  align-content: start;
   gap: 0.35rem;
   min-width: 0;
   font-size: 0.75rem;
@@ -5099,6 +5303,16 @@ select.cp_settings_input_pill.um_field_select {
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--portal-text-muted, #64748b);
+}
+
+.cp_coupons_field_error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .cp_coupons_field_label {
@@ -5135,22 +5349,29 @@ select.cp_settings_input_pill.um_field_select {
 
 .cp_coupons_input {
   width: 100%;
+  height: 2.5rem;
   min-width: 0;
+  min-height: 2.5rem;
   box-sizing: border-box;
-  padding: 0.5rem 0.65rem;
+  padding: 0 0.65rem;
   border: 1px solid var(--portal-border, #e2e8f0);
   border-radius: 8px;
-  background: var(--portal-surface, #fff);
+  background-color: var(--portal-surface, #fff);
   color: var(--font-color-title, #0f172a);
   font: inherit;
   font-size: 0.875rem;
   font-weight: 500;
+  line-height: 1.2;
   letter-spacing: 0;
   text-transform: none;
 }
 
+select.cp_coupons_input {
+  padding-right: 2.25rem;
+}
+
 .cp_coupons_input:disabled {
-  background: #f1f5f9;
+  background-color: #f1f5f9;
   color: #94a3b8;
   cursor: not-allowed;
 }
@@ -5158,11 +5379,16 @@ select.cp_settings_input_pill.um_field_select {
 .cp_coupons_submit {
   display: flex;
   align-items: end;
+  /* Match the reserved error line so the button stays level with the inputs. */
+  padding-bottom: calc(2.6rem + 0.35rem);
 }
 
 .cp_coupons_submit .um_btn_primary {
   display: inline-flex;
   align-items: center;
+  box-sizing: border-box;
+  height: 2.5rem;
+  min-height: 2.5rem;
   gap: 0.4rem;
 }
 

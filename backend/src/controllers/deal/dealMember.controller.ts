@@ -9,6 +9,8 @@ import {
   assertDealIdReadableOrAssignedParticipant,
   resolveDealViewerScope,
 } from "../../services/deal/dealAccess.service.js";
+import { removeInvestorOrInvestment } from "../../services/deal/investorInvestmentRemoval.service.js";
+import { parseRemovalRequest } from "../../services/deal/investorInvestmentRemoval.plan.js";
 import {
   deleteDealMemberRosterEntry,
   DealLeadSponsorValidationError,
@@ -822,6 +824,81 @@ export async function putDealMember(
 }
 
 /**
+ * POST /deals/:dealId/members/:rowId/removal
+ * Removes one investment, or the investor's association with it.
+ * Writes the audit row in the same transaction. Does not delete the user account.
+ */
+export async function postDealInvestorRemoval(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const dealId =
+    typeof req.params.dealId === "string"
+      ? req.params.dealId
+      : req.params.dealId?.[0];
+  const rowId =
+    typeof req.params.rowId === "string"
+      ? req.params.rowId
+      : req.params.rowId?.[0];
+  if (!dealId?.trim() || !rowId?.trim()) {
+    res.status(400).json({ message: "Missing deal id or row id" });
+    return;
+  }
+  const parsed = parseRemovalRequest(req.body);
+  if (!parsed.ok) {
+    res.status(parsed.status).json({ message: parsed.message });
+    return;
+  }
+  try {
+    const scope = await resolveDealViewerScope(
+      user.id,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    if (!(await assertDealIdInViewerScope(dealId, scope))) {
+      res.status(404).json({ message: "Deal not found" });
+      return;
+    }
+    const result = await removeInvestorOrInvestment({
+      dealId,
+      rowId,
+      actorUserId: user.id,
+      action: parsed.action,
+      reason: parsed.reason,
+      confirmed: parsed.confirmed,
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
+      return;
+    }
+    logSocDestructiveDealAction({
+      action:
+        parsed.action === "remove_investment"
+          ? "deal.investor_investment_remove"
+          : "deal.investor_association_remove",
+      actorUserId: user.id,
+      dealId: dealId.trim(),
+      resourceId: rowId.trim(),
+    });
+    res.status(200).json({
+      message:
+        parsed.action === "remove_investment"
+          ? "Investment removed"
+          : "Investor removed",
+      action: parsed.action,
+    });
+  } catch (err) {
+    console.error("postDealInvestorRemoval:", err);
+    res.status(500).json({ message: "Could not remove this record." });
+  }
+}
+
+/**
  * DELETE /deals/:dealId/members/:rowId — remove member from roster (investment id or deal_member id).
  */
 export async function deleteDealMember(
@@ -855,7 +932,14 @@ export async function deleteDealMember(
       res.status(404).json({ message: "Deal not found" });
       return;
     }
-    const result = await deleteDealMemberRosterEntry(dealId, rowId, user.id);
+    const scopeRaw = req.query.scope;
+    const scopeValue = Array.isArray(scopeRaw) ? scopeRaw[0] : scopeRaw;
+    const result = await deleteDealMemberRosterEntry(
+      dealId,
+      rowId,
+      user.id,
+      scopeValue === "team_member" ? "team_member" : "member",
+    );
     if (!result.ok) {
       res.status(404).json({ message: result.message });
       return;

@@ -5,7 +5,10 @@ import {
   dealMember,
   type DealMemberRow,
 } from "../../schema/deal.schema/deal-member.schema.js";
-import { dealMemberRemovalLogs } from "../../schema/deal.schema/deal-member-removal-log.schema.js";
+import {
+  dealMemberRemovalLogs,
+  type DealRosterRemovalSnapshot,
+} from "../../schema/deal.schema/deal-member-removal-log.schema.js";
 import {
   dealInvestment,
   type DealInvestmentRow,
@@ -23,12 +26,14 @@ import {
   enrichInvestorRolesForDealRows,
   formatCommittedUsdWhole,
   GENERAL_PARTNER_ROLE_STORED,
+  isDealCompanyUserStoredRole,
   isGeneralPartnerStoredRole,
   groupDealInvestmentsByCanonicalKey,
   listDealInvestmentsByDealId,
   mapContactIdsToCanonicalCommitmentKeys,
   loadInvitationMailSentFlags,
   mapRowToInvestorApi,
+  resolveUserCompanyNamesByIds,
   resolveUserDisplayNamesByIds,
   resolveUserInvestorProfileNamesByIds,
   resolveUsersByContactIds,
@@ -233,6 +238,13 @@ function syntheticInvestmentFromDealMember(m: DealMemberRow): DealInvestmentRow 
     commitmentInvestorEmailSentAt: null,
     commitmentSponsorEmailSentAt: null,
     investorArchivedAt: null,
+    removedAt: null,
+    removedByUserId: null,
+    removalReason: "",
+    removalAction: "",
+    investorUnlinkedAt: null,
+    investorUnlinkedByUserId: null,
+    investorUnlinkReason: "",
     extraContributionAmounts: [],
     documentStoragePath: null,
     createdAt: m.createdAt,
@@ -269,6 +281,13 @@ function syntheticInvestmentFromGpLpRoster(
     commitmentInvestorEmailSentAt: null,
     commitmentSponsorEmailSentAt: null,
     investorArchivedAt: null,
+    removedAt: null,
+    removedByUserId: null,
+    removalReason: "",
+    removalAction: "",
+    investorUnlinkedAt: null,
+    investorUnlinkedByUserId: null,
+    investorUnlinkReason: "",
     extraContributionAmounts: [],
     documentStoragePath: null,
     createdAt: m.createdAt,
@@ -1571,6 +1590,10 @@ export async function listDealMembersMappedToInvestorApi(
     new Set<string>(),
   );
 
+  const companyByContact = await resolveUserCompanyNamesByIds(
+    rowMeta.map((meta) => meta?.contactMemberId),
+  );
+
   const result = patched.map((r, i) => {
     const m = rowMeta[i];
     const invitationMailSent = invitationMailFlags[i] === true;
@@ -1589,10 +1612,14 @@ export async function listDealMembersMappedToInvestorApi(
     const userInvestorProfileName = profileKey
       ? profileNames.get(profileKey)
       : undefined;
+    const companyName = memberCk
+      ? String(companyByContact.get(memberCk) ?? "").trim()
+      : "";
     return {
       ...base,
       addedByDisplayName,
       addedInvestorsCommitted: formatCommittedUsdWhole(fromAdded),
+      ...(companyName ? { addedByCompanyName: companyName } : {}),
       ...(userInvestorProfileName
         ? { userInvestorProfileName }
         : {}),
@@ -1619,7 +1646,7 @@ function isPlaceholderRosterContact(raw: string): boolean {
  * Contacts who currently fill the Lead Sponsor slot. A saved `deal_member` role
  * wins over `deal_investment.investor_role` for the same person.
  */
-async function leadSponsorContactKeysForDeal(
+export async function leadSponsorContactKeysForDeal(
   dealId: string,
 ): Promise<Set<string>> {
   const keys = new Set<string>();
@@ -1870,100 +1897,294 @@ async function loadRosterRemovalSnapshot(
   return null;
 }
 
-async function deleteSnapshottedRosterEntry(
+/**
+ * General Partner (Lead / Admin / Co-sponsor / Deal Member) or Team Member
+ * (stored as General Partner). Matched on this contact id only.
+ */
+async function rosterRowKeptForContact(
+  dealId: string,
+  contactId: string,
+): Promise<boolean> {
+  const id = contactId.trim();
+  if (!id) return false;
+  const [member] = await db
+    .select({ role: dealMember.dealMemberRole })
+    .from(dealMember)
+    .where(
+      and(eq(dealMember.dealId, dealId), eq(dealMember.contactMemberId, id)),
+    )
+    .limit(1);
+  if (!member) return false;
+  return isDealCompanyUserStoredRole(member.role);
+}
+
+function emptyRemovalSnapshot(): DealRosterRemovalSnapshot {
+  return { investments: [], lpInvestors: [], rosterMember: null };
+}
+
+/** JSON-safe copy of a database row, including dates. */
+function completeRowSnapshot(row: unknown): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(row)) as Record<string, unknown>;
+}
+
+/**
+ * Team member removal: delete this contact's roster row only when its role is
+ * Team Member / General Partner. Investments, LP rows, other roles, and the
+ * contact record are left in place. Matched on this contact id only.
+ */
+async function deleteTeamMemberAssignmentForContact(
   tx: DealWriteTx,
   dealId: string,
-  snapshot: RosterRemovalSnapshot,
-): Promise<void> {
-  const contactId = snapshot.removedContactId;
-  if (snapshot.mode === "investment") {
-    if (!contactId) {
-      await tx
-        .delete(dealInvestment)
-        .where(
-          and(eq(dealInvestment.id, snapshot.removedRowId), eq(dealInvestment.dealId, dealId)),
-        );
-      return;
-    }
-    await tx
-      .delete(dealInvestment)
-      .where(
-        and(eq(dealInvestment.dealId, dealId), eq(dealInvestment.contactId, contactId)),
-      );
-    await tx
-      .delete(dealMember)
-      .where(
-        and(eq(dealMember.dealId, dealId), eq(dealMember.contactMemberId, contactId)),
-      );
-    await tx
-      .delete(dealLpInvestor)
-      .where(
-        and(
-          eq(dealLpInvestor.dealId, dealId),
-          eq(dealLpInvestor.contactMemberId, contactId),
-        ),
-      );
-    return;
-  }
+  contactId: string,
+): Promise<DealRosterRemovalSnapshot> {
+  const removed = emptyRemovalSnapshot();
+  const id = contactId.trim();
+  if (!id) return removed;
 
-  if (snapshot.mode === "member") {
-    await tx
-      .delete(dealMember)
-      .where(
-        and(eq(dealMember.id, snapshot.removedRowId), eq(dealMember.dealId, dealId)),
-      );
-    return;
-  }
-
-  if (!contactId) {
-    await tx
-      .delete(dealLpInvestor)
-      .where(
-        and(eq(dealLpInvestor.id, snapshot.removedRowId), eq(dealLpInvestor.dealId, dealId)),
-      );
-    return;
-  }
-  await tx
-    .delete(dealInvestment)
+  const [member] = await tx
+    .select()
+    .from(dealMember)
     .where(
-      and(eq(dealInvestment.dealId, dealId), eq(dealInvestment.contactId, contactId)),
-    );
-  await tx
+      and(eq(dealMember.dealId, dealId), eq(dealMember.contactMemberId, id)),
+    )
+    .limit(1);
+  if (!member || !isGeneralPartnerStoredRole(member.dealMemberRole)) {
+    return removed;
+  }
+
+  const [deletedMember] = await tx
     .delete(dealMember)
+    .where(and(eq(dealMember.id, member.id), eq(dealMember.dealId, dealId)))
+    .returning();
+  removed.rosterMember = deletedMember
+    ? completeRowSnapshot(deletedMember)
+    : null;
+  return removed;
+}
+
+async function contactStillHasDealInvestment(
+  tx: DealWriteTx,
+  dealId: string,
+  contactId: string,
+): Promise<boolean> {
+  const [remaining] = await tx
+    .select({ id: dealInvestment.id })
+    .from(dealInvestment)
     .where(
-      and(eq(dealMember.dealId, dealId), eq(dealMember.contactMemberId, contactId)),
-    );
-  await tx
+      and(
+        eq(dealInvestment.dealId, dealId),
+        eq(dealInvestment.contactId, contactId),
+      ),
+    )
+    .limit(1);
+  return Boolean(remaining);
+}
+
+/**
+ * After the selected investor row is gone, drop the shared LP and roster rows
+ * only when this contact id has no investment left. Another commitment for the
+ * same contact stays on the deal. A company-user roster row is kept.
+ */
+async function deleteSharedInvestorRowsWhenNoInvestmentRemains(
+  tx: DealWriteTx,
+  dealId: string,
+  contactId: string,
+  removed: DealRosterRemovalSnapshot,
+): Promise<void> {
+  if (await contactStillHasDealInvestment(tx, dealId, contactId)) return;
+
+  const lpInvestors = await tx
     .delete(dealLpInvestor)
     .where(
       and(
         eq(dealLpInvestor.dealId, dealId),
         eq(dealLpInvestor.contactMemberId, contactId),
       ),
-    );
+    )
+    .returning();
+  removed.lpInvestors = lpInvestors.map(completeRowSnapshot);
+
+  const [member] = await tx
+    .select()
+    .from(dealMember)
+    .where(
+      and(
+        eq(dealMember.dealId, dealId),
+        eq(dealMember.contactMemberId, contactId),
+      ),
+    )
+    .limit(1);
+  if (!member || isDealCompanyUserStoredRole(member.dealMemberRole)) return;
+
+  const [deletedMember] = await tx
+    .delete(dealMember)
+    .where(and(eq(dealMember.id, member.id), eq(dealMember.dealId, dealId)))
+    .returning();
+  removed.rosterMember = deletedMember
+    ? completeRowSnapshot(deletedMember)
+    : null;
 }
 
 /**
+ * Investor removal deletes only the selected investment or LP row.
+ * Other investments for the same contact stay. Shared LP and roster rows are
+ * removed only when that contact id has no investment left, and the roster row
+ * is kept when this contact is still a General Partner or Team Member.
+ */
+async function deleteSelectedInvestorRow(
+  tx: DealWriteTx,
+  dealId: string,
+  snapshot: RosterRemovalSnapshot,
+): Promise<DealRosterRemovalSnapshot> {
+  const removed = emptyRemovalSnapshot();
+  const contactId = snapshot.removedContactId.trim();
+  const rowId = snapshot.removedRowId.trim();
+  if (!rowId) return removed;
+
+  if (snapshot.mode === "investment") {
+    const investments = await tx
+      .delete(dealInvestment)
+      .where(
+        and(
+          eq(dealInvestment.id, rowId),
+          eq(dealInvestment.dealId, dealId),
+          ...(contactId ? [eq(dealInvestment.contactId, contactId)] : []),
+        ),
+      )
+      .returning();
+    removed.investments = investments.map(completeRowSnapshot);
+    if (!contactId || investments.length === 0) return removed;
+    await deleteSharedInvestorRowsWhenNoInvestmentRemains(
+      tx,
+      dealId,
+      contactId,
+      removed,
+    );
+    return removed;
+  }
+
+  const lpInvestors = await tx
+    .delete(dealLpInvestor)
+    .where(
+      and(
+        eq(dealLpInvestor.id, rowId),
+        eq(dealLpInvestor.dealId, dealId),
+        ...(contactId ? [eq(dealLpInvestor.contactMemberId, contactId)] : []),
+      ),
+    )
+    .returning();
+  removed.lpInvestors = lpInvestors.map(completeRowSnapshot);
+  if (!contactId || lpInvestors.length === 0) return removed;
+  await deleteSharedInvestorRowsWhenNoInvestmentRemains(
+    tx,
+    dealId,
+    contactId,
+    removed,
+  );
+  return removed;
+}
+
+async function deleteSnapshottedRosterEntry(
+  tx: DealWriteTx,
+  dealId: string,
+  snapshot: RosterRemovalSnapshot,
+): Promise<DealRosterRemovalSnapshot> {
+  const removed = emptyRemovalSnapshot();
+  if (snapshot.mode === "investment" || snapshot.mode === "lp") {
+    return deleteSelectedInvestorRow(tx, dealId, snapshot);
+  }
+
+  if (snapshot.mode === "member") {
+    const [deletedMember] = await tx
+      .delete(dealMember)
+      .where(
+        and(eq(dealMember.id, snapshot.removedRowId), eq(dealMember.dealId, dealId)),
+      )
+      .returning();
+    removed.rosterMember = deletedMember
+      ? completeRowSnapshot(deletedMember)
+      : null;
+    return removed;
+  }
+
+  return removed;
+}
+
+export type DealRosterRemovalScope = "member" | "team_member";
+
+/**
  * Removes a member from the deal roster. `rowId` is either `deal_investment.id`
- * (row merged with latest investment) or `deal_member.id` (member-only row).
- * When an investment id is passed, deletes all investments for that contact on
- * this deal, then the `deal_member` row.
- * Writes `deal_member_removal_logs` with the user who deleted the row.
+ * (row merged with latest investment), `deal_lp_investor.id`, or `deal_member.id`.
+ * Investor removal deletes only the selected investment or LP row. Another
+ * investment for the same contact stays. Shared LP and roster rows are removed
+ * only when that contact has no investment left. The roster row is kept when
+ * that same contact id is still a General Partner or Team Member.
+ * Team member removal deletes only that contact's Team Member / General Partner
+ * roster row. Investments, LP rows, other roles, and the contact are kept.
+ * A different contact id is never removed.
+ * Writes `deal_member_removal_logs` with the user who deleted the row and the
+ * complete data of every row that delete removed.
  */
 export async function deleteDealMemberRosterEntry(
   dealId: string,
   rowId: string,
   deletedByUserId: string,
+  scope: DealRosterRemovalScope = "member",
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  await assertRosterDeleteKeepsLeadSponsor(dealId, rowId);
   const snapshot = await loadRosterRemovalSnapshot(dealId, rowId);
   if (!snapshot) return { ok: false, message: "Member or investment not found" };
+
+  if (scope === "team_member") {
+    const contactId = snapshot.removedContactId.trim();
+    if (!contactId) {
+      return { ok: false, message: "Team member not found" };
+    }
+    const actorUserId = deletedByUserId.trim();
+    const deletedByName = await deletedByLabel(actorUserId);
+    let removedTeamMember = false;
+    await db.transaction(async (tx) => {
+      const removedSnapshot = await deleteTeamMemberAssignmentForContact(
+        tx,
+        dealId,
+        contactId,
+      );
+      if (!removedSnapshot.rosterMember) return;
+      removedTeamMember = true;
+      await tx.insert(dealMemberRemovalLogs).values({
+        dealId,
+        removedRowId: String(
+          removedSnapshot.rosterMember.id ?? snapshot.removedRowId,
+        ),
+        removedContactId: contactId,
+        removedName: snapshot.removedName,
+        removedRole: snapshot.removedRole,
+        deletedByUserId: actorUserId,
+        deletedByName,
+        removedSnapshot,
+      });
+    });
+    if (!removedTeamMember) {
+      return { ok: false, message: "Team member not found" };
+    }
+    return { ok: true };
+  }
+
+  const keepRoster =
+    snapshot.mode !== "member" &&
+    (await rosterRowKeptForContact(dealId, snapshot.removedContactId));
+  if (!keepRoster) {
+    await assertRosterDeleteKeepsLeadSponsor(dealId, rowId);
+  }
 
   const actorUserId = deletedByUserId.trim();
   const deletedByName = await deletedByLabel(actorUserId);
 
   await db.transaction(async (tx) => {
-    await deleteSnapshottedRosterEntry(tx, dealId, snapshot);
+    const removedSnapshot = await deleteSnapshottedRosterEntry(
+      tx,
+      dealId,
+      snapshot,
+    );
     await tx.insert(dealMemberRemovalLogs).values({
       dealId,
       removedRowId: snapshot.removedRowId,
@@ -1972,8 +2193,21 @@ export async function deleteDealMemberRosterEntry(
       removedRole: snapshot.removedRole,
       deletedByUserId: actorUserId,
       deletedByName,
+      removedSnapshot,
     });
   });
+
+  const removedRole = snapshot.removedRole.trim().toLowerCase();
+  if (
+    removedRole.includes("co-sponsor") ||
+    removedRole.includes("co sponsor") ||
+    removedRole.includes("cosponsor")
+  ) {
+    const { scheduleDealSaasBillingSync } = await import(
+      "../billing/dealBilling.service.js"
+    );
+    scheduleDealSaasBillingSync(dealId);
+  }
 
   return { ok: true };
 }

@@ -27,6 +27,7 @@ import {
   investNowProgressForViewer,
   isInvestNowDraftInvestorRow,
 } from "@/modules/Investing/pages/invest/investNowDraftUtils"
+import { freshInvestNowProgress } from "@/modules/Investing/pages/invest/investNowDraftProgress"
 import {
   fetchDealById,
   fetchDealInvestors,
@@ -99,6 +100,30 @@ function positiveViewerCommitments(
   return out.map((x) => x.inv)
 }
 
+/**
+ * Amount still shown when a sponsor or platform admin removed every open
+ * commitment. The deal stays on Pending; it is not moved to Archives.
+ */
+function sponsorRemovedPendingAmount(
+  investors: DealInvestorRow[],
+  viewerEmailNorm: string,
+): number {
+  let removed = 0
+  let hasRemoved = false
+  let hasActive = false
+  for (const inv of investors) {
+    if (!investorRowMatchesViewerEmail(inv, viewerEmailNorm)) continue
+    const amt = investorRowCommittedAmountNumeric(inv)
+    if (inv.sponsorRemoved) {
+      hasRemoved = true
+      removed += amt
+      continue
+    }
+    if (!inv.investorArchived && amt > 0) hasActive = true
+  }
+  return hasRemoved && !hasActive ? removed : 0
+}
+
 /** Split `list.investmentProfile` "Name — Type" for detail fallback when not loading per-field from API. */
 function splitListInvestmentProfile(combined: string): {
   profileName: string
@@ -166,6 +191,7 @@ function buildProfileBreakdownForDeal(
       investedAmount: amt,
       investedAtIso: String(inv.investedAtIso ?? "").trim() || undefined,
       investorArchived: Boolean(inv.investorArchived),
+      sponsorRemoved: Boolean(inv.sponsorRemoved),
       participationKind: investorParticipationKind(inv),
       approvedBy:
         inv.fundApproved === true
@@ -401,6 +427,16 @@ export async function loadInvestmentListRowsFromDeals(
         leadSponsorCompanyName,
       )
     if (dealKey && archivedDealIds.has(dealKey)) built.investorArchived = true
+    const removedAmount = sponsorRemovedPendingAmount(payload.investors, emn)
+    if (removedAmount > 0) {
+      built.sponsorRemoved = true
+      built.investedAmount = removedAmount
+      built.onboardingBucket = "pending"
+      built.onboardingBuckets = ["pending"]
+      if (!built.investNowDraftProgress) {
+        built.investNowDraftProgress = freshInvestNowProgress()
+      }
+    }
     out.push(built)
   }
   return out
@@ -571,6 +607,7 @@ export async function loadInvestmentDetailFromDeal(
   const distributedAmount = Number.isFinite(distributedFromTotal)
     ? distributedFromTotal
     : 0
+  const removedAmount = sponsorRemovedPendingAmount(payload.investors, emn)
   const list = listRowFromDealAndInvestors(
     deal.listRow,
     members,
@@ -585,6 +622,15 @@ export async function loadInvestmentDetailFromDeal(
     distributedAmount,
     leadSponsorCompanyName,
   )
+  if (removedAmount > 0) {
+    list.sponsorRemoved = true
+    list.investedAmount = removedAmount
+    list.onboardingBucket = "pending"
+    list.onboardingBuckets = ["pending"]
+    if (!list.investNowDraftProgress) {
+      list.investNowDraftProgress = freshInvestNowProgress()
+    }
+  }
   const investedAsBreakdown = buildProfileBreakdownForDeal(profileRows, nameMap)
   return defaultDetailRecord(list, deal, investedAsBreakdown)
 }

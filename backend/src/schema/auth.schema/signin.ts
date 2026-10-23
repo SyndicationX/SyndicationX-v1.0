@@ -13,6 +13,11 @@ export const users = pgTable("users", {
   username: varchar("username", { length: 100 }).notNull().unique(),
   passwordHash: varchar("password_hash", { length: 255 }).notNull(),
   role: varchar("role", { length: 50 }).notNull().default("platform_user"),
+  /**
+   * Self-serve “Are you an” answer: `investor`, `syndicator`, or `both`.
+   * Empty for invite signups and accounts created before this was stored.
+   */
+  signupAs: varchar("signup_as", { length: 32 }).notNull().default(""),
   userStatus: varchar("user_status", { length: 50 }).notNull().default("active"),
   userSignupCompleted: varchar("user_signup_completed", { length: 10 })
     .notNull()

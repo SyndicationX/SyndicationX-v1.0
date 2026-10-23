@@ -57,6 +57,15 @@ export function completedInvestNowProgress(): InvestNowDraftProgress {
   }
 }
 
+/** Fresh Invest now after a sponsor removal: bar starts on the Investor step. */
+export function freshInvestNowProgress(): InvestNowDraftProgress {
+  return {
+    percent: 0,
+    phaseLabel: phaseLabelFor("investor"),
+    phaseId: "investor",
+  }
+}
+
 /**
  * Estimate Invest Now completion from a draft investor row (no commitment GET).
  * Aligns with the five Invest Now stepper phases on the wizard.

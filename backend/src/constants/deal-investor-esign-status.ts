@@ -11,6 +11,17 @@ export interface DealInvestorEsignDocumentRef {
   signedRelativePath?: string;
 }
 
+/** Values the investor entered, kept so Edit can show them again. */
+export interface StoredInvestorEsignFieldValue {
+  id?: string;
+  label: string;
+  page: number;
+  type?: string;
+  x?: number;
+  y?: number;
+  value: string;
+}
+
 /** One Dropbox Sign request (one investor profile send). */
 export interface StoredDealInvestorEsignSend {
   sentAt: string;
@@ -35,6 +46,8 @@ export interface StoredDealInvestorEsignSend {
   investorNotifiedAtSignTurnAvailable?: string;
   /** Fully executed doc promoted to LP offering documents section. */
   promotedToInvestorDocumentsAt?: string;
+  /** Investor answers captured after signing, restored when they edit. */
+  investorFieldValues?: StoredInvestorEsignFieldValue[];
   documents?: DealInvestorEsignDocumentRef[];
 }
 
@@ -169,6 +182,9 @@ function parseSendRecord(o: Record<string, unknown>): StoredDealInvestorEsignSen
   const promotedToInvestorDocumentsAt = String(
     o.promotedToInvestorDocumentsAt ?? o.promoted_to_investor_documents_at ?? "",
   ).trim();
+  const investorFieldValues = parseInvestorFieldValues(
+    o.investorFieldValues ?? o.investor_field_values,
+  );
   return {
     sentAt,
     viewedAt: o.viewedAt ? String(o.viewedAt).trim() : null,
@@ -194,8 +210,38 @@ function parseSendRecord(o: Record<string, unknown>): StoredDealInvestorEsignSen
       ? { investorNotifiedAtSignTurnAvailable }
       : {}),
     ...(promotedToInvestorDocumentsAt ? { promotedToInvestorDocumentsAt } : {}),
+    ...(investorFieldValues.length
+      ? { investorFieldValues }
+      : {}),
     documents,
   };
+}
+
+function parseInvestorFieldValues(raw: unknown): StoredInvestorEsignFieldValue[] {
+  if (!Array.isArray(raw)) return [];
+  const out: StoredInvestorEsignFieldValue[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const value = String(row.value ?? "").trim();
+    const label = String(row.label ?? "").trim();
+    if (!value || !label) continue;
+    const page = Number(row.page);
+    const x = Number(row.x);
+    const y = Number(row.y);
+    const id = String(row.id ?? "").trim();
+    const type = String(row.type ?? "").trim();
+    out.push({
+      label,
+      page: Number.isFinite(page) ? page : 1,
+      value,
+      ...(id ? { id } : {}),
+      ...(type ? { type } : {}),
+      ...(Number.isFinite(x) ? { x } : {}),
+      ...(Number.isFinite(y) ? { y } : {}),
+    });
+  }
+  return out;
 }
 
 export function primaryCategoryForSend(
