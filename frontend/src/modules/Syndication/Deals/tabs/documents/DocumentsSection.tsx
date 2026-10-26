@@ -170,6 +170,66 @@ function nestedDocumentNeedsSponsorSign(
   return Boolean(me) && allowed.includes(me)
 }
 
+function usableInvestorLabel(value: string | null | undefined): string {
+  const text = String(value ?? "").trim()
+  if (!text || text === "—" || text === "Investor") return ""
+  return text
+}
+
+function investorNameInitials(name: string): string {
+  const parts = name.split(/\s+/).filter(Boolean)
+  if (parts.length >= 2) {
+    return `${parts[0]![0]!}${parts[parts.length - 1]![0]!}`.toUpperCase()
+  }
+  if (name.length >= 2 && name !== "—") return name.slice(0, 2).toUpperCase()
+  return "?"
+}
+
+/** Name column for Investor e signatures: investor, then profile. */
+function esignDocumentInvestorIdentity(
+  doc: NestedPreviewDocument,
+  investors: DealInvestorRow[],
+): { name: string; profile: string } {
+  const wanted = [doc.esignInvestorRowId, ...(doc.esignInvestorMatchIds ?? [])]
+    .map((id) => id?.trim().toLowerCase())
+    .filter((id): id is string => Boolean(id))
+  const row = investors.find((investor) => {
+    const keys = [
+      investor.id,
+      investor.contactId,
+      investor.userInvestorProfileId,
+      investor.offeringId,
+    ]
+      .map((id) => id?.trim().toLowerCase())
+      .filter((id): id is string => Boolean(id))
+    return wanted.some((id) => keys.includes(id))
+  })
+  const name =
+    usableInvestorLabel(row?.displayName) ||
+    usableInvestorLabel(row?.userDisplayName) ||
+    usableInvestorLabel(doc.esignInvestorName) ||
+    "—"
+  const profile =
+    usableInvestorLabel(row?.userInvestorProfileName) ||
+    usableInvestorLabel(row?.entitySubtitle) ||
+    usableInvestorLabel(doc.esignInvestorProfile)
+  return { name, profile }
+}
+
+function esignDocumentMatchesQuery(
+  doc: NestedPreviewDocument,
+  queryText: string,
+  investors: DealInvestorRow[],
+): boolean {
+  const q = queryText.trim().toLowerCase()
+  if (!q) return true
+  const identity = esignDocumentInvestorIdentity(doc, investors)
+  return [doc.name, identity.name, identity.profile, doc.esignInvestorName, doc.esignInvestorProfile]
+    .join(" ")
+    .toLowerCase()
+    .includes(q)
+}
+
 function DocumentsTableDocName({
   name,
   href,
@@ -710,6 +770,7 @@ export function DocumentsSection({
     Record<string, Record<string, boolean>>
   >({})
   const [query, setQuery] = useState("")
+  const [esignQuery, setEsignQuery] = useState("")
   const [showAddSectionModal, setShowAddSectionModal] = useState(false)
   const [sectionName, setSectionName] = useState("")
   const [sectionFiles, setSectionFiles] = useState<File[]>([])
@@ -2289,6 +2350,11 @@ export function DocumentsSection({
                 isBuiltInDocumentSectionLabelEditable(section)
               const isEditingSection = editingSectionId === section.id
               const sectionLabel = sectionDisplayLabel(section)
+              const visibleDocuments = isEsignSection
+                ? section.nestedDocuments.filter((doc) =>
+                    esignDocumentMatchesQuery(doc, esignQuery, lpInvestorRows),
+                  )
+                : section.nestedDocuments
               const selectedInSection = section.nestedDocuments.filter((d) =>
                 Boolean(checkedDocsBySection[section.id]?.[d.id]),
               ).length
@@ -2452,7 +2518,7 @@ export function DocumentsSection({
                               onClick={() =>
                                 checkAllInSection(
                                   section.id,
-                                  section.nestedDocuments.map((d) => d.id),
+                                  visibleDocuments.map((d) => d.id),
                                 )
                               }
                             >
@@ -2533,8 +2599,33 @@ export function DocumentsSection({
                     className="deal_docs_ui_panel"
                     hidden={!isOpen}
                   >
+                    {isEsignSection && n > 0 ? (
+                      <div className="deal_docs_ui_section_toolbar">
+                        <div className="um_search_wrap">
+                          <Search
+                            className="um_search_icon"
+                            size={18}
+                            strokeWidth={2}
+                            aria-hidden
+                          />
+                          <input
+                            type="search"
+                            className="um_search_input"
+                            placeholder="Search name, profile, or document…"
+                            value={esignQuery}
+                            onChange={(e) => setEsignQuery(e.target.value)}
+                            aria-label="Search investor e signatures"
+                            autoComplete="off"
+                          />
+                        </div>
+                      </div>
+                    ) : null}
                     {n === 0 ? (
                       <p className="deal_docs_ui_panel_empty">No documents yet.</p>
+                    ) : visibleDocuments.length === 0 ? (
+                      <p className="deal_docs_ui_panel_empty">
+                        No signatures match your search.
+                      </p>
                     ) : (
                       <DocumentsTableScroll active={isOpen}>
                         <table className="deal_docs_ui_table">
@@ -2543,6 +2634,14 @@ export function DocumentsSection({
                               <th className="deal_docs_ui_th deal_docs_ui_th_check" scope="col">
                                 <span className="deal_docs_ui_sr">Select</span>
                               </th>
+                              {isEsignSection ? (
+                                <th
+                                  className="deal_docs_ui_th deal_docs_ui_th_investor"
+                                  scope="col"
+                                >
+                                  Name
+                                </th>
+                              ) : null}
                               <th className="deal_docs_ui_th deal_docs_ui_th_doc" scope="col">
                                 Document
                               </th>
@@ -2606,12 +2705,15 @@ export function DocumentsSection({
                             </tr>
                           </thead>
                           <tbody>
-                            {section.nestedDocuments.map((d) => {
+                            {visibleDocuments.map((d) => {
                               const url = d.url?.trim()
                               const sponsorSignOnly =
                                 isEsignSection &&
                                 viewerCanSponsorSign &&
                                 nestedDocumentNeedsSponsorSign(d, sessionEmail)
+                              const investorIdentity = isEsignSection
+                                ? esignDocumentInvestorIdentity(d, lpInvestorRows)
+                                : null
                               const checked = Boolean(
                                 checkedDocsBySection[section.id]?.[d.id],
                               )
@@ -2636,6 +2738,37 @@ export function DocumentsSection({
                                       }}
                                     />
                                   </td>
+                                  {investorIdentity ? (
+                                    <td className="deal_docs_ui_td deal_docs_ui_td_investor">
+                                      <div className="deal_docs_ui_investor_cell">
+                                        <div className="um_user_avatar_ring" aria-hidden>
+                                          <span className="um_user_initials">
+                                            {investorNameInitials(investorIdentity.name)}
+                                          </span>
+                                        </div>
+                                        <div className="deal_docs_ui_investor_text">
+                                          <span
+                                            className="deal_docs_ui_investor_name"
+                                            title={
+                                              investorIdentity.name !== "—"
+                                                ? investorIdentity.name
+                                                : undefined
+                                            }
+                                          >
+                                            {investorIdentity.name}
+                                          </span>
+                                          {investorIdentity.profile ? (
+                                            <span
+                                              className="deal_docs_ui_investor_profile"
+                                              title={investorIdentity.profile}
+                                            >
+                                              {investorIdentity.profile}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    </td>
+                                  ) : null}
                                   <td className="deal_docs_ui_td deal_docs_ui_td_doc">
                                     <div className="deal_docs_ui_doc_cell">
                                       <DocumentsTableDocName name={d.name} href={url} />

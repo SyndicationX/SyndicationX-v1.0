@@ -89,6 +89,18 @@ function normalizeNested(
     typeof raw.esignInvestorRowId === "string" && raw.esignInvestorRowId.trim()
       ? clipStr(raw.esignInvestorRowId.trim(), 120)
       : undefined;
+  const esignInvestorMatchIds = parseIdListField(raw.esignInvestorMatchIds).slice(
+    0,
+    24,
+  );
+  const esignInvestorName =
+    typeof raw.esignInvestorName === "string" && raw.esignInvestorName.trim()
+      ? clipStr(raw.esignInvestorName.trim(), 200)
+      : undefined;
+  const esignInvestorProfile =
+    typeof raw.esignInvestorProfile === "string" && raw.esignInvestorProfile.trim()
+      ? clipStr(raw.esignInvestorProfile.trim(), 200)
+      : undefined;
   const esignInvestorRowTable =
     raw.esignInvestorRowTable === "investment" || raw.esignInvestorRowTable === "lp"
       ? raw.esignInvestorRowTable
@@ -127,6 +139,9 @@ function normalizeNested(
     ...(requiresProfileInvestment ? { requiresProfileInvestment: true } : {}),
     ...(esignSignatureRequestId ? { esignSignatureRequestId } : {}),
     ...(esignInvestorRowId ? { esignInvestorRowId } : {}),
+    ...(esignInvestorMatchIds.length > 0 ? { esignInvestorMatchIds } : {}),
+    ...(esignInvestorName ? { esignInvestorName } : {}),
+    ...(esignInvestorProfile ? { esignInvestorProfile } : {}),
     ...(esignInvestorRowTable ? { esignInvestorRowTable } : {}),
     ...(esignTemplateFileId ? { esignTemplateFileId } : {}),
     ...(esignAwaitingSponsorSignature

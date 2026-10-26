@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PDFDocument } from "pdf-lib";
-import { requireSignFlowConfig } from "../../config/signflow.config.js";
 import {
+  downloadSignFlowSourcePdf,
   SIGNFLOW_PARKED_ALTERNATE_RECIPIENT_ID,
   type SignFlowDocument,
 } from "../esign/signflow.service.js";
@@ -277,44 +277,6 @@ export function assignAlternateSignatureFields<T extends AlternateSignatureField
 
   const changed = next.some((field, index) => field !== fields[index]);
   return { fields: changed ? next : fields, changed };
-}
-
-function buildUrl(baseUrl: string, filePath: string): string {
-  const normalized = filePath.startsWith("/") ? filePath : `/${filePath}`;
-  return `${baseUrl.replace(/\/$/, "")}${normalized}`;
-}
-
-async function downloadSignFlowSourcePdf(
-  doc: SignFlowDocument,
-): Promise<Buffer | null> {
-  const { baseUrl, apiKey } = requireSignFlowConfig();
-  const candidates: string[] = [];
-  const fileUrl = doc.fileUrl?.trim();
-  if (fileUrl) {
-    candidates.push(
-      /^https?:\/\//i.test(fileUrl) ? fileUrl : buildUrl(baseUrl, fileUrl),
-    );
-  }
-  const documentId = doc.id?.trim();
-  if (documentId) {
-    const encoded = encodeURIComponent(documentId);
-    candidates.push(buildUrl(baseUrl, `/documents/${encoded}/file`));
-    candidates.push(buildUrl(baseUrl, `/documents/${encoded}/download`));
-  }
-
-  for (const url of candidates) {
-    try {
-      const headers: Record<string, string> = {};
-      if (url.startsWith(baseUrl)) headers.Authorization = `Bearer ${apiKey}`;
-      const res = await fetch(url, { headers });
-      if (!res.ok) continue;
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.subarray(0, 4).toString() === "%PDF") return buf;
-    } catch {
-      /* try the next location */
-    }
-  }
-  return null;
 }
 
 function pythonScriptPath(): string {

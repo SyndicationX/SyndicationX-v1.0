@@ -186,6 +186,15 @@ export type NestedPreviewDocument = {
   /** Present on auto-synced investor eSign PDFs in Investor e signatures section. */
   esignSignatureRequestId?: string
   esignInvestorRowId?: string
+  /**
+   * Investment row id, LP roster id, and contact ids for the same investor.
+   * Co-sponsor visibility matches any of these to their investor list.
+   */
+  esignInvestorMatchIds?: string[]
+  /** Investor display name for the Investor e signatures Name column. */
+  esignInvestorName?: string
+  /** Commitment profile under the investor name. */
+  esignInvestorProfile?: string
   esignInvestorRowTable?: "investment" | "lp"
   esignTemplateFileId?: string
   esignAwaitingSponsorSignature?: boolean
@@ -770,6 +779,15 @@ function normalizeNested(
     typeof raw.esignInvestorRowId === "string" && raw.esignInvestorRowId.trim()
       ? raw.esignInvestorRowId.trim()
       : undefined
+  const esignInvestorMatchIds = parseIdListField(raw.esignInvestorMatchIds)
+  const esignInvestorName =
+    typeof raw.esignInvestorName === "string" && raw.esignInvestorName.trim()
+      ? raw.esignInvestorName.trim()
+      : undefined
+  const esignInvestorProfile =
+    typeof raw.esignInvestorProfile === "string" && raw.esignInvestorProfile.trim()
+      ? raw.esignInvestorProfile.trim()
+      : undefined
   const esignInvestorRowTable =
     raw.esignInvestorRowTable === "investment" || raw.esignInvestorRowTable === "lp"
       ? raw.esignInvestorRowTable
@@ -811,6 +829,9 @@ function normalizeNested(
     ...(requiresProfileInvestment ? { requiresProfileInvestment: true } : {}),
     ...(esignSignatureRequestId ? { esignSignatureRequestId } : {}),
     ...(esignInvestorRowId ? { esignInvestorRowId } : {}),
+    ...(esignInvestorMatchIds.length > 0 ? { esignInvestorMatchIds } : {}),
+    ...(esignInvestorName ? { esignInvestorName } : {}),
+    ...(esignInvestorProfile ? { esignInvestorProfile } : {}),
     ...(esignInvestorRowTable ? { esignInvestorRowTable } : {}),
     ...(esignTemplateFileId ? { esignTemplateFileId } : {}),
     ...(esignAwaitingSponsorSignature ? { esignAwaitingSponsorSignature: true } : {}),

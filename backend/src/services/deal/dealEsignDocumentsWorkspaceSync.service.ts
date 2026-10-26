@@ -41,6 +41,7 @@ import {
   getDealEsignTemplatesState,
   type EsignTemplatesJson,
 } from "./dealEsignTemplates.service.js";
+import { mapContactIdsToCanonicalCommitmentKeys } from "./dealInvestment.service.js";
 import { updateDealInvestorEsignSend } from "./dealMemberEsignStatus.service.js";
 import {
   DEAL_ESIGN_COMPLETED_FOLDER,
@@ -541,7 +542,19 @@ function buildEsignNestedDocument(params: {
   sponsorSigned: boolean;
   openToAnySponsor: boolean;
   pendingNamedSponsorEmails: string[];
+  investorMatchIds: string[];
+  investorName: string;
+  investorProfile: string;
 }): Record<string, unknown> {
+  const investorName = params.investorName.trim();
+  const investorProfile = params.investorProfile.trim();
+  const investorMatchIds = [
+    ...new Set(
+      params.investorMatchIds
+        .map((id) => id.trim())
+        .filter(Boolean),
+    ),
+  ].slice(0, 24);
   return {
     id: params.docId,
     name: params.displayName,
@@ -556,6 +569,15 @@ function buildEsignNestedDocument(params: {
     requiresProfileInvestment: false,
     esignSignatureRequestId: params.signatureRequestId || undefined,
     esignInvestorRowId: params.investorRowId,
+    ...(investorMatchIds.length > 0
+      ? { esignInvestorMatchIds: investorMatchIds }
+      : {}),
+    ...(investorName && investorName !== "Investor" && investorName !== "—"
+      ? { esignInvestorName: investorName }
+      : {}),
+    ...(investorProfile && investorProfile !== "—"
+      ? { esignInvestorProfile: investorProfile }
+      : {}),
     esignInvestorRowTable: params.investorRowTable,
     esignTemplateFileId: params.templateFileId || undefined,
     esignAwaitingSponsorSignature: params.awaitingSponsorSignature,
@@ -573,6 +595,7 @@ async function collectCompletedEsignNestedDocuments(
   investorRowTable: "investment" | "lp",
   investorDisplayName: string,
   profileId: string | null | undefined,
+  investorMatchIds: string[],
   esignStatusJson: string | null | undefined,
   sponsorDocsGateOpen: boolean,
   templates: EsignTemplatesJson | null,
@@ -650,6 +673,9 @@ async function collectCompletedEsignNestedDocuments(
           sponsorSigned: sponsorState.sponsorSigned,
           openToAnySponsor: sponsorState.openToAnySponsor,
           pendingNamedSponsorEmails: sponsorState.pendingNamedSponsorEmails,
+          investorMatchIds,
+          investorName: investorLabel,
+          investorProfile: profileLabel,
         }),
       );
     }
@@ -676,8 +702,10 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
     db
       .select({
         id: dealInvestment.id,
+        contactId: dealInvestment.contactId,
         contactDisplayName: dealInvestment.contactDisplayName,
         profileId: dealInvestment.profileId,
+        userInvestorProfileId: dealInvestment.userInvestorProfileId,
         esignStatusJson: dealInvestment.esignStatusJson,
       })
       .from(dealInvestment)
@@ -685,13 +713,72 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
     db
       .select({
         id: dealLpInvestor.id,
+        contactMemberId: dealLpInvestor.contactMemberId,
         email: dealLpInvestor.email,
         profileId: dealLpInvestor.profileId,
+        userInvestorProfileId: dealLpInvestor.userInvestorProfileId,
         esignStatusJson: dealLpInvestor.esignStatusJson,
       })
       .from(dealLpInvestor)
       .where(eq(dealLpInvestor.dealId, id)),
   ]);
+
+  const contactCanonicalKeys = await mapContactIdsToCanonicalCommitmentKeys([
+    ...investments.flatMap((row) => [
+      row.id,
+      row.contactId,
+      row.userInvestorProfileId,
+    ]),
+    ...roster.flatMap((row) => [
+      row.id,
+      row.contactMemberId,
+      row.userInvestorProfileId,
+    ]),
+  ]);
+  const canonOf = (raw: string | null | undefined): string => {
+    const key = String(raw ?? "").trim().toLowerCase();
+    if (!key) return "";
+    return contactCanonicalKeys.get(key) ?? `id:${key}`;
+  };
+  const idsByCanon = new Map<string, Set<string>>();
+  const remember = (
+    canon: string,
+    ...ids: Array<string | null | undefined>
+  ) => {
+    if (!canon) return;
+    let bucket = idsByCanon.get(canon);
+    if (!bucket) {
+      bucket = new Set();
+      idsByCanon.set(canon, bucket);
+    }
+    for (const raw of ids) {
+      const value = String(raw ?? "").trim();
+      if (value) bucket.add(value);
+    }
+  };
+  for (const row of investments) {
+    remember(
+      canonOf(row.contactId) || canonOf(row.id),
+      row.id,
+      row.contactId,
+      row.userInvestorProfileId,
+    );
+  }
+  for (const row of roster) {
+    remember(
+      canonOf(row.contactMemberId) || canonOf(row.id),
+      row.id,
+      row.contactMemberId,
+      row.userInvestorProfileId,
+    );
+  }
+  const matchIdsFor = (
+    contactRaw: string | null | undefined,
+    rowId: string,
+  ): string[] => {
+    const canon = canonOf(contactRaw) || canonOf(rowId);
+    return [...(idsByCanon.get(canon) ?? new Set<string>([rowId]))];
+  };
 
   const sponsorDocsGateOpen = await sequentialWorkflowSponsorDocsGateOpen(id);
   const templates = await getDealEsignTemplatesState(id).catch(() => null);
@@ -704,6 +791,7 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
       "investment",
       row.contactDisplayName ?? "",
       row.profileId,
+      matchIdsFor(row.contactId, row.id),
       row.esignStatusJson,
       sponsorDocsGateOpen,
       templates,
@@ -720,6 +808,7 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
       "lp",
       row.email?.trim() ?? "",
       row.profileId,
+      matchIdsFor(row.contactMemberId, row.id),
       row.esignStatusJson,
       sponsorDocsGateOpen,
       templates,
