@@ -1,5 +1,6 @@
 import {
   boolean,
+  date,
   jsonb,
   pgTable,
   text,
@@ -55,6 +56,20 @@ export const dealInvestment = pgTable("deal_investment", {
   /** Invest Now funding method (`stripe_checkout`, `wire_transfer`, legacy `ach`, `check`). */
   fundingMethod: text("funding_method").notNull().default(""),
   commitmentAmount: text("commitment_amount").notNull().default(""),
+  /** Optional position figures. Not required; null means not recorded. */
+  fundedAmount: text("funded_amount"),
+  capitalBalance: text("capital_balance"),
+  cashBalance: text("cash_balance"),
+  deployedCapital: text("deployed_capital"),
+  percentOfClassByTargetRaise: text("percent_of_class_by_target_raise"),
+  percentOfClassByTotalRaised: text("percent_of_class_by_total_raised"),
+  sharesOwned: text("shares_owned"),
+  distributedAmount: text("distributed_amount"),
+  reinvestDistributions: text("reinvest_distributions"),
+  reinvestmentPercentage: text("reinvestment_percentage"),
+  accruedPreferredReturn: text("accrued_preferred_return"),
+  unpaidPreferredReturn: text("unpaid_preferred_return"),
+  preferredReturnStartDate: date("preferred_return_start_date"),
   /** Set once when the investor finishes Invest Now. */
   commitmentCompletedAt: timestamp("commitment_completed_at", {
     withTimezone: true,

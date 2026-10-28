@@ -20,7 +20,6 @@ import {
   parseMoneyDigits,
 } from "../../utils/offeringMoneyFormat"
 import { buildDealDetailReturnSearch } from "../../utils/offeringDetailsSectionNav"
-import { parseStoredClassPercent } from "../distributions/utils/investorDistributionAllocation"
 import {
   distributionDisplayName,
   formatPaymentDateLabel,
@@ -110,11 +109,11 @@ function statusTone(raw: string): "neutral" | "info" | "success" | "danger" {
 
 function ownershipPercentLabel(row: DealInvestorRow | null): string {
   if (!row) return "—"
-  const n =
-    parseStoredClassPercent(row.percentOfClassDistributions) ??
-    parseStoredClassPercent(row.percentOfClassOwnership)
-  if (n == null) return "—"
-  return `${(Math.round(n * 100) / 100).toFixed(2)}%`
+  const text = String(row.entityOwnershipPercent ?? "").trim()
+  if (!text || text === "—" || text === "-") return "—"
+  const n = Number(text.replace(/[^0-9.-]/g, ""))
+  if (!Number.isFinite(n)) return text
+  return `${n.toFixed(2)}%`
 }
 
 /**

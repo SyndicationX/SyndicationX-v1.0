@@ -3953,11 +3953,7 @@ function BillingDealDetailsPanel({
         );
         return;
       }
-      const orgId = dealBillingCompanyId(row, companyId);
-      if (!orgId) {
-        toast.error("Could not update billing start date", "No company workspace selected.");
-        return;
-      }
+      const orgId = dealBillingCompanyId(row, companyId) || row.id;
       setStartDateBusy(true);
       const result = await updateCompanyDealBillingStartDate(orgId, row.id, ymd);
       setStartDateBusy(false);

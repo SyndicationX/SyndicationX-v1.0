@@ -1349,6 +1349,58 @@ export async function patchDealFundingInstructions(
   }
 }
 
+export async function deleteSignedEsignDocumentForResign(
+  dealId: string,
+  signatureRequestId: string,
+  templateFileId?: string,
+): Promise<
+  | {
+      ok: true
+      emailSent: boolean
+      message: string
+      offeringInvestorPreviewJson: string | null
+    }
+  | { ok: false; message: string }
+> {
+  const base = getApiV1Base()
+  if (!base)
+    return { ok: false, message: "VITE_BASE_URL is not configured." }
+  const res = await fetch(
+    `${base}/deals/${encodeURIComponent(dealId)}/documents/esign-signed/delete`,
+    {
+      method: "POST",
+      headers: {
+        ...authHeaders(),
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        signatureRequestId,
+        ...(templateFileId?.trim()
+          ? { templateFileId: templateFileId.trim() }
+          : {}),
+      }),
+    },
+  )
+  const data = (await res.json().catch(() => ({}))) as {
+    message?: string
+    emailSent?: boolean
+    offeringInvestorPreviewJson?: string | null
+  }
+  if (res.status === 200) {
+    return {
+      ok: true,
+      emailSent: data.emailSent !== false,
+      message: data.message || "The investor was emailed to sign again.",
+      offeringInvestorPreviewJson: data.offeringInvestorPreviewJson ?? null,
+    }
+  }
+  return {
+    ok: false,
+    message: data.message || `Could not delete this signed document (${res.status})`,
+  }
+}
+
 export async function syncCompletedEsignDocumentsToDocumentsTab(
   dealId: string,
 ): Promise<
@@ -1490,6 +1542,7 @@ export async function fetchDealSponsorEsignSignSession(
 export async function postDealSponsorEsignSync(
   dealId: string,
   signatureRequestId: string,
+  options?: { recordSigner?: boolean },
 ): Promise<
   | { ok: true; offeringInvestorPreviewJson: string | null }
   | { ok: false; message: string }
@@ -1507,7 +1560,10 @@ export async function postDealSponsorEsignSync(
         "Content-Type": "application/json",
       },
       credentials: "include",
-      body: JSON.stringify({ signatureRequestId }),
+      body: JSON.stringify({
+        signatureRequestId,
+        ...(options?.recordSigner ? { recordSigner: true } : {}),
+      }),
     },
   )
   const data = (await res.json().catch(() => ({}))) as {
@@ -2837,6 +2893,9 @@ function normalizeInvestorRowApi(
         "added_by_company_name",
       ]),
     ),
+    companyAdminName: str(
+      firstDefined(raw, ["companyAdminName", "company_admin_name"]),
+    ),
     ...(() => {
       const email = firstDefined(raw, ["addedByEmail", "added_by_email"])
       if (email == null || !String(email).trim()) return {}
@@ -2968,6 +3027,19 @@ function normalizeInvestorRowApi(
       }
       return {}
     })(),
+    amountReceived: str(
+      firstDefined(raw, ["amountReceived", "amount_received", "fundedAmount", "funded_amount"]),
+      "",
+    ),
+    accruedAmount: str(
+      firstDefined(raw, [
+        "accruedAmount",
+        "accrued_amount",
+        "accruedPreferredReturn",
+        "accrued_preferred_return",
+      ]),
+      "",
+    ),
     percentOfClassOwnership: str(
       firstDefined(raw, [
         "percentOfClassOwnership",
@@ -3266,6 +3338,34 @@ export async function fetchDealCommitmentAmount(
  * GET /deals/:dealId/members — roster from `deal_member` merged with investments
  * (commitment = sum of all `deal_investment` rows per contact on this deal).
  */
+/**
+ * True when this user or contact has their own company.
+ * Null when the check could not be completed.
+ */
+export async function fetchRosterPersonHasCompany(
+  dealId: string,
+  personId: string,
+): Promise<boolean | null> {
+  const base = getApiV1Base()
+  const id = personId.trim()
+  if (!base || !dealId.trim() || !id) return null
+  try {
+    const params = new URLSearchParams({ personId: id })
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(dealId)}/roster-person-company?${params}`,
+      {
+        headers: { ...authHeaders({ omitActiveOrganization: true }) },
+        credentials: "include",
+      },
+    )
+    const data = (await res.json().catch(() => ({}))) as { hasCompany?: unknown }
+    if (!res.ok) return null
+    return data.hasCompany === true
+  } catch {
+    return null
+  }
+}
+
 export async function fetchDealMembers(
   dealId: string,
   options?: { referringSponsorRef?: string | null },

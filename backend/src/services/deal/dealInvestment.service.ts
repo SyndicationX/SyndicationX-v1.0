@@ -958,6 +958,8 @@ export function mapRowToInvestorApi(
       commitmentAmountRaw: row.commitmentAmount ?? "",
       extraContributionAmounts: extras,
       docSignedDateIso: row.docSignedDate?.trim() ?? "",
+      amountReceived: String(row.fundedAmount ?? "").trim(),
+      accruedAmount: String(row.accruedPreferredReturn ?? "").trim(),
       invitationMailSent,
       investorArchived: Boolean(row.investorArchivedAt),
       commitmentCompletedAtIso: row.commitmentCompletedAt
@@ -1027,6 +1029,8 @@ export function mapRowToInvestorApi(
     commitmentAmountRaw: row.commitmentAmount ?? "",
     extraContributionAmounts: extras,
     docSignedDateIso: row.docSignedDate?.trim() ?? "",
+    amountReceived: String(row.fundedAmount ?? "").trim(),
+    accruedAmount: String(row.accruedPreferredReturn ?? "").trim(),
     investedAtIso: row.createdAt
       ? new Date(row.createdAt).toISOString()
       : "",
@@ -2149,6 +2153,7 @@ export async function resolveUserCompanyNamesByIds(
   const found = await db
     .select({
       id: users.id,
+      email: users.email,
       companyName: companies.name,
     })
     .from(users)
@@ -2250,7 +2255,199 @@ export async function resolveUserCompanyNamesByIds(
     appendCompanyName(m, key, orgName);
   }
 
+  // Portal account with no membership and no organization_id: use the CRM
+  // contact company that shares the account email.
+  const emailToAccountKeys = new Map<string, string[]>();
+  for (const u of found) {
+    const key = String(u.id).toLowerCase();
+    if (m.has(key)) continue;
+    const email = String(u.email ?? "").trim().toLowerCase();
+    if (!email.includes("@")) continue;
+    const keys = emailToAccountKeys.get(email) ?? [];
+    keys.push(key);
+    emailToAccountKeys.set(email, keys);
+  }
+  const accountEmails = [...emailToAccountKeys.keys()];
+  if (accountEmails.length > 0) {
+    const contactCompanies = await db
+      .select({
+        email: contact.email,
+        companyName: companies.name,
+      })
+      .from(contact)
+      .innerJoin(companies, eq(contact.organizationId, companies.id))
+      .where(inArray(sql`lower(trim(${contact.email}))`, accountEmails));
+    for (const row of contactCompanies) {
+      const keys = emailToAccountKeys.get(
+        String(row.email ?? "").trim().toLowerCase(),
+      );
+      if (!keys) continue;
+      for (const key of keys) appendCompanyName(m, key, row.companyName);
+    }
+  }
+
   return m;
+}
+
+function companyAdminDisplayName(row: {
+  firstName?: string | null;
+  lastName?: string | null;
+  username?: string | null;
+  email?: string | null;
+}): string {
+  const full = [row.firstName, row.lastName]
+    .map((part) => String(part ?? "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  if (full) return full;
+  const username = String(row.username ?? "").trim();
+  if (username) return username;
+  return String(row.email ?? "").trim();
+}
+
+/**
+ * First-created company admin for each company name.
+ * Membership role `company_admin` is ordered by when that admin membership was
+ * created. Legacy `users.role` + organization is used when there is no membership
+ * row, ordered by the user account's `created_at`.
+ */
+export async function resolveFirstCompanyAdminNamesByCompanyNames(
+  companyNames: string[],
+): Promise<Map<string, string>> {
+  const lowered = [
+    ...new Set(
+      companyNames
+        .map((name) => String(name ?? "").trim().toLowerCase())
+        .filter((name) => name && name !== "—"),
+    ),
+  ];
+  if (lowered.length === 0) return new Map();
+
+  type AdminCandidate = {
+    companyKey: string;
+    userId: string;
+    display: string;
+    createdAtMs: number;
+    fromMembership: boolean;
+  };
+  const byCompanyUser = new Map<string, AdminCandidate>();
+  const consider = (candidate: AdminCandidate) => {
+    if (!candidate.display || !Number.isFinite(candidate.createdAtMs)) return;
+    const key = `${candidate.companyKey}\0${candidate.userId}`;
+    const prev = byCompanyUser.get(key);
+    if (!prev) {
+      byCompanyUser.set(key, candidate);
+      return;
+    }
+    if (prev.fromMembership && !candidate.fromMembership) return;
+    if (!prev.fromMembership && candidate.fromMembership) {
+      byCompanyUser.set(key, candidate);
+      return;
+    }
+    if (candidate.createdAtMs < prev.createdAtMs) {
+      byCompanyUser.set(key, candidate);
+    }
+  };
+
+  try {
+    const membershipAdmins = await db
+      .select({
+        companyName: companies.name,
+        userId: users.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        username: users.username,
+        email: users.email,
+        createdAt: userCompanyMembership.createdAt,
+      })
+      .from(userCompanyMembership)
+      .innerJoin(companies, eq(userCompanyMembership.companyId, companies.id))
+      .innerJoin(users, eq(userCompanyMembership.userId, users.id))
+      .where(
+        and(
+          sql`lower(trim(${userCompanyMembership.role})) = 'company_admin'`,
+          inArray(sql`lower(trim(${companies.name}))`, lowered),
+        ),
+      );
+    for (const row of membershipAdmins) {
+      consider({
+        companyKey: String(row.companyName ?? "").trim().toLowerCase(),
+        userId: String(row.userId ?? "").toLowerCase(),
+        display: companyAdminDisplayName(row),
+        createdAtMs: row.createdAt?.getTime() ?? Number.NaN,
+        fromMembership: true,
+      });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('relation "user_company_membership" does not exist')) {
+      throw err;
+    }
+  }
+
+  const orgAdmins = await db
+    .select({
+      companyName: companies.name,
+      userId: users.id,
+      firstName: users.firstName,
+      lastName: users.lastName,
+      username: users.username,
+      email: users.email,
+      createdAt: users.createdAt,
+    })
+    .from(users)
+    .innerJoin(companies, eq(users.organizationId, companies.id))
+    .where(
+      and(
+        sql`lower(trim(${users.role})) = 'company_admin'`,
+        inArray(sql`lower(trim(${companies.name}))`, lowered),
+      ),
+    );
+  for (const row of orgAdmins) {
+    consider({
+      companyKey: String(row.companyName ?? "").trim().toLowerCase(),
+      userId: String(row.userId ?? "").toLowerCase(),
+      display: companyAdminDisplayName(row),
+      createdAtMs: row.createdAt?.getTime() ?? Number.NaN,
+      fromMembership: false,
+    });
+  }
+
+  const winner = new Map<string, AdminCandidate>();
+  for (const candidate of byCompanyUser.values()) {
+    const prev = winner.get(candidate.companyKey);
+    if (
+      !prev ||
+      candidate.createdAtMs < prev.createdAtMs ||
+      (candidate.createdAtMs === prev.createdAtMs &&
+        candidate.userId < prev.userId)
+    ) {
+      winner.set(candidate.companyKey, candidate);
+    }
+  }
+
+  const out = new Map<string, string>();
+  for (const [companyKey, candidate] of winner) {
+    if (candidate.display) out.set(companyKey, candidate.display);
+  }
+  return out;
+}
+
+/** Parallel `||` list aligned with `addedByCompanyName` company parts. */
+export function companyAdminNamesAlignedToCompanies(
+  companyField: string,
+  adminByCompanyLower: Map<string, string>,
+): string {
+  const parts = String(companyField ?? "")
+    .split("||")
+    .map((part) => part.trim());
+  const admins = parts.map((name) => {
+    if (!name || name === "—") return "";
+    return adminByCompanyLower.get(name.toLowerCase()) ?? "";
+  });
+  if (admins.every((name) => !name)) return "";
+  return admins.join("||");
 }
 
 /**

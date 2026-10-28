@@ -73,6 +73,7 @@ import {
   getDealCoSponsorEmailIntercept,
   getDealMemberEsignStatus,
   getDealMembers,
+  getRosterPersonCompany,
   getDealReferringSponsor,
   patchDealCoSponsorEmailIntercept,
   postDealMemberInvitationEmail,
@@ -87,6 +88,7 @@ import {
   postDealMyEsignSync,
   postDealMyEsignWithdrawSignature,
   postDealSponsorEsignSync,
+  postLeadSponsorDeleteSignedEsign,
   postSyncCompletedEsignDocuments,
 } from "../controllers/deal/dealInvestorEsignDocuments.controller.js";
 import { postDealDocumentSharedNotification } from "../controllers/deal/dealDocumentNotification.controller.js";
@@ -183,6 +185,7 @@ router.delete(
 );
 router.get("/deals/:dealId/referring-sponsor", getDealReferringSponsor);
 router.get("/deals/:dealId/members", getDealMembers);
+router.get("/deals/:dealId/roster-person-company", getRosterPersonCompany);
 router.get(
   "/deals/:dealId/co-sponsor-email-intercept",
   getDealCoSponsorEmailIntercept,
@@ -226,6 +229,10 @@ router.get(
   getDealSponsorEsignSignSessionHandler,
 );
 router.post("/deals/:dealId/sponsor-esign-sync", postDealSponsorEsignSync);
+router.post(
+  "/deals/:dealId/documents/esign-signed/delete",
+  postLeadSponsorDeleteSignedEsign,
+);
 router.post(
   "/deals/:dealId/documents/sync-esign-completed",
   postSyncCompletedEsignDocuments,

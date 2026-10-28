@@ -3311,16 +3311,18 @@ export async function updateDealSaasBillingStartsAt(params: {
     };
   }
 
-  const cid = normalizeDealId(params.companyId);
   const dealId = normalizeDealId(params.dealId);
-  if (!cid || !dealId) {
+  if (!dealId) {
     return { ok: false, status: 400, message: "Select a deal first." };
   }
 
   const [deal] = await db
-    .select({ id: addDealForm.id })
+    .select({
+      id: addDealForm.id,
+      organizationId: addDealForm.organizationId,
+    })
     .from(addDealForm)
-    .where(and(eq(addDealForm.id, dealId), eq(addDealForm.organizationId, cid)))
+    .where(eq(addDealForm.id, dealId))
     .limit(1);
   if (!deal) {
     return { ok: false, status: 404, message: "Deal not found." };
@@ -3331,9 +3333,28 @@ export async function updateDealSaasBillingStartsAt(params: {
     .set({ saasBillingStartsAt: startsAt })
     .where(eq(addDealForm.id, dealId));
 
-  const [row] = await listDealBillingForCompany(params.companyId, [dealId]);
+  const orgId =
+    normalizeDealId(String(deal.organizationId ?? "")) ||
+    normalizeDealId(params.companyId);
+  let row: DealBillingListRow | undefined;
+  try {
+    if (orgId) {
+      const [listed] = await listDealBillingForCompany(orgId, [dealId]);
+      row = listed;
+    }
+    if (!row) {
+      const all = await listDealBillingForAllOrganizations();
+      row = all.find((item) => item.id.trim().toLowerCase() === dealId);
+    }
+  } catch (err) {
+    console.error("updateDealSaasBillingStartsAt reload:", err);
+  }
   if (!row) {
-    return { ok: false, status: 404, message: "Deal not found." };
+    return {
+      ok: false,
+      status: 500,
+      message: "The billing date was saved, but the deal list could not be refreshed. Reload the page.",
+    };
   }
 
   void notifyLeadSponsorsOfDealBillingStartDate({

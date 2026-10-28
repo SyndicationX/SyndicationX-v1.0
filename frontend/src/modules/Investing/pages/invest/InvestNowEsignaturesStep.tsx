@@ -153,9 +153,23 @@ export function InvestNowEsignaturesStep({
     setSignModalOpen(true)
   }, [firstPendingSignatureRequestId])
 
+  const documentsForThisStep = useMemo(() => {
+    const currentId = fallbackSignatureRequestId?.trim() || ""
+    const forCurrent = currentId
+      ? esignDocuments.filter((doc) => doc.signatureRequestId?.trim() === currentId)
+      : []
+    if (forCurrent.length > 0) return forCurrent
+    const latestId = [...esignDocuments]
+      .reverse()
+      .map((doc) => doc.signatureRequestId?.trim() || "")
+      .find(Boolean)
+    if (!latestId) return esignDocuments
+    return esignDocuments.filter((doc) => doc.signatureRequestId?.trim() === latestId)
+  }, [esignDocuments, fallbackSignatureRequestId])
+
   const displayDocuments =
-    esignDocuments.length > 0
-      ? esignDocuments
+    documentsForThisStep.length > 0
+      ? documentsForThisStep
       : profileTemplate &&
           needsSignature &&
           esignSendOk &&

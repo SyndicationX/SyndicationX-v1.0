@@ -558,6 +558,18 @@
   z-index: 1200;
 }
 
+.deals_add_inv_no_company_overlay.um_modal_overlay {
+  z-index: 1400;
+}
+
+.deals_add_inv_no_company_message {
+  color: #1b1b1d;
+}
+
+:root[data-theme="dark"] .um_modal_desc.deals_add_inv_no_company_message {
+  color: var(--portal-text, #fff);
+}
+
 /* Add / Edit Investor Class — same focus treatment as deal create fields */
 .deal_inv_ic_form_modal_panel
   .deals_add_inv_input.deals_add_inv_field_control:focus-visible {

@@ -25,6 +25,7 @@ import {
   signFlowInvestorPhaseComplete,
   signFlowPendingSponsorSignAudience,
   signFlowTemplateHasSponsorFields,
+  type SignFlowDocument,
 } from "../esign/signflow.service.js";
 import { db } from "../../database/db.js";
 import { dealInvestment } from "../../schema/deal.schema/deal-investment.schema.js";
@@ -35,6 +36,9 @@ import {
   getAddDealFormById,
   updateDealOfferingInvestorPreviewById,
 } from "./dealForm.service.js";
+import {
+  listDealSponsorSignerOptions,
+} from "./dealEsignSigningWorkflow.service.js";
 import { sequentialWorkflowSponsorDocsGateOpen } from "./dealSequentialEsignWorkflow.service.js";
 import {
   findEsignTemplateFile,
@@ -390,6 +394,198 @@ const NO_PENDING_SPONSOR_AUDIENCE = {
   pendingNamedSponsorEmails: [] as string[],
 };
 
+const NO_SIGNED_PARTIES = {
+  signedBy: [] as string[],
+  investorSignedNames: [] as string[],
+  sponsorSignedNames: [] as string[],
+  sponsorSignedEmails: [] as string[],
+  investorSignerNamed: false,
+  investorCompleted: false,
+  sponsorCompleted: false,
+  signersLoaded: false,
+};
+
+function isInvestorSignFlowRecipient(recipient: {
+  id?: string;
+  role?: string;
+}): boolean {
+  const role = String(recipient.role ?? "").trim().toLowerCase();
+  const id = String(recipient.id ?? "").trim().toLowerCase();
+  return (
+    role.includes("investor") ||
+    role.includes("buyer") ||
+    id === "rec_investor" ||
+    id === "rec_1"
+  );
+}
+
+function isGenericSignerLabel(name: string): boolean {
+  const lower = name.replace(/\u2060/g, "").trim().toLowerCase();
+  return (
+    !lower ||
+    lower.includes("anyone can sign") ||
+    lower === "any sponsor" ||
+    lower === "sponsor" ||
+    lower === "investor" ||
+    lower === "buyer" ||
+    lower === "seller" ||
+    lower.endsWith("@embed.local")
+  );
+}
+
+/** Real person name or email. Placeholder roles such as "Anyone can sign" are omitted. */
+function usableSignedPartyLabel(recipient: {
+  name?: string;
+  email?: string;
+}): string | null {
+  const name = String(recipient.name ?? "")
+    .replace(/\u2060/g, "")
+    .trim();
+  if (name && !isGenericSignerLabel(name)) return name;
+  const email = String(recipient.email ?? "").trim();
+  if (email.includes("@") && !isGenericSignerLabel(email)) return email;
+  return null;
+}
+
+/** Typed signature text is the name the person signed. Drawn marks are images. */
+function personNameFromFieldValue(raw: string): string | null {
+  let value = raw.replace(/\u2060/g, "").trim();
+  if (!value) return null;
+  const lower = value.toLowerCase();
+  if (
+    lower.startsWith("drawn:") ||
+    lower.startsWith("data:") ||
+    lower.startsWith("http")
+  ) {
+    return null;
+  }
+  if (lower.startsWith("typed:")) value = value.slice("typed:".length).trim();
+  if (!value || value.length > 80) return null;
+  return usableSignedPartyLabel({ name: value });
+}
+
+function isSponsorSignFlowRecipient(recipient: {
+  id?: string;
+  role?: string;
+}): boolean {
+  const role = String(recipient.role ?? "").trim().toLowerCase();
+  const id = String(recipient.id ?? "").trim().toLowerCase();
+  return (
+    role.includes("sponsor") ||
+    role.includes("seller") ||
+    role === "open-sponsor" ||
+    id === "rec_sponsor" ||
+    id === "rec_sponsor_open" ||
+    id === "rec_2"
+  );
+}
+
+/** Completed signature only. A viewed recipient can still carry signedAt. */
+function recipientSigningCompleted(recipient: {
+  signed?: boolean;
+  signingStatus?: string;
+  status?: string;
+  signedAt?: string;
+}): boolean {
+  if (recipient.signed === true) return true;
+  const status = String(recipient.signingStatus ?? recipient.status ?? "")
+    .trim()
+    .toLowerCase();
+  if (status === "signed" || status === "completed") return true;
+  // Sponsor finished their own session; SignFlow may still say awaiting countersign.
+  return status === "awaiting_countersign" && Boolean(recipient.signedAt?.trim());
+}
+
+function inkedSignerName(
+  doc: SignFlowDocument,
+  recipientId: string | undefined,
+): string | null {
+  const id = recipientId?.trim();
+  if (!id) return null;
+  for (const field of doc.fields ?? []) {
+    if (String(field.recipientId ?? "").trim() !== id) continue;
+    const type = String(field.type ?? "").trim().toLowerCase();
+    if (type !== "signature" && type !== "name") continue;
+    const name = personNameFromFieldValue(String(field.value ?? ""));
+    if (name) return name;
+  }
+  return null;
+}
+
+function sameSignerName(left: string, right: string): boolean {
+  const a = left.replace(/\u2060/g, "").trim().toLowerCase();
+  const b = right.replace(/\u2060/g, "").trim().toLowerCase();
+  return Boolean(a) && a === b;
+}
+
+function collectSignedPartyNames(
+  doc: SignFlowDocument,
+  assumeComplete: boolean,
+): {
+  signedBy: string[];
+  investorSignedNames: string[];
+  sponsorSignedNames: string[];
+  sponsorSignedEmails: string[];
+  investorSignerNamed: boolean;
+  investorCompleted: boolean;
+  sponsorCompleted: boolean;
+  signersLoaded: boolean;
+} {
+  const investorSignedNames: string[] = [];
+  const sponsorSignedNames: string[] = [];
+  const sponsorSignedEmails: string[] = [];
+  let investorSignerNamed = false;
+  let investorCompleted = false;
+  let sponsorCompleted = false;
+  for (const recipient of doc.recipients ?? []) {
+    const investor = isInvestorSignFlowRecipient(recipient);
+    const sponsor = isSponsorSignFlowRecipient(recipient) && !investor;
+    if (!investor && !sponsor) continue;
+    const completed = assumeComplete || recipientSigningCompleted(recipient);
+    if (!completed) continue;
+    const label =
+      usableSignedPartyLabel(recipient) ??
+      inkedSignerName(doc, recipient.id);
+    if (investor) {
+      investorCompleted = true;
+      if (label) {
+        investorSignedNames.push(label);
+        investorSignerNamed = true;
+      }
+    }
+    if (sponsor) {
+      sponsorCompleted = true;
+      const email = String(recipient.email ?? "").trim();
+      if (email.includes("@") && !isGenericSignerLabel(email)) {
+        sponsorSignedEmails.push(email);
+      }
+      const inked = inkedSignerName(doc, recipient.id);
+      const sponsorLabel = [inked, label].find(
+        (name) =>
+          Boolean(name) &&
+          !investorSignedNames.some((investorName) =>
+            sameSignerName(investorName, name ?? ""),
+          ),
+      );
+      if (sponsorLabel) sponsorSignedNames.push(sponsorLabel);
+    }
+  }
+  const signedBy = [...investorSignedNames, ...sponsorSignedNames].filter(
+    (name, index, all) =>
+      all.findIndex((item) => item.toLowerCase() === name.toLowerCase()) === index,
+  );
+  return {
+    signedBy: signedBy.slice(0, 8),
+    investorSignedNames,
+    sponsorSignedNames,
+    sponsorSignedEmails,
+    investorSignerNamed,
+    investorCompleted,
+    sponsorCompleted,
+    signersLoaded: true,
+  };
+}
+
 export async function resolveEsignSponsorSignState(
   send: StoredDealInvestorEsignSend,
 ): Promise<{
@@ -401,26 +597,52 @@ export async function resolveEsignSponsorSignState(
   openToAnySponsor: boolean;
   /** Unsigned slots assigned to specific sponsors. */
   pendingNamedSponsorEmails: string[];
+  /** People who have finished signing, in recipient order. */
+  signedBy: string[];
+  investorSignedNames: string[];
+  sponsorSignedNames: string[];
+  sponsorSignedEmails: string[];
+  /** True when the completed investor signer was stored under a real name or email. */
+  investorSignerNamed: boolean;
+  /** Investor recipient has finished signing on the live document. */
+  investorCompleted: boolean;
+  /** Sponsor recipient has finished signing on the live document. */
+  sponsorCompleted: boolean;
+  /** Live signer list was loaded. */
+  signersLoaded: boolean;
 }> {
   const investorSignedLocal = esignSendReadyForSponsorCounterSign(send);
   const fullyCompleted = Boolean(send.completedAt?.trim());
+  const sigId = send.signatureRequestId?.trim();
+  let doc: SignFlowDocument | null = null;
+  let signedParties = NO_SIGNED_PARTIES;
+  if (sigId && getActiveEsignProvider() === "signflow") {
+    try {
+      doc = await getSignFlowDocument(sigId);
+      signedParties = collectSignedPartyNames(doc, fullyCompleted);
+    } catch {
+      doc = null;
+    }
+  }
+
   if (fullyCompleted) {
     return {
       awaitingSponsorSignature: false,
       sponsorSigned: true,
       sponsorMaySignBeforeInvestor: false,
       ...NO_PENDING_SPONSOR_AUDIENCE,
+      ...signedParties,
     };
   }
 
-  const sigId = send.signatureRequestId?.trim();
-  if (!sigId || getActiveEsignProvider() !== "signflow") {
+  if (!doc) {
     if (!investorSignedLocal) {
       return {
         awaitingSponsorSignature: false,
         sponsorSigned: fullyCompleted,
         sponsorMaySignBeforeInvestor: false,
         ...NO_PENDING_SPONSOR_AUDIENCE,
+        ...signedParties,
       };
     }
     return {
@@ -428,11 +650,11 @@ export async function resolveEsignSponsorSignState(
       sponsorSigned: fullyCompleted,
       sponsorMaySignBeforeInvestor: false,
       ...NO_PENDING_SPONSOR_AUDIENCE,
+      ...signedParties,
     };
   }
 
   try {
-    const doc = await getSignFlowDocument(sigId);
     const workflowType = String(doc.workflowType ?? "")
       .trim()
       .toLowerCase();
@@ -474,6 +696,7 @@ export async function resolveEsignSponsorSignState(
         sponsorSigned: true,
         sponsorMaySignBeforeInvestor: false,
         ...NO_PENDING_SPONSOR_AUDIENCE,
+        ...signedParties,
       };
     }
 
@@ -488,6 +711,7 @@ export async function resolveEsignSponsorSignState(
       sponsorMaySignBeforeInvestor,
       openToAnySponsor: audience.openToAnySponsor,
       pendingNamedSponsorEmails: audience.namedEmails,
+      ...signedParties,
     };
   } catch {
     if (!investorSignedLocal) {
@@ -496,6 +720,7 @@ export async function resolveEsignSponsorSignState(
         sponsorSigned: fullyCompleted,
         sponsorMaySignBeforeInvestor: false,
         ...NO_PENDING_SPONSOR_AUDIENCE,
+        ...signedParties,
       };
     }
     return {
@@ -503,6 +728,7 @@ export async function resolveEsignSponsorSignState(
       sponsorSigned: fullyCompleted,
       sponsorMaySignBeforeInvestor: false,
       ...NO_PENDING_SPONSOR_AUDIENCE,
+      ...signedParties,
     };
   }
 }
@@ -545,6 +771,8 @@ function buildEsignNestedDocument(params: {
   investorMatchIds: string[];
   investorName: string;
   investorProfile: string;
+  signedByInvestor: string;
+  signedBySponsor: string;
 }): Record<string, unknown> {
   const investorName = params.investorName.trim();
   const investorProfile = params.investorProfile.trim();
@@ -586,6 +814,178 @@ function buildEsignNestedDocument(params: {
     ...(params.pendingNamedSponsorEmails.length > 0
       ? { esignSponsorSignerEmails: params.pendingNamedSponsorEmails }
       : {}),
+    ...(params.signedByInvestor
+      ? { esignSignedByInvestor: params.signedByInvestor }
+      : {}),
+    ...(params.signedBySponsor
+      ? { esignSignedBySponsor: params.signedBySponsor }
+      : {}),
+    ...((params.signedByInvestor || params.signedBySponsor)
+      ? {
+          esignSignedBy: [params.signedByInvestor, params.signedBySponsor].filter(
+            Boolean,
+          ),
+        }
+      : {}),
+  };
+}
+
+function displayNameFromSignerLabels(
+  liveNames: string[],
+  rosterName: string,
+  namesByEmail: Map<string, string>,
+): string | null {
+  const mapped = liveNames
+    .map((name) => {
+      const label = String(name ?? "").trim()
+      return namesByEmail.get(label.toLowerCase()) || label
+    })
+    .filter(Boolean);
+  const person = mapped.find(
+    (name) => !name.includes("@") && !isGenericSignerLabel(name),
+  );
+  if (person) return person;
+  const roster = rosterName.replace(/\u2060/g, "").trim();
+  const rosterDisplay = namesByEmail.get(roster.toLowerCase()) || roster;
+  if (
+    rosterDisplay &&
+    rosterDisplay !== "—" &&
+    !isGenericSignerLabel(rosterDisplay) &&
+    !rosterDisplay.includes("@")
+  ) {
+    return rosterDisplay;
+  }
+  return mapped.find((name) => name.includes("@")) ?? (roster && roster !== "—" ? roster : null);
+}
+
+function usablePartyName(value: unknown): string {
+  const name = String(value ?? "").replace(/\u2060/g, "").trim();
+  if (!name || name === "—" || isGenericSignerLabel(name)) return "";
+  return name;
+}
+
+function rememberedSignerNames(doc: Record<string, unknown> | undefined): {
+  investor: string;
+  sponsor: string;
+} {
+  if (!doc) return { investor: "", sponsor: "" };
+  const investorField = usablePartyName(doc.esignSignedByInvestor);
+  const sponsorField = usablePartyName(doc.esignSignedBySponsor);
+  if (investorField || sponsorField) {
+    return { investor: investorField, sponsor: sponsorField };
+  }
+  const names = Array.isArray(doc.esignSignedBy)
+    ? doc.esignSignedBy.map((value) => usablePartyName(value)).filter(Boolean)
+    : [];
+  const investorName = usablePartyName(doc.esignInvestorName);
+  if (names.length >= 2) {
+    return { investor: names[0] ?? "", sponsor: names[names.length - 1] ?? "" };
+  }
+  const only = names[0] ?? "";
+  if (!only) return { investor: "", sponsor: "" };
+  if (investorName && only.toLowerCase() === investorName.toLowerCase()) {
+    return { investor: only, sponsor: "" };
+  }
+  if (doc.esignSponsorSigned === true) return { investor: "", sponsor: only };
+  return { investor: only, sponsor: "" };
+}
+
+/** Removing an investor must not drop the sponsor who already signed. */
+function mergeRememberedSignerNames(
+  doc: Record<string, unknown>,
+  previous: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const current = rememberedSignerNames(doc);
+  const earlier = rememberedSignerNames(previous);
+  const sponsorSigned =
+    doc.esignSponsorSigned === true || previous?.esignSponsorSigned === true;
+  const investor = current.investor || earlier.investor;
+  const earlierSponsor =
+    sponsorSigned && earlier.sponsor && !sameSignerName(earlier.sponsor, investor)
+      ? earlier.sponsor
+      : "";
+  const sponsor =
+    current.sponsor && !sameSignerName(current.sponsor, investor)
+      ? current.sponsor
+      : earlierSponsor;
+  const signedBy = [investor, sponsor].filter(Boolean);
+  return {
+    ...doc,
+    ...(investor ? { esignSignedByInvestor: investor } : {}),
+    ...(sponsor ? { esignSignedBySponsor: sponsor } : {}),
+    ...(signedBy.length > 0 ? { esignSignedBy: signedBy } : {}),
+  };
+}
+
+function uniqueSignerNames(values: Array<string | null | undefined>): string[] {
+  const names: string[] = [];
+  for (const raw of values) {
+    const name = String(raw ?? "").replace(/\u2060/g, "").trim();
+    if (!name || name === "—" || isGenericSignerLabel(name)) continue;
+    if (names.some((item) => item.toLowerCase() === name.toLowerCase())) continue;
+    names.push(name);
+  }
+  return names.slice(0, 8);
+}
+
+function signedByForDocumentsColumn(params: {
+  investorSignedNames: string[];
+  sponsorSignedNames: string[];
+  investorCompleted: boolean;
+  sponsorCompleted: boolean;
+  signersLoaded: boolean;
+  investorLabel: string;
+  /** Sponsor who signed the open slot, saved when they opened or finished signing. */
+  recordedSponsorName: string;
+  sponsorSignedEmails?: string[];
+  /** Stored signed PDF or a fully completed send. Not a view or an in-progress session. */
+  investorStoredComplete: boolean;
+  sponsorSignedRelativePath?: string;
+  fullSignedRelativePath?: string;
+  fullyCompleted: boolean;
+  sponsorNamesByEmail: Map<string, string>;
+}): { investor: string; sponsor: string } {
+  const investorDone = params.investorCompleted || params.investorStoredComplete;
+  // Completed packets signed before this column existed still have completedAt
+  // or a stored full PDF. An open SignFlow slot stays “Anyone can sign”; the
+  // name shown is the sponsor who signed that slot.
+  const sponsorDone =
+    params.sponsorCompleted ||
+    params.fullyCompleted ||
+    Boolean(params.sponsorSignedRelativePath?.trim()) ||
+    Boolean(params.fullSignedRelativePath?.trim());
+  const investorRoster = String(params.investorLabel ?? "").replace(/\u2060/g, "").trim();
+  const investorLive =
+    displayNameFromSignerLabels(
+      params.investorSignedNames,
+      "",
+      params.sponsorNamesByEmail,
+    ) ?? "";
+  const investor = investorDone
+    ? !isGenericSignerLabel(investorRoster)
+      ? investorRoster
+      : investorLive
+    : "";
+  const recordedRaw = String(params.recordedSponsorName ?? "").replace(/\u2060/g, "").trim();
+  const recordedSponsor = recordedRaw.includes("@")
+    ? params.sponsorNamesByEmail.get(recordedRaw.toLowerCase()) || recordedRaw
+    : recordedRaw;
+  const sponsorFromEmail = (params.sponsorSignedEmails ?? [])
+    .map((email) => params.sponsorNamesByEmail.get(email.trim().toLowerCase()) || "")
+    .find((name) => name && !sameSignerName(name, investor));
+  const sponsorFromLive = params.sponsorSignedNames.find(
+    (name) => name && !sameSignerName(name, investor) && !isGenericSignerLabel(name),
+  );
+  const sponsorCandidate = [recordedSponsor, sponsorFromLive, sponsorFromEmail].find(
+    (name) =>
+      Boolean(name) &&
+      !isGenericSignerLabel(name ?? "") &&
+      !sameSignerName(name ?? "", investor),
+  );
+  const sponsor = sponsorDone ? sponsorCandidate ?? "" : "";
+  return {
+    investor: isGenericSignerLabel(investor) ? "" : investor,
+    sponsor: isGenericSignerLabel(sponsor) ? "" : sponsor,
   };
 }
 
@@ -599,6 +999,7 @@ async function collectCompletedEsignNestedDocuments(
   esignStatusJson: string | null | undefined,
   sponsorDocsGateOpen: boolean,
   templates: EsignTemplatesJson | null,
+  sponsorNamesByEmail: Map<string, string>,
 ): Promise<Record<string, unknown>[]> {
   const bundle = parseEsignStatusBundle(esignStatusJson);
   if (!bundle?.sends.length) return [];
@@ -657,6 +1058,26 @@ async function collectCompletedEsignNestedDocuments(
       const templateFileId = docId.includes("::")
         ? docId.split("::").pop()?.trim() ?? docId
         : docId;
+      const signedBy = signedByForDocumentsColumn({
+        investorSignedNames: sponsorState.investorSignedNames,
+        sponsorSignedNames: sponsorState.sponsorSignedNames,
+        investorCompleted: sponsorState.investorCompleted,
+        sponsorCompleted: sponsorState.sponsorCompleted,
+        signersLoaded: sponsorState.signersLoaded,
+        investorLabel,
+        recordedSponsorName:
+          send.sponsorSignedByName?.trim() ||
+          send.sponsorSignedByEmail?.trim() ||
+          "",
+        sponsorSignedEmails: sponsorState.sponsorSignedEmails,
+        investorStoredComplete:
+          esignSendReadyForSponsorCounterSign(send) ||
+          Boolean(send.completedAt?.trim()),
+        sponsorSignedRelativePath: send.sponsorSignedRelativePath,
+        fullSignedRelativePath: send.fullSignedRelativePath,
+        fullyCompleted: Boolean(send.completedAt?.trim()),
+        sponsorNamesByEmail,
+      });
       out.push(
         buildEsignNestedDocument({
           docId,
@@ -676,6 +1097,8 @@ async function collectCompletedEsignNestedDocuments(
           investorMatchIds,
           investorName: investorLabel,
           investorProfile: profileLabel,
+          signedByInvestor: signedBy.investor,
+          signedBySponsor: signedBy.sponsor,
         }),
       );
     }
@@ -713,6 +1136,7 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
     db
       .select({
         id: dealLpInvestor.id,
+        investorName: dealLpInvestor.investorName,
         contactMemberId: dealLpInvestor.contactMemberId,
         email: dealLpInvestor.email,
         profileId: dealLpInvestor.profileId,
@@ -782,8 +1206,22 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
 
   const sponsorDocsGateOpen = await sequentialWorkflowSponsorDocsGateOpen(id);
   const templates = await getDealEsignTemplatesState(id).catch(() => null);
-
+  const sponsorNamesByEmail = new Map<string, string>();
+  const sponsorOptions = await listDealSponsorSignerOptions(id).catch(() => []);
+  for (const option of sponsorOptions) {
+    const email = option.email.trim().toLowerCase();
+    const name = option.name.trim();
+    if (email && name) sponsorNamesByEmail.set(email, name);
+  }
   const nestedById = new Map<string, Record<string, unknown>>();
+  const rememberEsignDoc = (doc: Record<string, unknown>) => {
+    const docId = String(doc.id ?? "").trim();
+    if (!docId) return;
+    nestedById.set(
+      docId,
+      mergeRememberedSignerNames(doc, nestedById.get(docId)),
+    );
+  };
   for (const row of investments) {
     const docs = await collectCompletedEsignNestedDocuments(
       id,
@@ -795,33 +1233,43 @@ export async function syncCompletedEsignDocumentsToDocumentsTab(
       row.esignStatusJson,
       sponsorDocsGateOpen,
       templates,
+      sponsorNamesByEmail,
     );
-    for (const doc of docs) {
-      const docId = String(doc.id ?? "").trim();
-      if (docId) nestedById.set(docId, doc);
-    }
+    for (const doc of docs) rememberEsignDoc(doc);
   }
   for (const row of roster) {
     const docs = await collectCompletedEsignNestedDocuments(
       id,
       row.id,
       "lp",
-      row.email?.trim() ?? "",
+      row.investorName?.trim() || row.email?.trim() || "",
       row.profileId,
       matchIdsFor(row.contactMemberId, row.id),
       row.esignStatusJson,
       sponsorDocsGateOpen,
       templates,
+      sponsorNamesByEmail,
     );
-    for (const doc of docs) {
-      const docId = String(doc.id ?? "").trim();
-      if (docId) nestedById.set(docId, doc);
-    }
+    for (const doc of docs) rememberEsignDoc(doc);
   }
 
   const { visibility, sections: existingSections } = readPreviewParts(
     deal.offeringInvestorPreviewJson,
   );
+  for (const section of existingSections) {
+    if (!isEsignTemplateSection(section)) continue;
+    const nested = Array.isArray(section.nestedDocuments)
+      ? section.nestedDocuments
+      : [];
+    for (const raw of nested) {
+      if (raw == null || typeof raw !== "object") continue;
+      const previous = raw as Record<string, unknown>;
+      const docId = String(previous.id ?? "").trim();
+      const current = docId ? nestedById.get(docId) : undefined;
+      if (!current) continue;
+      nestedById.set(docId, mergeRememberedSignerNames(current, previous));
+    }
+  }
   const otherSections = stripInvestorEsignDocumentsFromOtherSections(
     existingSections,
   );

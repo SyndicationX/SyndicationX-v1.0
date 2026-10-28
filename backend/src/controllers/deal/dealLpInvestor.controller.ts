@@ -169,7 +169,7 @@ export async function postDealLpInvestor(
     b.distribution_allocation_percent ?? b.distributionAllocationPercent,
   );
 
-  if (!contactId.trim()) {
+    if (!contactId.trim()) {
     res.status(400).json({ message: "Member (contact) is required" });
     return;
   }

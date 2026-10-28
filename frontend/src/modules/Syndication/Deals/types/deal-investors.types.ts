@@ -67,6 +67,10 @@ export interface DealInvestorRow {
   /** Display name resolved for `fundApprovedByUserId`. */
   fundApprovedByDisplayName?: string
   committed: string
+  /** `deal_investment.funded_amount`. Empty when not recorded. */
+  amountReceived?: string
+  /** `deal_investment.accrued_preferred_return`. Empty when not recorded. */
+  accruedAmount?: string
   signedDate: string
   /**
    * eSign workflow timestamps after Send E-sign (sent → viewed → signed → completed).
@@ -108,6 +112,11 @@ export interface DealInvestorRow {
   addedByDisplayName?: string
   /** Company the sponsor belongs to (`users.organization_id`). */
   addedByCompanyName?: string
+  /**
+   * First-created company admin for `addedByCompanyName`.
+   * Multiple companies use the same `||` order as the company field.
+   */
+  companyAdminName?: string
   /** Email for the Sponsor/Co-sponsor associated with this investor. */
   addedByEmail?: string
   /** Portal `users.id` of the Sponsor/Co-sponsor associated with this investor. */
@@ -164,6 +173,9 @@ export interface DealInvestorEsignSendStatus {
   signedAt: string | null
   completedAt: string | null
   signatureRequestId?: string | null
+  fullSignedRelativePath?: string
+  sponsorSignedRelativePath?: string
+  sponsorSignedByName?: string
   documents: DealInvestorEsignDocumentRef[]
 }
 

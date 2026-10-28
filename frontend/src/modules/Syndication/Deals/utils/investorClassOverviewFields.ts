@@ -104,6 +104,17 @@ export function matchDealInvestorClass(
   )
 }
 
+/** `deal_lp_investor.entity_ownership_percent` shown on Team Members. */
+export function teamMemberOwnershipPercentLabel(raw: string | undefined): string {
+  const text = String(raw ?? "")
+    .trim()
+    .replace(/%/g, "")
+  if (!text || text === "—" || text === "-") return "—"
+  const n = Number(text)
+  if (!Number.isFinite(n)) return "—"
+  return `${(Math.round(n * 100) / 100).toFixed(2)}%`
+}
+
 const CLASS_TYPE_TABLE_SUFFIX: Record<string, string> = {
   lp: "Limited Partners",
   gp: "General Partners",

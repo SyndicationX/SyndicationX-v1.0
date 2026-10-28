@@ -9,6 +9,7 @@ import {
   ContactRound,
   Eye,
   Files,
+  Info,
   Inbox,
   LayoutDashboard,
   Layers,
@@ -56,6 +57,12 @@ import {
 } from "@/modules/feedback/api/feedbackApi"
 // import { SX_LOGO_SRC } from "@/assets/branding"
 import { SX_SIDENAV_LOGO } from "@/assets/branding"
+import { CoSponsorCompanyRequiredAlert } from "../auth/CoSponsorCompanyRequiredAlert"
+import {
+  CO_SPONSOR_COMPANY_REQUIRED_EVENT,
+  loadCoSponsorNeedsCompany,
+} from "../auth/coSponsorCompanyGate"
+import { PORTAL_ACTIVE_COMPANY_CHANGED_EVENT } from "../auth/setActiveCompany"
 import "./page_layout.css"
 
 type SidebarIcon = ComponentType<{ size?: number; className?: string }>
@@ -340,11 +347,35 @@ function PageLayoutInner() {
   const { mode, setMode, portalSwitchOverlay } = usePortalMode()
   const platformAdmin = isPlatformAdmin()
   const [pendingFeedbackCount, setPendingFeedbackCount] = useState(0)
+  const [coSponsorNeedsCompany, setCoSponsorNeedsCompany] = useState(false)
+  const [dealOpenBlocked, setDealOpenBlocked] = useState(false)
   const [leadSponsorSessionRev, setLeadSponsorSessionRev] = useState(0)
   const lpInvestor = isLpInvestorSessionUser()
   const { sidebarLogoSrc: workspaceSidebarLogoSrc } = useAppShellBranding()
   const hasTenantSidebarLogo = Boolean(workspaceSidebarLogoSrc)
   const sidebarHeaderLogoSrc = workspaceSidebarLogoSrc ?? SX_SIDENAV_LOGO
+
+  useEffect(() => {
+    let cancelled = false
+    const load = () => {
+      void loadCoSponsorNeedsCompany(true).then((needsCompany) => {
+        if (cancelled) return
+        setCoSponsorNeedsCompany(needsCompany)
+        if (!needsCompany) setDealOpenBlocked(false)
+      })
+    }
+    load()
+    const onDealBlocked = () => setDealOpenBlocked(true)
+    window.addEventListener("portal-session-user-updated", load)
+    window.addEventListener(PORTAL_ACTIVE_COMPANY_CHANGED_EVENT, load)
+    window.addEventListener(CO_SPONSOR_COMPANY_REQUIRED_EVENT, onDealBlocked)
+    return () => {
+      cancelled = true
+      window.removeEventListener("portal-session-user-updated", load)
+      window.removeEventListener(PORTAL_ACTIVE_COMPANY_CHANGED_EVENT, load)
+      window.removeEventListener(CO_SPONSOR_COMPANY_REQUIRED_EVENT, onDealBlocked)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -447,6 +478,9 @@ function PageLayoutInner() {
     <div className="app_shell">
       {portalSwitchOverlay ? (
         <PortalSwitchLoader caption={portalSwitchOverlay.caption} />
+      ) : null}
+      {dealOpenBlocked ? (
+        <CoSponsorCompanyRequiredAlert onDismiss={() => setDealOpenBlocked(false)} />
       ) : null}
       <aside className="app_sidebar">
         <div
@@ -645,6 +679,18 @@ function PageLayoutInner() {
       <section className="app_main_section">
         <TopNavBar />
         <main className="app_main_content">
+          {coSponsorNeedsCompany ? (
+            <div className="app_cosponsor_company_alert" role="alert">
+              <Info size={20} strokeWidth={2.25} aria-hidden />
+              <div>
+                <strong>Create a company</strong>
+                <span>
+                  Create a company to open your deals.{" "}
+                  <Link to="/account/company">Create a company</Link>
+                </span>
+              </div>
+            </div>
+          ) : null}
           <Outlet />
         </main>
       </section>

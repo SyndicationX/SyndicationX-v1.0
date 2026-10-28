@@ -18,6 +18,7 @@ import {
 } from "react"
 import { createPortal } from "react-dom"
 import { useNavigate } from "react-router-dom"
+import { coSponsorMayOpenDeal } from "@/common/auth/coSponsorCompanyGate"
 import { toast } from "@/common/components/Toast"
 import { MemberRemoveConfirmModal } from "@/modules/Syndication/usermanagement/MemberRemoveConfirmModal"
 import "../tabs/deal_members/components/deal-member-row-actions.css"
@@ -222,7 +223,10 @@ export function DealRowActions({
       onPreviewDeal()
       return
     }
-    navigate(`/deals/${encodeURIComponent(dealId)}`)
+    void coSponsorMayOpenDeal().then((allowed) => {
+      if (!allowed) return
+      navigate(`/deals/${encodeURIComponent(dealId)}`)
+    })
   }
 
   function handleInvestNow() {

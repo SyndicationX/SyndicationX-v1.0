@@ -175,7 +175,13 @@ import "../deal_members/tab/deal-members.css";
 import "../../../contacts/contacts.css";
 
 export interface DealInvestorsTabHandle {
-  openViewInvestor: (row: DealInvestorRow) => void;
+    openViewInvestor: (
+      row: DealInvestorRow,
+      options?: {
+        distributionsInsteadOfInvestment?: boolean
+        sponsorDetails?: boolean
+      },
+    ) => void;
   openEditInvestor: (row: DealInvestorRow) => void;
   /** Refetch LP investors from the API without remounting (e.g. after member delete). */
   refetchInvestors: () => Promise<void>;
@@ -1627,6 +1633,11 @@ function DealInvestorsPopulated({
             icon={item.icon}
             title={item.title}
             description={description}
+            infoText={
+              item.title === "Document signed"
+                ? "This count includes an investor only after both the investor and the sponsor have signed. While the Signed column says Signed, only the investor has finished, and that investor is not included. It is included when the column says Completed. A date entered by hand also counts."
+                : undefined
+            }
           />
         );
       }),
@@ -2118,6 +2129,9 @@ export const DealInvestorsTab = forwardRef<
   );
   const [editRow, setEditRow] = useState<DealInvestorRow | null>(null);
   const [editLpRow, setEditLpRow] = useState<DealInvestorRow | null>(null);
+  const [viewDistributionsInsteadOfInvestment, setViewDistributionsInsteadOfInvestment] =
+    useState(false);
+  const [viewSponsorDetails, setViewSponsorDetails] = useState(false);
   const [viewInvestorRow, setViewInvestorRow] =
     useState<DealInvestorRow | null>(null);
   const [sendEsignModalRow, setSendEsignModalRow] =
@@ -2160,6 +2174,7 @@ export const DealInvestorsTab = forwardRef<
 
   const handleEditInvestor = useCallback(
     (row: DealInvestorRow) => {
+      setViewDistributionsInsteadOfInvestment(false);
       setViewInvestorRow(null);
       setLpResumeAddMemberDraft(false);
       /** Dismiss “Add investment” so `addInvestmentOpen` is false; otherwise the effect
@@ -2189,10 +2204,16 @@ export const DealInvestorsTab = forwardRef<
   useImperativeHandle(
     ref,
     () => ({
-      openViewInvestor: (row: DealInvestorRow) => {
+      openViewInvestor: (row, options) => {
+        setViewDistributionsInsteadOfInvestment(
+          options?.distributionsInsteadOfInvestment === true,
+        );
+        setViewSponsorDetails(options?.sponsorDetails === true);
         setViewInvestorRow(row);
       },
       openEditInvestor: (row: DealInvestorRow) => {
+        setViewDistributionsInsteadOfInvestment(false);
+        setViewSponsorDetails(false);
         setViewInvestorRow(null);
         setLpResumeAddMemberDraft(false);
         onAddInvestmentClose();
@@ -2618,13 +2639,21 @@ export const DealInvestorsTab = forwardRef<
         {lpInvestorModal}
         <DealInvestorViewModal
           row={viewInvestorRow}
-          onClose={() => setViewInvestorRow(null)}
+          onClose={() => {
+            setViewInvestorRow(null);
+            setViewDistributionsInsteadOfInvestment(false);
+            setViewSponsorDetails(false);
+          }}
           dealId={dealId}
           investorClasses={investorClasses}
           dealAllClassNamesLine={dealClassNamesLineForView}
           onEdit={handleEditInvestor}
           editDisabled={coSponsorInvestorEditLocked}
           initialSectionTab="distribution"
+          distributionsInsteadOfInvestment={
+            viewDistributionsInsteadOfInvestment
+          }
+          sponsorDetails={viewSponsorDetails}
         />
       </>
     );
@@ -2669,7 +2698,10 @@ export const DealInvestorsTab = forwardRef<
         dealDetail={dealDetail}
         investorClasses={investorClasses}
         onEditInvestor={handleEditInvestor}
-        onViewInvestor={(row) => setViewInvestorRow(row)}
+        onViewInvestor={(row) => {
+          setViewDistributionsInsteadOfInvestment(false);
+          setViewInvestorRow(row);
+        }}
         onAddInvestor={() => {
           setEditLpRow(null);
           setLpResumeAddMemberDraft(false);
@@ -2704,13 +2736,19 @@ export const DealInvestorsTab = forwardRef<
       />
       <DealInvestorViewModal
         row={viewInvestorRow}
-        onClose={() => setViewInvestorRow(null)}
+        onClose={() => {
+          setViewInvestorRow(null);
+          setViewDistributionsInsteadOfInvestment(false);
+          setViewSponsorDetails(false);
+        }}
         dealId={dealId}
         investorClasses={investorClasses}
         dealAllClassNamesLine={dealClassNamesLineForView}
         onEdit={handleEditInvestor}
         editDisabled={coSponsorInvestorEditLocked}
         initialSectionTab="distribution"
+        distributionsInsteadOfInvestment={viewDistributionsInsteadOfInvestment}
+        sponsorDetails={viewSponsorDetails}
       />
       {onSendEsignConfirm ? (
         <SendEsignDocumentsModal

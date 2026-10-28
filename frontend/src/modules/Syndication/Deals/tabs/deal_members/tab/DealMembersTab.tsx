@@ -52,16 +52,20 @@ import { TabsScrollStrip } from "../../../../../../common/components/tabs-scroll
 import {
   dealInvestorProfileDisplayName,
   investorRoleLabel,
+  DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER,
   isDealMembersTabRole,
   isGeneralPartnerRole,
   isLeadSponsorRole,
   type DealRosterKind,
 } from "../../../constants/investor-profile"
+import { isDisplayableEmail } from "../../../../../../common/utils/displayEmail"
 import type { DealInvestorClass } from "../../../types/deal-investor-class.types"
 import {
   formatInvestorClassTableLabel,
   investorRowIsGeneralPartner,
   isGpInvestorClass,
+  matchDealInvestorClass,
+  teamMemberOwnershipPercentLabel,
 } from "../../../utils/investorClassOverviewFields"
 import type { DealInvestorRow } from "../../../types/deal-investors.types"
 import {
@@ -150,6 +154,34 @@ function dedupeRosterRowsByPerson(rows: DealInvestorRow[]): DealInvestorRow[] {
   return [...order.map((key) => best.get(key)!), ...leftovers]
 }
 
+/** Draft row with no person: no name, no email, and no real contact. */
+function generalPartnerDraftHasNoPerson(row: DealInvestorRow): boolean {
+  if (!investorRowShowsDraftBadge(row)) return false
+  const name = String(row.displayName ?? "").trim()
+  const nameEmpty =
+    !name || name === "—" || name.toLowerCase() === "draft"
+  const emailEmpty = !isDisplayableEmail(row.userEmail)
+  const contact = String(row.contactId ?? "").trim()
+  const contactEmpty =
+    !contact || contact === DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER
+  return nameEmpty && emailEmpty && contactEmpty
+}
+
+/** One row per investment. A Class B sponsor row and its team-member copy share an id. */
+function dedupeRosterRowsByInvestmentId(
+  rows: DealInvestorRow[],
+): DealInvestorRow[] {
+  const seen = new Set<string>()
+  const out: DealInvestorRow[] = []
+  for (const row of rows) {
+    const id = String(row.id ?? "").trim()
+    if (id && seen.has(id)) continue
+    if (id) seen.add(id)
+    out.push(row)
+  }
+  return out
+}
+
 function includeInDealRosterTable(
   r: DealInvestorRow,
   rosterKind: DealRosterKind,
@@ -158,9 +190,16 @@ function includeInDealRosterTable(
   const role = String(r.investorRole ?? "").trim()
   const unset = !role || role === "—"
   const isGp = investorRowIsGeneralPartner(r, classes)
+  const matchedClass = matchDealInvestorClass(r.investorClass, classes)
+  const classIsGp = matchedClass
+    ? isGpInvestorClass(matchedClass)
+    : /\bgp\b|general partner/i.test(String(r.investorClass ?? ""))
   if (rosterKind === "general_partners") {
-    if (r.id === ADD_MEMBER_DRAFT_ROW_ID && unset && !isGp) return false
-    return isGp
+    if (generalPartnerDraftHasNoPerson(r)) return false
+    if (r.id === ADD_MEMBER_DRAFT_ROW_ID && unset && !isGp && !classIsGp) {
+      return false
+    }
+    return isGp || classIsGp
   }
   if (isGp) return false
   if (r.id === ADD_MEMBER_DRAFT_ROW_ID && unset) return true
@@ -301,7 +340,7 @@ interface DealMembersTabProps {
     subject?: "member" | "team_member",
   ) => void
   /** Opens read-only details (e.g. after refetching roster). */
-  onViewMember: (row: DealInvestorRow) => void
+  onViewMember: (row: DealInvestorRow, rosterKind: DealRosterKind) => void
   /** Increment to refetch rows after add/edit from the shared investor modal. */
   investorsRefreshKey?: number
   /**
@@ -391,18 +430,18 @@ export function DealMembersTab({
   const handleViewMember = useCallback(
     async (row: DealInvestorRow) => {
       if (row.id === ADD_MEMBER_DRAFT_ROW_ID) {
-        onViewMember(row)
+        onViewMember(row, rosterKind)
         return
       }
       try {
         const { members: list } = await fetchDealMembers(dealId)
         const fresh = list.find((r) => r.id === row.id)
-        onViewMember(fresh ?? row)
+        onViewMember(fresh ?? row, rosterKind)
       } catch {
         toast.error("Could not load member details.")
       }
     },
-    [dealId, onViewMember],
+    [dealId, onViewMember, rosterKind],
   )
 
   useEffect(() => {
@@ -453,9 +492,16 @@ export function DealMembersTab({
   }, [dealId, investorClasses, addMemberDraftTick])
 
   const displayRows = useMemo(() => {
-    const filtered = dedupeRosterRowsByPerson(rows).filter((r) =>
-      includeInDealRosterTable(r, rosterKind, investorClasses),
-    )
+    const filtered =
+      rosterKind === "general_partners"
+        ? dedupeRosterRowsByInvestmentId(
+            rows.filter((r) =>
+              includeInDealRosterTable(r, rosterKind, investorClasses),
+            ),
+          )
+        : dedupeRosterRowsByPerson(rows).filter((r) =>
+            includeInDealRosterTable(r, rosterKind, investorClasses),
+          )
     const draft =
       sessionDraftRow &&
       includeInDealRosterTable(sessionDraftRow, rosterKind, investorClasses)
@@ -888,6 +934,32 @@ export function DealMembersTab({
                 titleForTooltip={titleForTooltip}
                 disableHoverTooltip
               />
+            )
+          },
+        },
+        {
+          id: "ownership",
+          header: "Ownership %",
+          align: "right",
+          colWidth: "7.5rem",
+          thClassName: "deals_th_align_right",
+          sortValue: (row) => {
+            const label = teamMemberOwnershipPercentLabel(
+              row.entityOwnershipPercent,
+            )
+            const n = Number(label.replace(/[^0-9.-]/g, ""))
+            return Number.isFinite(n) ? n : -1
+          },
+          tdClassName: "deal_inv_td_ellipsis um_td_numeric",
+          cell: (row) => {
+            const label = teamMemberOwnershipPercentLabel(
+              row.entityOwnershipPercent,
+            )
+            if (!label || label === "—") return <GpEmptyDash />
+            return (
+              <span className="deal_inv_ellipsis_text deal_inv_ellipsis_text_end">
+                {label}
+              </span>
             )
           },
         },

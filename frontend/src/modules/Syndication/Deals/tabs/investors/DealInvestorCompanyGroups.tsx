@@ -21,6 +21,8 @@ const NO_COMPANY_LABEL = "No company"
 export type InvestorCompanyGroup = {
   key: string
   name: string
+  /** First-created company admin, when the roster row includes one. */
+  adminName?: string
   rows: DealInvestorRow[]
 }
 
@@ -29,21 +31,40 @@ export function groupInvestorsByCompany(
 ): InvestorCompanyGroup[] {
   const buckets = new Map<string, InvestorCompanyGroup>()
   for (const row of rows) {
-    const names = String(row.addedByCompanyName ?? "")
+    const rawNames = String(row.addedByCompanyName ?? "")
       .split("||")
       .map((part) => part.trim())
-      .filter((part) => part && part !== "—")
-    const labels = names.length > 0 ? names : [NO_COMPANY_LABEL]
+    const rawAdmins = String(row.companyAdminName ?? "")
+      .split("||")
+      .map((part) => part.trim())
+    const labeled = rawNames
+      .map((name, index) => ({
+        name,
+        adminName: rawAdmins[index] ?? "",
+      }))
+      .filter((part) => part.name && part.name !== "—")
+    const labels =
+      labeled.length > 0
+        ? labeled
+        : [{ name: NO_COMPANY_LABEL, adminName: "" }]
     const seen = new Set<string>()
-    for (const name of labels) {
-      const key = name.toLocaleLowerCase()
+    for (const label of labels) {
+      const key = label.name.toLocaleLowerCase()
       if (seen.has(key)) continue
       seen.add(key)
       const existing = buckets.get(key)
       if (existing) {
         existing.rows.push(row)
+        if (!existing.adminName && label.adminName) {
+          existing.adminName = label.adminName
+        }
       } else {
-        buckets.set(key, { key, name, rows: [row] })
+        buckets.set(key, {
+          key,
+          name: label.name,
+          ...(label.adminName ? { adminName: label.adminName } : {}),
+          rows: [row],
+        })
       }
     }
   }
@@ -206,7 +227,12 @@ function DealInvestorCompanyGroup({
         <span className="deal_inv_company_group_mark" aria-hidden>
           <Building2 size={15} strokeWidth={2} />
         </span>
-        <span className="deal_inv_company_group_name">{group.name}</span>
+        <span className="deal_inv_company_group_identity">
+          <span className="deal_inv_company_group_name">{group.name}</span>
+          {group.adminName ? (
+            <span className="deal_inv_company_group_admin">{group.adminName}</span>
+          ) : null}
+        </span>
         <span
           className={`deal_inv_company_group_aside${
             sponsorMetrics ? " deal_inv_company_group_aside_sponsor" : ""

@@ -35,6 +35,7 @@ import type { SignFlowField } from "../esign/signflow.service.js";
 import {
   findInvestorEsignContextBySignatureRequestId,
   readInvestorEsignStatusJson,
+  rememberSponsorSignerOnEsignSend,
 } from "./dealMemberEsignStatus.service.js";
 import {
   isPortalUserLeadOrAdminSponsorOnDeal,
@@ -506,6 +507,14 @@ export async function getDealSponsorEsignSignSession(params: {
             : "Could not load sponsor signing session",
         };
       }
+
+      void rememberSponsorSignerOnEsignSend({
+        dealId,
+        signatureRequestId: sigId,
+        name: signer.name,
+        email: signer.email,
+        overwrite: true,
+      }).catch((err) => console.warn("remember sponsor signer:", err));
 
       return {
         ok: true,

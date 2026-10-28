@@ -9,6 +9,7 @@ import { db } from "../../database/db.js";
 import { dealInvestment } from "../../schema/deal.schema/deal-investment.schema.js";
 import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema.js";
 import { getUploadsPhysicalRoot } from "../../config/uploadPaths.js";
+import { formatDdMmmYyyy } from "../../utils/formatDdMmmYyyy.js";
 import {
   DEAL_ESIGN_COMPLETED_FOLDER,
   dealAssetsRelativePath,
@@ -50,6 +51,7 @@ import {
   resolveEsignSponsorSignState,
   syncCompletedEsignDocumentsToDocumentsTab,
 } from "./dealEsignDocumentsWorkspaceSync.service.js";
+import { listDealSponsorSignerOptions } from "./dealEsignSigningWorkflow.service.js";
 import { runEsignStageNotificationsForTarget } from "./dealEsignStageNotificationEmail.service.js";
 import {
   readLiveInvestorFieldValues,
@@ -123,6 +125,7 @@ import {
 } from "./dealSequentialEsignWorkflow.service.js";
 import {
   findInvestorEsignTargetBySignatureRequestId,
+  listEsignStatusJsonForSameInvestor,
   markDealInvestorEsignSignedOptimistic,
   readInvestorEsignStatusJson,
   resolveEsignTargetForInvestorRowId,
@@ -1231,6 +1234,44 @@ function resolveEsignDocumentListUrl(
   return rel ? uploadPublicUrl(rel) : null;
 }
 
+function esignSendRichness(send: StoredDealInvestorEsignSend): number {
+  let score = send.documents?.length ?? 0;
+  if (send.completedAt?.trim()) score += 4;
+  if (send.signedAt?.trim()) score += 2;
+  if (send.fullSignedRelativePath?.trim()) score += 2;
+  if (send.sponsorSignedRelativePath?.trim()) score += 1;
+  if ((send.documents ?? []).some((doc) => doc.signedRelativePath?.trim())) {
+    score += 2;
+  }
+  return score;
+}
+
+/** Keep every signature request, including two signings of the same profile. */
+function mergeEsignStatusBundles(
+  raws: Array<string | null | undefined>,
+): StoredDealInvestorEsignBundle | null {
+  const bySignature = new Map<string, StoredDealInvestorEsignSend>();
+  const withoutSignature: StoredDealInvestorEsignSend[] = [];
+  for (const raw of raws) {
+    const bundle = parseEsignStatusBundle(raw);
+    if (!bundle?.sends.length) continue;
+    for (const send of bundle.sends) {
+      const sig = send.signatureRequestId?.trim() ?? "";
+      if (!sig) {
+        withoutSignature.push(send);
+        continue;
+      }
+      const existing = bySignature.get(sig);
+      if (!existing || esignSendRichness(send) >= esignSendRichness(existing)) {
+        bySignature.set(sig, send);
+      }
+    }
+  }
+  const sends = [...bySignature.values(), ...withoutSignature];
+  if (sends.length === 0) return null;
+  return { version: 2, sends };
+}
+
 /**
  * Documents sent for eSign on this deal — template previews while pending,
  * combined signed PDF after the investor signs (never the pre-sign preview again).
@@ -1266,8 +1307,14 @@ export async function listMyEsignDocumentsForInvestor(
     }
   }
 
-  const bundle = parseEsignStatusBundle(statusRaw);
+  const siblingJson = target
+    ? await listEsignStatusJsonForSameInvestor(dealId, target)
+    : [];
+  const bundle = mergeEsignStatusBundles(
+    siblingJson.length > 0 ? siblingJson : [statusRaw],
+  );
   if (!bundle?.sends.length) return [];
+  const showCopyDate = bundle.sends.length > 1;
 
   const templates = await getDealEsignTemplatesState(dealId);
   const investorFirstCounterSign =
@@ -1279,6 +1326,12 @@ export async function listMyEsignDocumentsForInvestor(
 
   for (const send of bundle.sends) {
     const sig = send.signatureRequestId?.trim() ?? "";
+    const copyDate = send.sentAt?.trim() ? formatDdMmmYyyy(send.sentAt) : "";
+    const displayName = (base: string) => {
+      const name = base.trim() || "Signed document";
+      if (!showCopyDate || !copyDate || copyDate === "—") return name;
+      return `${name} · ${copyDate}`;
+    };
     const categoryId =
       send.categoryId?.trim() ||
       send.documents?.find((d) => d.categoryId?.trim())?.categoryId?.trim() ||
@@ -1320,16 +1373,23 @@ export async function listMyEsignDocumentsForInvestor(
       const signed = listSignedEsignDocumentsForSend(send, sig, {
         preferFullSignedCopy: sponsorState.sponsorSigned,
       });
-      for (const d of signed) {
+      const signedRows = signed.length > 0
+        ? signed
+        : [{
+            fileId: sig || `signed-${out.length + 1}`,
+            name: "Signed document",
+            url: send.fullSignedRelativePath?.trim()
+              ? uploadPublicUrl(send.fullSignedRelativePath)
+              : null,
+          }];
+      for (const d of signedRows) {
         out.push({
           fileId: d.fileId,
-          name: d.name,
-          url: resolveEsignDocumentListUrl(send, d, templates),
+          name: displayName(d.name),
+          url: resolveEsignDocumentListUrl(send, d, templates) ?? d.url,
           status,
           ...(categoryId ? { categoryId } : {}),
-          ...((canSignNow || canRevise) && sig
-            ? { signatureRequestId: sig }
-            : {}),
+          ...(sig ? { signatureRequestId: sig } : {}),
           sponsorSigned: revisionState.sponsorSigned,
           canRevise,
         });
@@ -1344,7 +1404,7 @@ export async function listMyEsignDocumentsForInvestor(
 
       out.push({
         fileId: compositeId,
-        name: d.name,
+        name: displayName(d.name),
         url: null,
         status: "pending",
         ...(categoryId || d.categoryId?.trim()
@@ -1396,6 +1456,97 @@ export async function commitmentProfileIdForEsignTarget(
 }
 
 /** Sync from Dropbox Sign, persist timestamps, return status for sponsor status popup. */
+function usableCompletedSponsorName(name: string | null | undefined): string {
+  const cleaned = String(name ?? "").replace(/\u2060/g, "").trim();
+  const lower = cleaned.toLowerCase();
+  if (
+    !cleaned ||
+    cleaned.includes("@") ||
+    lower.includes("anyone can sign") ||
+    lower === "any sponsor" ||
+    lower === "sponsor" ||
+    lower === "investor"
+  ) {
+    return "";
+  }
+  return cleaned;
+}
+
+/**
+ * Completed status must open the fully executed PDF and name the sponsor who
+ * signed it. Older completed sends may have only the investor PDF stored.
+ */
+async function ensureCompletedArtifactsForStatus(
+  dealId: string,
+  target: InvestorEsignRowTarget,
+  bundle: StoredDealInvestorEsignBundle,
+): Promise<boolean> {
+  if (!esignProviderCanSync()) return false;
+  let changed = false;
+  let sponsorNamesByEmail: Map<string, string> | null = null;
+
+  for (const send of bundle.sends) {
+    if (!send.completedAt?.trim()) continue;
+    const sigId = send.signatureRequestId?.trim() ?? "";
+    if (!sigId) continue;
+    const needsFull = !send.fullSignedRelativePath?.trim();
+    const needsName = !usableCompletedSponsorName(send.sponsorSignedByName);
+    if (!needsFull && !needsName) continue;
+
+    if (needsFull) {
+      const stored = await ensureFullSignedPdfStoredForCompletedSend(
+        dealId,
+        target,
+        sigId,
+        send,
+      );
+      if (stored) changed = true;
+    }
+
+    if (!needsName || getActiveEsignProvider() !== "signflow") continue;
+    try {
+      const state = await resolveEsignSponsorSignState(send);
+      let name =
+        state.sponsorSignedNames
+          .map((item) => usableCompletedSponsorName(item))
+          .find(Boolean) ?? "";
+      const email =
+        state.sponsorSignedEmails.find(
+          (item) =>
+            item.includes("@") && !item.trim().toLowerCase().endsWith("@embed.local"),
+        ) ?? "";
+      if (!name && email) {
+        if (!sponsorNamesByEmail) {
+          const sponsors = await listDealSponsorSignerOptions(dealId);
+          sponsorNamesByEmail = new Map(
+            sponsors
+              .filter((sponsor) => sponsor.email.includes("@") && sponsor.name.trim())
+              .map((sponsor) => [
+                sponsor.email.trim().toLowerCase(),
+                sponsor.name.trim(),
+              ]),
+          );
+        }
+        name = usableCompletedSponsorName(sponsorNamesByEmail.get(email.toLowerCase()));
+      }
+      if (!name) continue;
+      await updateDealInvestorEsignSend(dealId, target, sigId, (current) => {
+        if (usableCompletedSponsorName(current.sponsorSignedByName)) return current;
+        return {
+          ...current,
+          sponsorSignedByName: name,
+          ...(email.includes("@") ? { sponsorSignedByEmail: email } : {}),
+        };
+      });
+      changed = true;
+    } catch (err) {
+      console.warn("ensureCompletedArtifactsForStatus:", err);
+    }
+  }
+
+  return changed;
+}
+
 export async function getInvestorEsignStatusWithDropboxSync(
   dealId: string,
   rosterId: string,
@@ -1417,8 +1568,19 @@ export async function getInvestorEsignStatusWithDropboxSync(
     await syncDealInvestorEsignByTarget(id, target);
   }
 
-  const rawAfterSync = await readInvestorEsignStatusJson(id, target);
-  const bundleAfterSync = parseEsignStatusBundle(rawAfterSync);
+  let rawAfterSync = await readInvestorEsignStatusJson(id, target);
+  let bundleAfterSync = parseEsignStatusBundle(rawAfterSync);
+  if (bundleAfterSync) {
+    const refreshed = await ensureCompletedArtifactsForStatus(
+      id,
+      target,
+      bundleAfterSync,
+    );
+    if (refreshed) {
+      rawAfterSync = await readInvestorEsignStatusJson(id, target);
+      bundleAfterSync = parseEsignStatusBundle(rawAfterSync);
+    }
+  }
   let sends = bundleAfterSync
     ? esignBundleToSendStatusList(bundleAfterSync)
     : [];

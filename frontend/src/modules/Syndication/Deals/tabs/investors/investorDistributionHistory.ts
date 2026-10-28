@@ -10,7 +10,10 @@ import {
   resolvePeriodWindow,
   typeDisplayLabel,
 } from "../distributions/utils/distributionListDisplay"
-import { allocateInvestorDistributionLines } from "../distributions/utils/investorDistributionAllocation"
+import {
+  allocateInvestorDistributionLines,
+  resolveInvestorClass,
+} from "../distributions/utils/investorDistributionAllocation"
 import { allocateInvestorsByPreferredDue } from "../distributions/utils/investorPreferredAllocation"
 
 export interface InvestorDistHistoryRow {
@@ -193,21 +196,41 @@ function rebuildLinesForPrior(params: {
   }))
 }
 
+/**
+ * A saved payment list is the distribution record. Rebuild only when this
+ * investor's class is on that list (roster id vs investment id). A class with
+ * no saved lines — Class A - Limited Partners, distribution amount 0 — gets
+ * nothing from the database.
+ */
+function snapshotIncludesInvestorClass(
+  stored: PaymentLine[],
+  investor: DealInvestorRow,
+  classes: DistributionSetupClass[],
+): boolean {
+  const storedClassIds = new Set(
+    stored.map((p) => norm(p.classId)).filter((id) => id.length > 0),
+  )
+  if (storedClassIds.size === 0) return false
+  const raw = norm(investor.investorClass)
+  if (raw && storedClassIds.has(raw)) return true
+  const cls = resolveInvestorClass(investor.investorClass ?? "", classes)
+  if (!cls) return false
+  return storedClassIds.has(norm(cls.id)) || storedClassIds.has(norm(cls.name))
+}
+
 function paymentLinesForPrior(params: {
   prior: PriorDistributionRecord
+  investor: DealInvestorRow
   dealInvestors: DealInvestorRow[]
   classes: DistributionSetupClass[]
   keys: InvestorPaymentMatchKeys
 }): PaymentLine[] {
-  const { prior, dealInvestors, classes, keys } = params
+  const { prior, investor, dealInvestors, classes, keys } = params
   const stored = mapStoredLines(prior)
   if (stored.length > 0) {
     const matched = stored.filter((p) => investorMatchesPayment(keys, p))
     if (matched.length > 0) return matched
-    // Snapshot exists but identity keys don't match this investor (e.g. LP
-    // roster id vs investment id). Rebuild from deal investors for this deal.
-  } else {
-    // No snapshot on older runs.
+    if (!snapshotIncludesInvestorClass(stored, investor, classes)) return []
   }
   return rebuildLinesForPrior({ prior, dealInvestors, classes }).filter((p) =>
     investorMatchesPayment(keys, p),
@@ -238,6 +261,7 @@ export function buildInvestorDistributionHistory(params: {
     // One row per distribution run for this investor (sum class lines).
     const lines = paymentLinesForPrior({
       prior,
+      investor,
       dealInvestors,
       classes,
       keys,

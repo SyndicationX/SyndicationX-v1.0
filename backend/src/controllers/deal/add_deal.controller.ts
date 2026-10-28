@@ -34,6 +34,10 @@ import { filterDealIdsByContactOfferingVisibility } from "../../services/contact
 import { assignCreatorToDeal } from "../../services/deal/assigningDealUser.service.js";
 import { assignCreatorAsLeadSponsorOnDeal } from "../../services/deal/dealMember.service.js";
 import {
+  CO_SPONSOR_COMPANY_REQUIRED_MESSAGE,
+  viewerIsCoSponsorWithoutCompany,
+} from "../../services/deal/dealMemberScope.service.js";
+import {
   requestedOrganizationIdFromRequest,
   userHasAccessToOrganization,
 } from "../../services/org/orgResolution.service.js";
@@ -1743,6 +1747,13 @@ export async function getDealById(req: Request, res: Response): Promise<void> {
     return;
   }
   try {
+    if (await viewerIsCoSponsorWithoutCompany(user.id)) {
+      res.status(403).json({
+        message: CO_SPONSOR_COMPANY_REQUIRED_MESSAGE,
+        code: "company_required",
+      });
+      return;
+    }
     const scope = await resolveDealViewerScope(
       user.id,
       user.userRole,

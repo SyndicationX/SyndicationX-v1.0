@@ -23,6 +23,24 @@ function clipStr(s: string, max: number): string {
   return s.slice(0, max);
 }
 
+type DocumentSharedWithScope =
+  | "lp_investor"
+  | "offering_page"
+  | "offering_link_only"
+  | "not_visible";
+
+function parseDocumentSharedWithScope(raw: unknown): DocumentSharedWithScope | undefined {
+  if (
+    raw === "lp_investor" ||
+    raw === "offering_page" ||
+    raw === "offering_link_only" ||
+    raw === "not_visible"
+  ) {
+    return raw;
+  }
+  return undefined;
+}
+
 function parseIdListField(raw: unknown, maxItems = 200): string[] {
   if (!Array.isArray(raw)) return [];
   const out: string[] = [];
@@ -64,20 +82,12 @@ function normalizeNested(
     typeof refRaw === "string" && refRaw.trim()
       ? clipStr(refRaw.trim(), 120)
       : parentSectionId;
-  const sw = raw.sharedWithScope;
-  const sharedWithScope =
-    sw === "lp_investor"
-      ? "lp_investor"
-      : sw === "offering_page"
-        ? "offering_page"
-        : sw === "not_visible"
-          ? "not_visible"
-          : undefined;
   const sharedWithAllInvestors = Boolean(raw.sharedWithAllInvestors);
   const sharedDealClassIds = parseIdListField(raw.sharedDealClassIds);
   const sharedInvestorIds = sharedWithAllInvestors
     ? []
     : parseIdListField(raw.sharedInvestorIds);
+  const sharedWithScope = parseDocumentSharedWithScope(raw.sharedWithScope);
   const sharedSponsorUserIds = parseIdListField(raw.sharedSponsorUserIds);
   const requiresProfileInvestment = Boolean(raw.requiresProfileInvestment);
   const esignSignatureRequestId =
@@ -118,6 +128,20 @@ function normalizeNested(
         .filter((email) => email.includes("@"))
         .slice(0, 40)
     : [];
+  const esignSignedByInvestor =
+    typeof raw.esignSignedByInvestor === "string" && raw.esignSignedByInvestor.trim()
+      ? clipStr(raw.esignSignedByInvestor.trim(), 200)
+      : undefined;
+  const esignSignedBySponsor =
+    typeof raw.esignSignedBySponsor === "string" && raw.esignSignedBySponsor.trim()
+      ? clipStr(raw.esignSignedBySponsor.trim(), 200)
+      : undefined;
+  const esignSignedBy = Array.isArray(raw.esignSignedBy)
+    ? raw.esignSignedBy
+        .map((value) => (typeof value === "string" ? clipStr(value.trim(), 200) : ""))
+        .filter(Boolean)
+        .slice(0, 8)
+    : [];
   const uploadedByUserId =
     typeof raw.uploadedByUserId === "string" && raw.uploadedByUserId.trim()
       ? clipStr(raw.uploadedByUserId.trim(), 120)
@@ -152,6 +176,9 @@ function normalizeNested(
     ...(esignSponsorSignerEmails.length > 0
       ? { esignSponsorSignerEmails }
       : {}),
+    ...(esignSignedByInvestor ? { esignSignedByInvestor } : {}),
+    ...(esignSignedBySponsor ? { esignSignedBySponsor } : {}),
+    ...(esignSignedBy.length > 0 ? { esignSignedBy } : {}),
   };
 }
 
@@ -230,14 +257,10 @@ function flattenSectionsToOfferingDocuments(
     for (const item of nested) {
       if (!isRecord(item)) continue;
       const fileName = String(item.name ?? "").trim() || "Document";
+      const explicitScope = parseDocumentSharedWithScope(item.sharedWithScope);
       const docScope =
-        item.sharedWithScope === "lp_investor"
-          ? "lp_investor"
-          : item.sharedWithScope === "offering_page"
-            ? "offering_page"
-            : item.sharedWithScope === "not_visible"
-              ? "not_visible"
-              : sectionScope;
+        explicitScope ??
+        (sectionScope === "lp_investor" ? "lp_investor" : "offering_page");
       out.push({
         id: item.id,
         name: `${sectionLabel} — ${fileName}`,

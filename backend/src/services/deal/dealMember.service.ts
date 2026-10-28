@@ -20,6 +20,7 @@ import {
 import { users } from "../../schema/auth.schema/signin.js";
 import { contact } from "../../schema/contact.schema.js";
 import { invalidateContactDirectoryCache } from "../cache/listReadCache.js";
+import { personIsAssociatedWithCompany } from "./dealMemberScope.service.js";
 import { assertEligibleForNewDealRosterAdd } from "../user/portalUserRosterGuard.service.js";
 import {
   applyTotalCommittedToDealInvestmentRowForCanonical,
@@ -28,11 +29,14 @@ import {
   GENERAL_PARTNER_ROLE_STORED,
   isDealCompanyUserStoredRole,
   isGeneralPartnerStoredRole,
+  isLpInvestorRole,
   groupDealInvestmentsByCanonicalKey,
   listDealInvestmentsByDealId,
   mapContactIdsToCanonicalCommitmentKeys,
   loadInvitationMailSentFlags,
   mapRowToInvestorApi,
+  companyAdminNamesAlignedToCompanies,
+  resolveFirstCompanyAdminNamesByCompanyNames,
   resolveUserCompanyNamesByIds,
   resolveUserDisplayNamesByIds,
   resolveUserInvestorProfileNamesByIds,
@@ -234,6 +238,19 @@ function syntheticInvestmentFromDealMember(m: DealMemberRow): DealInvestmentRow 
     investorW9FormJson: null,
     fundingMethod: "",
     commitmentAmount: "",
+    fundedAmount: null,
+    capitalBalance: null,
+    cashBalance: null,
+    deployedCapital: null,
+    percentOfClassByTargetRaise: null,
+    percentOfClassByTotalRaised: null,
+    sharesOwned: null,
+    distributedAmount: null,
+    reinvestDistributions: null,
+    reinvestmentPercentage: null,
+    accruedPreferredReturn: null,
+    unpaidPreferredReturn: null,
+    preferredReturnStartDate: null,
     commitmentCompletedAt: null,
     commitmentInvestorEmailSentAt: null,
     commitmentSponsorEmailSentAt: null,
@@ -277,6 +294,19 @@ function syntheticInvestmentFromGpLpRoster(
     investorW9FormJson: null,
     fundingMethod: "",
     commitmentAmount: m.committed_amount,
+    fundedAmount: null,
+    capitalBalance: null,
+    cashBalance: null,
+    deployedCapital: null,
+    percentOfClassByTargetRaise: null,
+    percentOfClassByTotalRaised: null,
+    sharesOwned: null,
+    distributedAmount: null,
+    reinvestDistributions: null,
+    reinvestmentPercentage: null,
+    accruedPreferredReturn: null,
+    unpaidPreferredReturn: null,
+    preferredReturnStartDate: null,
     commitmentCompletedAt: null,
     commitmentInvestorEmailSentAt: null,
     commitmentSponsorEmailSentAt: null,
@@ -1066,6 +1096,28 @@ async function alignDealOrganizationWithLeadSponsor(
   );
 }
 
+/** Shown when a company member is given any role other than Lead, Admin, or Co-sponsor. */
+export const COMPANY_MEMBER_SPONSOR_ROLES_ONLY_MESSAGE =
+  "A person who belongs to a company can only be Lead Sponsor, Admin sponsor, or Co-sponsor.";
+
+/**
+ * A person with their own company may only be Lead Sponsor, Admin sponsor, or Co-sponsor.
+ * The company stored on a contact record is the sponsor who created it, so it does not count.
+ */
+export async function assertCompanyMemberMayTakeDealRole(
+  contactMemberId: string,
+  role: string,
+): Promise<void> {
+  if (roleIsSponsor(role)) return;
+  if (isLpInvestorRole(role) || isGeneralPartnerStoredRole(role)) return;
+  const id = contactMemberId.trim();
+  if (!id) return;
+  if (!(await personIsAssociatedWithCompany(id))) return;
+  throw new DealLeadSponsorValidationError(
+    COMPANY_MEMBER_SPONSOR_ROLES_ONLY_MESSAGE,
+  );
+}
+
 export async function saveDealMemberRoleForDeal(
   dealId: string,
   input: UpsertDealMemberInput & {
@@ -1078,6 +1130,8 @@ export async function saveDealMemberRoleForDeal(
     await upsertDealMemberForDeal(dealId, input);
     return { newLeadSponsorContactId: null };
   }
+
+  await assertCompanyMemberMayTakeDealRole(cid, input.dealMemberRole);
 
   const members = await db
     .select({
@@ -1509,10 +1563,6 @@ export async function listDealMembersMappedToInvestorApi(
     const canonical = k ? canonicalOf(k) : "";
     if (!canonical) continue;
     if (
-      !shouldAddSecondaryTeamMemberSource({
-        canonicalKey: canonical,
-        coveredCanonical,
-      }) ||
       !rowIsGeneralPartnerForRoster(
         inv.investor_role,
         inv.investorClass,
@@ -1590,8 +1640,31 @@ export async function listDealMembersMappedToInvestorApi(
     new Set<string>(),
   );
 
+  const entityOwnershipByLpId = new Map<string, string>();
+  const entityOwnershipByCanonical = new Map<string, string>();
+  const entityOwnershipByEmail = new Map<string, string>();
+  for (const lp of lpRoster) {
+    const percent = String(lp.entityOwnershipPercent ?? "").trim();
+    if (!percent) continue;
+    const lpId = String(lp.id ?? "").trim().toLowerCase();
+    if (lpId) entityOwnershipByLpId.set(lpId, percent);
+    const canonical = canonicalOf(String(lp.contactMemberId ?? ""));
+    if (canonical && !entityOwnershipByCanonical.has(canonical)) {
+      entityOwnershipByCanonical.set(canonical, percent);
+    }
+    const email = String(lp.email ?? "").trim().toLowerCase();
+    if (email.includes("@") && !entityOwnershipByEmail.has(email)) {
+      entityOwnershipByEmail.set(email, percent);
+    }
+  }
+
   const companyByContact = await resolveUserCompanyNamesByIds(
     rowMeta.map((meta) => meta?.contactMemberId),
+  );
+  const adminByCompany = await resolveFirstCompanyAdminNamesByCompanyNames(
+    [...companyByContact.values()].flatMap((value) =>
+      String(value ?? "").split("||"),
+    ),
   );
 
   const result = patched.map((r, i) => {
@@ -1615,11 +1688,28 @@ export async function listDealMembersMappedToInvestorApi(
     const companyName = memberCk
       ? String(companyByContact.get(memberCk) ?? "").trim()
       : "";
+    const companyAdminName = companyName
+      ? companyAdminNamesAlignedToCompanies(companyName, adminByCompany)
+      : "";
+    const rowId = String(r.id ?? "").trim().toLowerCase();
+    const rowEmail = String(base.userEmail ?? "").trim().toLowerCase();
+    const entityOwnershipPercent =
+      (rowId ? entityOwnershipByLpId.get(rowId) : "") ||
+      entityOwnershipByCanonical.get(canonicalOf(String(r.contactId ?? ""))) ||
+      (memberCk
+        ? entityOwnershipByCanonical.get(canonicalOf(memberCk))
+        : "") ||
+      (rowEmail.includes("@")
+        ? entityOwnershipByEmail.get(rowEmail)
+        : "") ||
+      "";
     return {
       ...base,
       addedByDisplayName,
       addedInvestorsCommitted: formatCommittedUsdWhole(fromAdded),
+      ...(entityOwnershipPercent ? { entityOwnershipPercent } : {}),
       ...(companyName ? { addedByCompanyName: companyName } : {}),
+      ...(companyAdminName ? { companyAdminName } : {}),
       ...(userInvestorProfileName
         ? { userInvestorProfileName }
         : {}),

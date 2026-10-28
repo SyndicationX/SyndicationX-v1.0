@@ -36,8 +36,9 @@ export type OfferingPreviewDisplayDocument = {
 
 /**
  * Which document scopes appear on a given surface.
- * - Offering link + Preview offering: `offering_page` only.
+ * - Offering link + Preview offering: `offering_page` and `offering_link_only`.
  * - LP portal (signed-in LP on the deal): `offering_page` and `lp_investor`.
+ * - `offering_link_only`: public offering only — not the LP portal.
  * - `not_visible`: never on offering link, preview, or LP portal.
  */
 export function sectionVisibleOnOfferingPreview(
@@ -48,7 +49,7 @@ export function sectionVisibleOnOfferingPreview(
   if (ctx.isLpDealWorkspace) {
     return scope === "offering_page" || scope === "lp_investor"
   }
-  return scope === "offering_page"
+  return scope === "offering_page" || scope === "offering_link_only"
 }
 
 /**
@@ -84,7 +85,7 @@ export function listWorkspaceDocumentsForOfferingPreview(
     }
   }
 
-  if (out.length === 0) {
+  if (out.length === 0 && !workspaceListsOfferingDocuments(sections)) {
     for (const d of readOfferingPreviewDocuments(id)) {
       const scope = resolveFlatDocumentSharedWithScope(d.sharedWithScope)
       if (!sectionVisibleOnOfferingPreview(scope, ctx)) continue
@@ -101,15 +102,105 @@ export type SectionSharedWithScope = OfferingPreviewDocSharedWithScope
 export function sectionSharedWithDisplay(scope: SectionSharedWithScope): string {
   if (scope === "not_visible") return "Hidden by default"
   if (scope === "lp_investor") return "LP portal only"
+  if (scope === "offering_link_only") return "Offering link"
   return "Offering link"
 }
 
-/** Map a flat/legacy document scope string to the three-value Visibility enum. */
+/** Button label for the Visibility checkboxes (Offering link and LP portal can both be on). */
+export function documentVisibilitySummary(scope: SectionSharedWithScope): string {
+  if (scope === "not_visible") return "Hidden by default"
+  if (scope === "lp_investor") return "LP portal"
+  if (scope === "offering_link_only") return "Offering link"
+  return "Offering link, LP portal"
+}
+
+export function documentVisibilityChangeCopy(scope: SectionSharedWithScope): string {
+  if (scope === "not_visible") {
+    return "This file will be Hidden by default — hidden from the public offering link, preview, and LP portal. Only the sponsor workspace will show it."
+  }
+  if (scope === "lp_investor") {
+    return "Signed-in investors will see this file on the Offering Documents tab in the LP portal. It will not appear on the public offering link."
+  }
+  if (scope === "offering_link_only") {
+    return "This file will appear on Preview offering and the no-login shared investor link. It will not appear in the LP portal."
+  }
+  return "This file will appear on the public offering link, preview, and the Offering Documents tab for signed-in investors."
+}
+
+export type DocumentVisibilityChannels = {
+  hidden: boolean
+  offeringLink: boolean
+  lpPortal: boolean
+}
+
+export function channelsFromDocumentScope(
+  scope: SectionSharedWithScope,
+): DocumentVisibilityChannels {
+  if (scope === "not_visible") {
+    return { hidden: true, offeringLink: false, lpPortal: false }
+  }
+  if (scope === "lp_investor") {
+    return { hidden: false, offeringLink: false, lpPortal: true }
+  }
+  if (scope === "offering_link_only") {
+    return { hidden: false, offeringLink: true, lpPortal: false }
+  }
+  return { hidden: false, offeringLink: true, lpPortal: true }
+}
+
+export function scopeFromDocumentChannels(channels: {
+  offeringLink: boolean
+  lpPortal: boolean
+}): SectionSharedWithScope {
+  if (channels.offeringLink && channels.lpPortal) return "offering_page"
+  if (channels.offeringLink) return "offering_link_only"
+  if (channels.lpPortal) return "lp_investor"
+  return "not_visible"
+}
+
+/** Individual investors or All Investors in Shared With. */
+export function documentHasSelectedInvestors(doc: {
+  sharedWithAllInvestors?: boolean
+  sharedInvestorIds?: readonly string[]
+}): boolean {
+  if (doc.sharedWithAllInvestors) return true
+  return (doc.sharedInvestorIds?.length ?? 0) > 0
+}
+
+/** Turn LP portal off and keep Offering link as it is. */
+export function scopeWithLpPortalUnchecked(
+  scope: SectionSharedWithScope,
+): SectionSharedWithScope {
+  const channels = channelsFromDocumentScope(scope)
+  if (!channels.lpPortal) return scope
+  return scopeFromDocumentChannels({
+    offeringLink: channels.offeringLink,
+    lpPortal: false,
+  })
+}
+
+/**
+ * Selecting investors in Shared With unchecks LP portal.
+ * Sponsor and class selections do not call this.
+ */
+export function uncheckLpPortalWhenInvestorsSelected(
+  doc: NestedPreviewDocument,
+  section: OfferingPreviewSection,
+): NestedPreviewDocument {
+  if (!documentHasSelectedInvestors(doc)) return doc
+  const base = doc.sharedWithScope ?? section.sharedWithScope
+  const next = scopeWithLpPortalUnchecked(base)
+  if (next === doc.sharedWithScope) return doc
+  return { ...doc, sharedWithScope: next }
+}
+
+/** Map a flat/legacy document scope string to the Visibility enum. */
 export function resolveFlatDocumentSharedWithScope(
   raw: OfferingPreviewDocSharedWithScope | string | undefined | null,
 ): SectionSharedWithScope {
   if (raw === "lp_investor") return "lp_investor"
   if (raw === "not_visible") return "not_visible"
+  if (raw === "offering_link_only") return "offering_link_only"
   return "offering_page"
 }
 
@@ -127,6 +218,7 @@ function parseSharedWithScope(
 ): SectionSharedWithScope {
   if (rawScope === "lp_investor") return "lp_investor"
   if (rawScope === "offering_page") return "offering_page"
+  if (rawScope === "offering_link_only") return "offering_page"
   if (rawScope === "not_visible") return "not_visible"
   const vis = legacyVisibility.trim().toLowerCase()
   if (vis.includes("not visible") || vis.includes("hidden by default"))
@@ -140,6 +232,7 @@ function parseSharedWithScope(
 function parseDocumentSharedWithScope(raw: unknown): SectionSharedWithScope | undefined {
   if (raw === "lp_investor") return "lp_investor"
   if (raw === "offering_page") return "offering_page"
+  if (raw === "offering_link_only") return "offering_link_only"
   if (raw === "not_visible") return "not_visible"
   return undefined
 }
@@ -171,7 +264,8 @@ export type NestedPreviewDocument = {
   sharedSponsorUserIds: string[]
   /**
    * Overrides the section scope for this file when set.
-   * `offering_page`: offering link + preview (+ LPs when signed in).
+   * `offering_page`: offering link + preview and the LP portal.
+   * `offering_link_only`: offering link + preview, not the LP portal.
    * `lp_investor`: LP portal only.
    * `not_visible` / Hidden by default: sponsor workspace only.
    */
@@ -203,6 +297,12 @@ export type NestedPreviewDocument = {
   esignOpenSponsorSign?: boolean
   /** Specific sponsors who still need to sign. Empty when the slot is open to any sponsor. */
   esignSponsorSignerEmails?: string[]
+  /** People who have signed this investor eSign file, in signing order. */
+  esignSignedBy?: string[]
+  /** Investor who finished signing. Kept after that investor is removed from the deal. */
+  esignSignedByInvestor?: string
+  /** Sponsor who finished signing. Kept after the investor is removed from the deal. */
+  esignSignedBySponsor?: string
   /** Portal user who uploaded this file from the Documents tab. */
   uploadedByUserId?: string
   /** Co-sponsor uploads stay hidden from lead / admin sponsors unless shared with them. */
@@ -370,6 +470,19 @@ export function isInvestorOfferingDocumentSectionExcluded(
   const idLower = sectionId.trim().toLowerCase()
   if (idLower.startsWith("recovered-investor-e-signature")) return true
   return isEsignTemplateSectionLabel(sectionLabel)
+}
+
+/** True when the Documents tab already has files that offering/LP lists should honor. */
+export function workspaceListsOfferingDocuments(
+  sections: OfferingPreviewSection[],
+): boolean {
+  return sections.some(
+    (sec) =>
+      !isEsignTemplateDocumentsSection(sec) &&
+      sec.nestedDocuments.some(
+        (d) => !isEsignDocumentHiddenFromOfferingPreview(d),
+      ),
+  )
 }
 
 /** Template and completed-signature files must not appear on the shared offering preview. */
@@ -804,6 +917,20 @@ function normalizeNested(
         .map((value) => (typeof value === "string" ? value.trim().toLowerCase() : ""))
         .filter((email) => email.includes("@"))
     : []
+  const esignSignedByInvestor =
+    typeof raw.esignSignedByInvestor === "string" && raw.esignSignedByInvestor.trim()
+      ? raw.esignSignedByInvestor.trim()
+      : undefined
+  const esignSignedBySponsor =
+    typeof raw.esignSignedBySponsor === "string" && raw.esignSignedBySponsor.trim()
+      ? raw.esignSignedBySponsor.trim()
+      : undefined
+  const esignSignedBy = Array.isArray(raw.esignSignedBy)
+    ? raw.esignSignedBy
+        .map((value) => (typeof value === "string" ? value.trim() : ""))
+        .filter(Boolean)
+        .slice(0, 8)
+    : []
   const uploadedByUserId =
     typeof raw.uploadedByUserId === "string" && raw.uploadedByUserId.trim()
       ? raw.uploadedByUserId.trim()
@@ -838,6 +965,9 @@ function normalizeNested(
     ...(esignSponsorSigned ? { esignSponsorSigned: true } : {}),
     ...(esignOpenSponsorSign ? { esignOpenSponsorSign: true } : {}),
     ...(esignSponsorSignerEmails.length > 0 ? { esignSponsorSignerEmails } : {}),
+    ...(esignSignedByInvestor ? { esignSignedByInvestor } : {}),
+    ...(esignSignedBySponsor ? { esignSignedBySponsor } : {}),
+    ...(esignSignedBy.length > 0 ? { esignSignedBy } : {}),
     ...(uploadedByUserId ? { uploadedByUserId } : {}),
     ...(uploadedByIsCoSponsor ? { uploadedByIsCoSponsor: true } : {}),
   }

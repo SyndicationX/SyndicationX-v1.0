@@ -1153,8 +1153,12 @@ export function DealDetailPage() {
                 onCopyMemberOfferingLink={handleCopyMemberOfferingLink}
                 onSendMemberInvitationMail={handleSendMemberInvitationMail}
                 onDeleteMember={handleDeleteMember}
-                onViewMember={(row) => {
-                  dealInvestorsTabRef.current?.openViewInvestor(row)
+                onViewMember={(row, kind) => {
+                  dealInvestorsTabRef.current?.openViewInvestor(row, {
+                    distributionsInsteadOfInvestment:
+                      kind === "general_partners",
+                    sponsorDetails: kind === "deal_members",
+                  })
                 }}
                 viewOnly={syndicationViewOnly}
               />

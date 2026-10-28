@@ -9,6 +9,7 @@ import {
   sectionDisplayLabel,
   sectionSharedWithDisplay,
   sectionVisibleOnOfferingPreview,
+  workspaceListsOfferingDocuments,
   type SectionSharedWithScope,
 } from "@/modules/Syndication/Deals/utils/offeringPreviewDocSections"
 import { readOfferingPreviewDocuments } from "@/modules/Syndication/Deals/utils/offeringPreviewDocuments"
@@ -117,7 +118,9 @@ function pushRow(
 ): void {
   const scope = args.scope
   const source: InvestmentDetailDocumentRow["source"] =
-    scope === "offering_page" ? "offering_link" : "assigned"
+    scope === "offering_page" || scope === "offering_link_only"
+      ? "offering_link"
+      : "assigned"
   out.push({
     id: args.id,
     name: args.name,
@@ -198,7 +201,7 @@ export function listInvestmentDetailDocumentSectionGroups(
     }
   }
 
-  if (groups.length === 0) {
+  if (groups.length === 0 && !workspaceListsOfferingDocuments(sections)) {
     const legacyRows: InvestmentDetailDocumentRow[] = []
     const seenLegacyIds = new Set<string>()
     for (const d of readOfferingPreviewDocuments(id)) {

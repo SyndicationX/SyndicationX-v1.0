@@ -252,6 +252,14 @@ export function leadSponsorContactIdExcludingRow(
   return null
 }
 
+/** Lead Sponsor, Admin sponsor, or Co-sponsor. */
+export function isSponsorRosterRole(stored: string | undefined): boolean {
+  return isLeadSponsorRole(stored) || isAdminSponsorOrCoSponsorRole(stored)
+}
+
+export const COMPANY_MEMBER_SPONSOR_ROLES_ONLY_MESSAGE =
+  "A person who belongs to a company can only be Lead Sponsor, Admin sponsor, or Co-sponsor."
+
 /** Admin sponsor or Co-sponsor — same deal cannot assign both Lead Sponsor and these roles to one person. */
 export function isAdminSponsorOrCoSponsorRole(stored: string | undefined): boolean {
   const t = String(stored ?? "").trim()

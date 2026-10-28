@@ -499,6 +499,59 @@ export async function assignSignFlowDocumentSponsorSigner(
   return "ok";
 }
 
+function openSponsorSlotFinished(recipient: {
+  signed?: boolean;
+  signingStatus?: string;
+  status?: string;
+  signedAt?: string | null;
+}): boolean {
+  if (signFlowRecipientHasSigned(recipient)) return true;
+  const status = String(recipient.signingStatus ?? recipient.status ?? "")
+    .trim()
+    .toLowerCase();
+  return status === "awaiting_countersign" && Boolean(recipient.signedAt?.trim());
+}
+
+/**
+ * After an open sponsor slot is signed, store the sponsor who signed it.
+ * SignFlow otherwise keeps the recipient as “Anyone can sign”.
+ */
+export async function stampCompletedOpenSponsorSigner(
+  documentId: string,
+  signer: DealSponsorSigner,
+): Promise<void> {
+  const sigId = documentId.trim();
+  const email = signer.email.trim().toLowerCase();
+  const name = signer.name.replace(/\u2060/g, "").trim();
+  if (!sigId || !email.includes("@") || !name) return;
+  const doc = await getSignFlowDocument(sigId);
+  let changed = false;
+  const nextRecipients = (doc.recipients ?? []).map((recipient) => {
+    if (!isSignFlowOpenSponsorRecipient(recipient)) return recipient;
+    if (!openSponsorSlotFinished(recipient)) return recipient;
+    const currentName = String(recipient.name ?? "")
+      .replace(/\u2060/g, "")
+      .trim();
+    const currentEmail = String(recipient.email ?? "").trim().toLowerCase();
+    if (currentName === name && currentEmail === email) return recipient;
+    const lower = currentName.toLowerCase();
+    const stillPlaceholder =
+      !currentName ||
+      lower.includes("anyone can sign") ||
+      lower === "any sponsor" ||
+      lower === "sponsor" ||
+      currentEmail.endsWith("@embed.local") ||
+      !currentEmail.includes("@");
+    if (!stillPlaceholder && currentName.toLowerCase() !== name.toLowerCase()) {
+      return recipient;
+    }
+    changed = true;
+    return { ...recipient, email, name };
+  });
+  if (!changed) return;
+  await patchSignFlowDocument(sigId, { recipients: nextRecipients });
+}
+
 const SPONSOR_RECIPIENT_COLORS = ["#2563eb", "#7c3aed", "#0f766e", "#b45309", "#be123c"];
 
 function isPlaceholderSponsorEmail(email: string | null | undefined): boolean {

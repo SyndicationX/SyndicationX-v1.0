@@ -173,7 +173,9 @@ export function SponsorEsignSignModal({
     if (signedHandledRef.current) return
     signedHandledRef.current = true
     void (async () => {
-      const syncRes = await postDealSponsorEsignSync(dealIdTrimmed, sigId)
+      const syncRes = await postDealSponsorEsignSync(dealIdTrimmed, sigId, {
+        recordSigner: true,
+      })
       if (!syncRes.ok) {
         toast.error(
           "Signed, sync pending",
