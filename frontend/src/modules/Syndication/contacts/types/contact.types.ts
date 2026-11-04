@@ -8,6 +8,8 @@ export type ContactImportSource =
   | "invite_link"
   | "portal_signup"
   | "ghl"
+  | "deal_sponsor"
+  | "deal_org_move"
 
 /**
  * Per-contact offering visibility on the Investing portal only.
@@ -39,6 +41,20 @@ export const CONTACT_RELATIONSHIP_506B_OPTIONS: ReadonlyArray<{
   { value: "YES", label: "506(b) Yes" },
   { value: "NO", label: "506(b) No" },
 ]
+
+/** One deal this contact is on at a company. */
+export interface ContactOrganizationDeal {
+  dealId: string
+  dealName: string
+  contactRole: string
+}
+
+/** Company this investor belongs to, with the deals they are on there. */
+export interface ContactOrganizationSummary {
+  companyId: string
+  companyName: string
+  deals: ContactOrganizationDeal[]
+}
 
 /** One deal shown on a contact’s Deals tab. */
 export interface ContactDealRow {
@@ -96,6 +112,11 @@ export interface ContactRow {
   organizationName?: string
   /** Company of the user who added this contact. */
   addedByCompanyName?: string
+  /**
+   * Every company this investor is part of, with that company’s deals.
+   * Loaded with contact deal stats.
+   */
+  organizations?: ContactOrganizationSummary[]
   /** ISO timestamp when the contact was created (from API) */
   createdAt?: string
   /**
@@ -126,6 +147,11 @@ export interface ContactRow {
   dealCount?: number
   /** Persisted provenance for how this CRM contact entered the database. */
   importSource?: ContactImportSource
+  /**
+   * Deal whose invite link created this contact.
+   * Set with `importSource` `invite_link` for a deal link; empty for a contact link.
+   */
+  referredByDealId?: string
   /** Present when the row is sourced from GoHighLevel CRM */
   source?: ContactSource
   /** GoHighLevel contact id when `source` is `ghl` */
@@ -161,6 +187,26 @@ export const PLATFORM_CONTACTS_PICKER_HINT =
 /** Self-registered investor row (owned by the investor, not by the org CRM). */
 export function isPlatformDirectoryContact(row: ContactRow): boolean {
   return row.platformAdminOnly === true
+}
+
+/**
+ * How this contact first entered the CRM, for the platform-admin Added from column.
+ */
+export function contactAddedFromLabel(row: ContactRow): string {
+  const source = String(row.importSource ?? "manual").trim().toLowerCase()
+  const fromDealLink = Boolean(row.referredByDealId?.trim())
+  if (source === "csv" || source === "excel") return "Import"
+  if (source === "invite_link") return fromDealLink ? "Deal link" : "Contact link"
+  if (source === "deal_sponsor" || source === "deal_org_move") return "Deal"
+  if (source === "portal_signup") return "Portal signup"
+  if (source === "ghl" || row.source === "ghl") return "GoHighLevel"
+  if (source === "manual" && row.invitationEmailSent === true) return "Invitation email"
+  if (source === "manual") return "Manual"
+  return source
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || "Manual"
 }
 
 /** Adds the derived Platform Contact tag for display. */

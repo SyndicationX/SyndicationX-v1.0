@@ -9,8 +9,10 @@ import { setAppDocumentTitle } from "../../../../../common/utils/appDocumentTitl
 import { formatDateDdMmmYyyy } from "../../../../../common/utils/formatDateDisplay"
 import {
   fetchDistributionPayouts,
+  type BankAccountSetupStatus,
   type DistributionPayout,
 } from "@/modules/Investing/api/stripeInvestorPaymentsApi"
+import { BankAccountSetupBadge } from "../distributions/BankAccountSetupBadge"
 import { fetchDealInvestors } from "../../api/dealsApi"
 import { fetchDistributionSetup } from "../../distribution-setup/api/distributionSetupApi"
 import type { PriorDistributionRecord } from "../../distribution-setup/types/distribution-setup.types"
@@ -50,6 +52,7 @@ export interface InvestorDistributionHistoryRow {
   method: string
   payee: string
   status: string
+  bankAccountSetup: BankAccountSetupStatus
   paymentDate: string
   paymentSent: string
   paymentReceiveDate: string
@@ -186,25 +189,36 @@ export function DealInvestorDistributionsPage() {
       }
 
       const payoutByDist = new Map<string, DistributionPayout | null>()
+      const setupByDist = new Map<string, BankAccountSetupStatus>()
       await Promise.all(
         matched.map(async ({ prior }) => {
           const distId = String(prior.id ?? "").trim()
           if (!distId || payoutByDist.has(distId)) return
           try {
             const list = await fetchDistributionPayouts(dealId, distId)
+            const investorKey = String(inv.id ?? "").trim().toLowerCase()
             const hit =
-              list.find(
+              list.payouts.find(
                 (p) =>
                   String(p.investmentId ?? "")
                     .trim()
-                    .toLowerCase() ===
-                  String(inv.id ?? "")
-                    .trim()
-                    .toLowerCase(),
+                    .toLowerCase() === investorKey,
               ) ?? null
             payoutByDist.set(distId, hit)
+            const setups = list.bankAccountSetup.filter(
+              (line) =>
+                String(line.investmentId ?? "").trim().toLowerCase() ===
+                investorKey,
+            )
+            setupByDist.set(
+              distId,
+              setups.length > 0 && setups.every((line) => line.status === "set_up")
+                ? "set_up"
+                : "not_set_up",
+            )
           } catch {
             payoutByDist.set(distId, null)
+            setupByDist.set(distId, "not_set_up")
           }
         }),
       )
@@ -223,6 +237,7 @@ export function DealInvestorDistributionsPage() {
             className: String(payment.className ?? "").trim() || "—",
             type: typeDisplayLabel(prior),
             method: payout ? "ACH" : "—",
+            bankAccountSetup: setupByDist.get(distId) ?? "not_set_up",
             payee: "—",
             status: statusLabel(payout?.status ?? "not sent"),
             paymentDate: formatPaymentDateLabel(
@@ -345,6 +360,21 @@ export function DealInvestorDistributionsPage() {
         colWidth: "12rem",
         sortValue: (row) => row.payee.toLowerCase(),
         cell: (row) => row.payee,
+      },
+      {
+        id: "bankAccountSetup",
+        header: (
+          <span className="deal_inv_dist_th_stack">
+            <span>Bank account</span>
+            <span>setup</span>
+          </span>
+        ),
+        align: "center",
+        colWidth: "8.5rem",
+        thClassName: "deals_th_align_center deal_inv_dist_th_center",
+        tdClassName: "deal_inv_dist_td_center",
+        sortValue: (row) => row.bankAccountSetup,
+        cell: (row) => <BankAccountSetupBadge status={row.bankAccountSetup} />,
       },
       {
         id: "status",

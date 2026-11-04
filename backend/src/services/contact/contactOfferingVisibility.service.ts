@@ -7,6 +7,10 @@ import { addDealForm } from "../../schema/deal.schema/add-deal-form.schema.js";
 import { companies } from "../../schema/company.schema/company.js";
 import { contact, users } from "../../schema/schema.js";
 import { filterDealIdsVisibleToInvestors } from "../deal/dealFormCompleteness.service.js";
+import {
+  dealInvestmentRowMatchesLoginEmailSql,
+  lpInvestorRowMatchesLoginEmailSql,
+} from "../investing/sameEmailInvestorMatch.js";
 
 export type ContactOfferingVisibility =
   | "ALL_OFFERINGS"
@@ -405,9 +409,8 @@ async function listDealIdsWhereInvitingSponsorIsOnRoster(
 }
 
 /**
- * Deals in another company where any portal user from this contact's company
- * is Lead, Admin, or Co-sponsor. Every contact in that company sees them.
- * Deals owned by the contact's own company stay on the existing offering rules.
+ * Another company's offering where a company user is Lead, Admin, or
+ * Co-sponsor. Offering visibility does not hide those deals.
  */
 export async function listDealIdsSponsoredByCompanyColleague(
   emailNorm: string,
@@ -511,19 +514,7 @@ async function listDealIdsInvestorIsPartOf(emailNorm: string): Promise<Set<strin
        SELECT dli.deal_id::text AS deal_id
        FROM deal_lp_investor dli
        WHERE dli.is_draft = false
-         AND (
-           lower(trim(dli.email)) = $1
-           OR EXISTS (
-             SELECT 1 FROM contact c
-             WHERE c.id::text = trim(both from dli.contact_member_id)
-               AND lower(trim(c.email)) = $1
-           )
-           OR EXISTS (
-             SELECT 1 FROM users u
-             WHERE u.id::text = trim(both from dli.contact_member_id)
-               AND lower(trim(u.email)) = $1
-           )
-         )
+         AND ${lpInvestorRowMatchesLoginEmailSql("dli")}
        UNION
        SELECT dm.deal_id::text AS deal_id
        FROM deal_member dm
@@ -544,18 +535,7 @@ async function listDealIdsInvestorIsPartOf(emailNorm: string): Promise<Set<strin
        SELECT di.deal_id::text AS deal_id
        FROM deal_investment di
        WHERE di.is_draft = false
-         AND (
-           EXISTS (
-             SELECT 1 FROM contact c
-             WHERE c.id::text = trim(both from di.contact_id)
-               AND lower(trim(c.email)) = $1
-           )
-           OR EXISTS (
-             SELECT 1 FROM users u
-             WHERE u.id::text = trim(both from di.contact_id)
-               AND lower(trim(u.email)) = $1
-           )
-         )
+         AND ${dealInvestmentRowMatchesLoginEmailSql("di")}
      ) src
      WHERE nullif(trim(src.deal_id), '') IS NOT NULL`,
     [e],

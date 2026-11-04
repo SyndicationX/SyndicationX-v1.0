@@ -27,15 +27,17 @@ function frontendBaseUrl(): string {
   return "";
 }
 
-function resolvedLoginUrl(): string {
-  const explicit =
-    process.env.SIGNIN_PAGE_URL?.trim() ||
-    process.env.PORTAL_SIGNIN_URL?.trim() ||
-    "";
-  if (explicit) return explicit.replace(/\/$/, "");
+/** Investing deal page, documents block, after sign-in. */
+function investingDocumentsReturnPath(dealId: string): string {
+  const id = dealId.trim();
+  return `/deals/${encodeURIComponent(id)}?portal=investing&focus=documents`;
+}
+
+function resolvedDocumentsUrl(dealId: string): string {
   const origin = frontendBaseUrl();
-  if (!origin) return "";
-  return `${origin}/signin`;
+  if (!origin || !dealId.trim()) return "";
+  const next = investingDocumentsReturnPath(dealId);
+  return `${origin}/signin?next=${encodeURIComponent(next)}`;
 }
 
 export interface SendDealDocumentSharedEmailParams {
@@ -82,7 +84,7 @@ export async function sendDealDocumentSharedEmail(
       memberEmail: to,
       documentNames,
       senderBrand: SENDER_DISPLAY_NAME,
-      loginUrl: resolvedLoginUrl(),
+      loginUrl: resolvedDocumentsUrl(params.dealId),
     };
     const subject =
       process.env.DEAL_DOCUMENT_SHARED_SUBJECT?.trim()?.replace(

@@ -605,6 +605,15 @@ export default function UserManagementPage({
     { id: string; name: string }[]
   >([]);
   const [inviteCompaniesError, setInviteCompaniesError] = useState("");
+  const inviteEmailReady = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+    inviteEmail.trim(),
+  );
+  const inviteCompanyReady =
+    !showCompanyColumn ||
+    (Boolean(inviteCompanyId.trim()) && !inviteCompaniesError);
+  /** Role depends on the company, so it stays hidden until email and company are set. */
+  const showInviteRoleField =
+    showInviteRolePicker && inviteEmailReady && inviteCompanyReady;
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteError, setInviteError] = useState("");
   const [membersTab, setMembersTab] = useState<"users" | "general">("users");
@@ -2645,7 +2654,7 @@ export default function UserManagementPage({
                     />
                   </div>
                 ) : null}
-                {showInviteRolePicker ? (
+                {showInviteRoleField ? (
                   <div className="um_field">
                     <div id="um-invite-role-heading" className="um_field_label_row">
                       <UserCog className="um_field_label_icon" size={17} aria-hidden />
@@ -2654,9 +2663,7 @@ export default function UserManagementPage({
                     {inviteRolePickerOptions.length > 0 ? (
                       <div
                         className={
-                          inviteLoading ||
-                          (showCompanyColumn &&
-                            (!inviteCompanyId.trim() || !!inviteCompaniesError))
+                          inviteLoading
                             ? "um_role_pills_interaction_lock"
                             : undefined
                         }
@@ -2699,12 +2706,10 @@ export default function UserManagementPage({
                   disabled={
                     inviteLoading ||
                     !inviteEmail.trim() ||
-                    ((showCompanyColumn &&
-                      (!inviteCompanyId.trim() ||
-                        !!inviteCompaniesError)) ||
-                      (showInviteRolePicker &&
-                        (!inviteInvitedRole.trim() ||
-                          inviteRolePickerOptions.length === 0)))
+                    !inviteCompanyReady ||
+                    (showInviteRolePicker &&
+                      (!inviteInvitedRole.trim() ||
+                        inviteRolePickerOptions.length === 0))
                   }
                 >
                   <Send size={16} aria-hidden />

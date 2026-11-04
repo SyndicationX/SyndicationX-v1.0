@@ -14,6 +14,7 @@ import {
 import {
   dealInvestorStatusForTable,
   investorFundedColumnLabel,
+  investorFundedDateLabel,
 } from "./dealInvestorTableDisplay"
 
 import {
@@ -114,6 +115,7 @@ export function buildDealInvestorsExportMatrix(
       "Committed",
       "Signed",
       "Funded",
+      "Funded date",
       ...(includeDist
         ? [
             "Ownership %",
@@ -165,6 +167,7 @@ export function buildDealInvestorsExportMatrix(
       displayInvestorCommittedAmountExport(row),
       String(row.signedDate ?? ""),
       investorFundedColumnLabel(row),
+      investorFundedDateLabel(row),
       ...(includeDist
         ? [
             ownershipPct,

@@ -270,8 +270,15 @@ export function DealDetailPage() {
   const syndicationViewOnly =
     mode !== "investing" && dealDetailApi?.viewerCanManageDeal === false
 
+  const investorCompanyLimited =
+    mode !== "investing" &&
+    dealDetailApi?.viewerInvestorCompanyLimited === true
+
   const viewerDealTabIds = useMemo(
     () => {
+      if (investorCompanyLimited) {
+        return new Set(["offering_details", "deal_members"])
+      }
       const ids = visibleDealDetailTabIds(viewerDealMemberRole, {
         isWorkspaceAdmin,
         isRoleLoading: viewerDealMemberRoleFromApi === undefined,
@@ -283,6 +290,7 @@ export function DealDetailPage() {
       viewerDealMemberRoleFromApi,
       isWorkspaceAdmin,
       syndicationViewOnly,
+      investorCompanyLimited,
     ],
   )
 
@@ -441,6 +449,12 @@ export function DealDetailPage() {
   }, [searchParams, activeTab])
 
   useEffect(() => {
+    if (!investorCompanyLimited) return
+    if (activeTab === "offering_details" || activeTab === "deal_members") return
+    selectDealTab("offering_details")
+  }, [investorCompanyLimited, activeTab, selectDealTab])
+
+  useEffect(() => {
     const id = dealId?.trim() ?? ""
     if (!id) {
       setDeal(undefined)
@@ -470,28 +484,14 @@ export function DealDetailPage() {
             d.viewerIsLeadSponsor === true &&
             d.needsPlanUpgrade === true
           ) {
-            const key = `sx-deal-upgrade-prompt:${d.id}`
-            try {
-              if (sessionStorage.getItem(key) !== "1") {
-                setUpgradePromptDeal({
-                  id: d.id,
-                  dealName: d.dealName ?? "",
-                  needsPlanUpgrade: true,
-                  suggestedPlanId: d.suggestedPlanId ?? null,
-                  billingPlanId: d.billingPlanId ?? d.listRow?.billingPlanId ?? null,
-                  viewerIsLeadSponsor: true,
-                })
-              }
-            } catch {
-              setUpgradePromptDeal({
-                id: d.id,
-                dealName: d.dealName ?? "",
-                needsPlanUpgrade: true,
-                suggestedPlanId: d.suggestedPlanId ?? null,
-                billingPlanId: d.billingPlanId ?? null,
-                viewerIsLeadSponsor: true,
-              })
-            }
+            setUpgradePromptDeal({
+              id: d.id,
+              dealName: d.dealName ?? "",
+              needsPlanUpgrade: true,
+              suggestedPlanId: d.suggestedPlanId ?? null,
+              billingPlanId: d.billingPlanId ?? d.listRow?.billingPlanId ?? null,
+              viewerIsLeadSponsor: true,
+            })
           }
         }
       } catch (err) {
@@ -546,6 +546,37 @@ export function DealDetailPage() {
       cancelled = true
     }
   }, [mode, dealId])
+
+  useEffect(() => {
+    if (searchParams.get("portal") !== "investing") return
+    switchToInvesting()
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete("portal")
+        return next
+      },
+      { replace: true },
+    )
+  }, [searchParams, setSearchParams, switchToInvesting])
+
+  useEffect(() => {
+    if (mode !== "investing") return
+    if (searchParams.get("focus") !== "documents") return
+    if (investingOfferingLoading || !dealDetailApi) return
+    const timer = window.setTimeout(() => {
+      document.getElementById("deal-documents")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      })
+    }, 80)
+    return () => window.clearTimeout(timer)
+  }, [
+    mode,
+    searchParams,
+    investingOfferingLoading,
+    dealDetailApi,
+  ])
 
   useEffect(() => {
     if (!dealId?.trim() || deal === undefined || deal === null) return
@@ -851,7 +882,7 @@ export function DealDetailPage() {
             ? "Investment removed"
             : "Investor removed",
           removal.action === "remove_investment"
-            ? "The selected investment and its sponsor soft commitments were removed. Other investors were left in place."
+            ? "That investment was removed. The investor and any other investment on this deal were left in place."
             : "This investor was removed from the selected investment. Their account and other investments were left in place.",
         )
         setDealMembersRefreshKey((k) => k + 1)
@@ -1161,6 +1192,7 @@ export function DealDetailPage() {
                   })
                 }}
                 viewOnly={syndicationViewOnly}
+                leadSponsorOnly={investorCompanyLimited}
               />
             ) : null}
             <DealInvestorsTab
@@ -1290,17 +1322,7 @@ export function DealDetailPage() {
       />
       <DealSaasPaywallModal
         deal={upgradePromptDeal}
-        onClose={() => {
-          const id = upgradePromptDeal?.id?.trim()
-          if (id) {
-            try {
-              sessionStorage.setItem(`sx-deal-upgrade-prompt:${id}`, "1")
-            } catch {
-              /* ignore */
-            }
-          }
-          setUpgradePromptDeal(null)
-        }}
+        onClose={() => setUpgradePromptDeal(null)}
       />
       {inviteLinkOpen ? (
         <div
@@ -1388,6 +1410,7 @@ export function DealDetailPage() {
                 className="um_btn_secondary"
                 onClick={closeDealInviteLinkModal}
               >
+                <X size={16} strokeWidth={2} aria-hidden />
                 Close
               </button>
             </div>

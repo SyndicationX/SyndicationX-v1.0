@@ -1,4 +1,5 @@
 import { type ComponentType, useEffect, useId, useState } from "react"
+import { useAppModalScrollLock } from "./useAppModalScrollLock"
 import {
   BarChart3,
   Briefcase,
@@ -344,6 +345,7 @@ const investingNavItems: NavItemLink[] = [
 function PageLayoutInner() {
   const location = useLocation()
   useUserActivityTracking()
+  useAppModalScrollLock()
   const { mode, setMode, portalSwitchOverlay } = usePortalMode()
   const platformAdmin = isPlatformAdmin()
   const [pendingFeedbackCount, setPendingFeedbackCount] = useState(0)
@@ -683,10 +685,10 @@ function PageLayoutInner() {
             <div className="app_cosponsor_company_alert" role="alert">
               <Info size={20} strokeWidth={2.25} aria-hidden />
               <div>
-                <strong>Create a company</strong>
+                <strong>Add Company</strong>
                 <span>
-                  Create a company to open your deals.{" "}
-                  <Link to="/account/company">Create a company</Link>
+                  Add a company to open your deals.{" "}
+                  <Link to="/account/company">Add Company</Link>
                 </span>
               </div>
             </div>

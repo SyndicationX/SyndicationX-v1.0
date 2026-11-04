@@ -25,9 +25,8 @@ import { listUserCompanyMemberships } from "../auth/userCompanyMembership.servic
 import { reconcileAssigningDealUsersForDeal } from "../deal/assigningDealUser.service.js";
 import { getAddDealFormById } from "../deal/dealForm.service.js";
 import {
-  isPortalUserCoSponsorOnDeal,
   isPortalUserDealSponsorOnDeal,
-  isPortalUserLeadOrAdminSponsorOnDeal,
+  resolveViewerDealMemberRoleOnDeal,
 } from "../deal/dealMemberScope.service.js";
 import {
   buildContactFullName,
@@ -130,32 +129,56 @@ export async function resolveSharerInviteCompany(
   return { companyId: company.id, companyName: company.name };
 }
 
-async function assertSharerCanInvite(userId: string): Promise<boolean> {
+/**
+ * `investor_role`: portal role is still investor. That does not block a deal
+ * invite when they are Lead / Admin / Co-sponsor, and it does not block the
+ * general invite when the account has a company.
+ */
+type SharerInviteGate = "ok" | "blocked" | "investor_role";
+
+async function sharerInviteGate(userId: string): Promise<SharerInviteGate> {
   const uid = String(userId ?? "").trim();
-  if (!uid) return false;
+  if (!uid) return "blocked";
   const [row] = await db
     .select({ role: users.role, userStatus: users.userStatus })
     .from(users)
     .where(eq(users.id, uid))
     .limit(1);
-  if (!row) return false;
-  if (String(row.role ?? "").trim() === INVESTOR) return false;
+  if (!row) return "blocked";
   if (String(row.userStatus ?? "").trim().toLowerCase() === "suspended") {
-    return false;
+    return "blocked";
   }
-  return true;
+  if (String(row.role ?? "").trim() === INVESTOR) return "investor_role";
+  return "ok";
 }
 
 /**
- * Builds this user's investor signup link (`/signup?ref=…`). Investors cannot
- * invite other investors, so they get no link.
+ * A portal role of `investor` still syndicates when the account has a company
+ * (or was added to one). Those users share invite links the same as company staff.
+ */
+async function investorAccountHasCompany(userId: string): Promise<boolean> {
+  const company = await resolveSharerInviteCompany(userId);
+  return Boolean(company?.companyId);
+}
+
+/**
+ * Builds this user's investor signup link (`/signup?ref=…`).
+ * Pure investor accounts with no company get no link. A co-sponsor (or any
+ * syndicating user) who has a company does.
  */
 export async function buildInvestorInviteLinkForUser(
   userId: string,
   requestedCompanyId?: string | null,
 ): Promise<InvestorInviteLink | null> {
   const uid = String(userId ?? "").trim();
-  if (!(await assertSharerCanInvite(uid))) return null;
+  const inviteGate = await sharerInviteGate(uid);
+  if (inviteGate === "blocked") return null;
+  if (
+    inviteGate === "investor_role" &&
+    !(await investorAccountHasCompany(uid))
+  ) {
+    return null;
+  }
 
   const [sponsorName, company] = await Promise.all([
     getUserDisplayNameById(uid),
@@ -185,7 +208,8 @@ export async function buildInvestorInviteLinkForDeal(
   if (!uid || !did) {
     return { ok: false, status: 404, message: "Deal not found." };
   }
-  if (!(await assertSharerCanInvite(uid))) {
+  const inviteGate = await sharerInviteGate(uid);
+  if (inviteGate === "blocked") {
     return {
       ok: false,
       status: 403,
@@ -213,7 +237,8 @@ export async function buildInvestorInviteLinkForDeal(
         "Change the deal stage before sharing an investor invite link.",
     };
   }
-  if (!(await isPortalUserDealSponsorOnDeal(did, uid))) {
+  const sponsorOnDeal = await isPortalUserDealSponsorOnDeal(did, uid);
+  if (!sponsorOnDeal) {
     return {
       ok: false,
       status: 403,
@@ -248,6 +273,38 @@ export async function buildInvestorInviteLinkForDeal(
   };
 }
 
+/**
+ * Company that should own contacts this sponsor invites onto a deal.
+ * An Admin sponsor or Co-sponsor from another company keeps those contacts in
+ * their own company. The lead sponsor's company does not receive them.
+ * A sponsor who belongs to the deal's company, including by membership, stays
+ * in that company.
+ */
+export async function organizationForSponsorInviteContacts(params: {
+  dealId: string;
+  sponsorUserId: string;
+  dealOrganizationId: string | null;
+  sponsorOrganizationId: string | null;
+  fallbackOrganizationId?: string | null;
+}): Promise<string | null> {
+  const dealOrg = String(params.dealOrganizationId ?? "").trim() || null;
+  const sponsorOrg = String(params.sponsorOrganizationId ?? "").trim() || null;
+  const fallback = String(params.fallbackOrganizationId ?? "").trim() || null;
+  const inDealCompany = dealOrg ?? fallback ?? sponsorOrg;
+  if (!dealOrg || !sponsorOrg || dealOrg.toLowerCase() === sponsorOrg.toLowerCase()) {
+    return inDealCompany;
+  }
+  if (await userHasAccessToOrganization(params.sponsorUserId, dealOrg)) {
+    return dealOrg;
+  }
+  const role = await resolveViewerDealMemberRoleOnDeal(
+    params.dealId,
+    params.sponsorUserId,
+  );
+  if (role === "admin_sponsor" || role === "co_sponsor") return sponsorOrg;
+  return inDealCompany;
+}
+
 /** Resolves a `ref` query value back to the sharer, dropping stale or suspended users. */
 export async function resolveInvestorInviteReferrer(
   rawRef: string | null | undefined,
@@ -273,12 +330,12 @@ export async function resolveInvestorInviteReferrer(
     .where(eq(users.id, decoded.sponsorUserId))
     .limit(1);
   if (!row?.id) return null;
-  if (String(row.role ?? "").trim() === INVESTOR) return null;
   if (String(row.userStatus ?? "").trim().toLowerCase() === "suspended") {
     return null;
   }
 
   const sponsorUserId = String(row.id).trim();
+  const sponsorPortalRole = String(row.role ?? "").trim();
   const sponsorOrgId =
     (await resolveOrganizationIdForUserId(sponsorUserId)) ?? null;
   const tokenCompany = await companyRecordById(
@@ -287,6 +344,10 @@ export async function resolveInvestorInviteReferrer(
   const tokenCompanyId = tokenCompany?.id ?? null;
 
   const tokenDealId = String(decoded.dealId ?? "").trim();
+  if (!tokenDealId && sponsorPortalRole === INVESTOR) {
+    const hasCompany = Boolean(tokenCompanyId || sponsorOrgId);
+    if (!hasCompany) return null;
+  }
   if (!tokenDealId) {
     return {
       sponsorUserId,
@@ -296,11 +357,12 @@ export async function resolveInvestorInviteReferrer(
   }
 
   const deal = await getAddDealFormById(tokenDealId);
-  if (
-    !deal ||
-    deal.archived ||
-    !(await isPortalUserDealSponsorOnDeal(tokenDealId, sponsorUserId))
-  ) {
+  const sponsorOnDeal =
+    Boolean(deal) &&
+    !deal?.archived &&
+    (await isPortalUserDealSponsorOnDeal(tokenDealId, sponsorUserId));
+  if (sponsorPortalRole === INVESTOR && !sponsorOnDeal) return null;
+  if (!deal || deal.archived || !sponsorOnDeal) {
     return {
       sponsorUserId,
       organizationId: tokenCompanyId ?? sponsorOrgId,
@@ -309,18 +371,13 @@ export async function resolveInvestorInviteReferrer(
   }
 
   const dealOrg = String(deal.organizationId ?? "").trim() || null;
-  let organizationId = dealOrg ?? tokenCompanyId ?? sponsorOrgId;
-  // A co-sponsor added from another company keeps invite signups in their own
-  // company. The deal's company does not receive that co-sponsor's contacts.
-  if (
-    dealOrg &&
-    sponsorOrgId &&
-    dealOrg.toLowerCase() !== sponsorOrgId.toLowerCase() &&
-    (await isPortalUserCoSponsorOnDeal(tokenDealId, sponsorUserId)) &&
-    !(await isPortalUserLeadOrAdminSponsorOnDeal(tokenDealId, sponsorUserId))
-  ) {
-    organizationId = sponsorOrgId;
-  }
+  const organizationId = await organizationForSponsorInviteContacts({
+    dealId: tokenDealId,
+    sponsorUserId,
+    dealOrganizationId: dealOrg,
+    sponsorOrganizationId: sponsorOrgId,
+    fallbackOrganizationId: tokenCompanyId,
+  });
   return {
     sponsorUserId,
     organizationId,
@@ -635,6 +692,8 @@ export async function findInviteAttributedContactId(params: {
 /**
  * Soft commitment and e-sign must not replace the invite sponsor with the
  * investor's own user id. An adder who is already someone else is left alone.
+ * A lead, admin, or co-sponsor investing their own money is their own sponsor,
+ * including when an earlier row still names the person who invited them.
  */
 export async function retainInviteSponsorOnLpRoster(params: {
   lpRowId: string;
@@ -643,14 +702,31 @@ export async function retainInviteSponsorOnLpRoster(params: {
 }): Promise<void> {
   const lpRowId = String(params.lpRowId ?? "").trim();
   const sponsorUserId = String(params.sponsorUserId ?? "").trim();
-  const viewerKey = String(params.viewerUserId ?? "").trim().toLowerCase();
-  if (!lpRowId || !sponsorUserId) return;
+  const viewerUserId = String(params.viewerUserId ?? "").trim();
+  const viewerKey = viewerUserId.toLowerCase();
+  if (!lpRowId || !viewerUserId) return;
   const [row] = await db
-    .select({ addedBy: dealLpInvestor.addedBy })
+    .select({
+      addedBy: dealLpInvestor.addedBy,
+      dealId: dealLpInvestor.dealId,
+    })
     .from(dealLpInvestor)
     .where(eq(dealLpInvestor.id, lpRowId))
     .limit(1);
   const current = String(row?.addedBy ?? "").trim();
+  const dealId = String(row?.dealId ?? "").trim();
+  if (
+    dealId &&
+    (await isPortalUserDealSponsorOnDeal(dealId, viewerUserId))
+  ) {
+    if (current.toLowerCase() === viewerKey) return;
+    await db
+      .update(dealLpInvestor)
+      .set({ addedBy: viewerUserId, updatedAt: new Date() })
+      .where(eq(dealLpInvestor.id, lpRowId));
+    return;
+  }
+  if (!sponsorUserId) return;
   if (current && current.toLowerCase() !== viewerKey) return;
   if (current.toLowerCase() === sponsorUserId.toLowerCase()) return;
   await db

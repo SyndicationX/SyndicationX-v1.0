@@ -745,6 +745,7 @@
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   scroll-behavior: smooth;
   -webkit-overflow-scrolling: touch;
@@ -753,6 +754,12 @@
   margin-right: clamp(1rem, 2vw, 1.5rem);
   padding: 0 0 2em;
   background: transparent;
+}
+
+/* Dialog open: keep the page from growing a blank scroll region behind the popup. */
+html.app_modal_open .app_main_content {
+  overflow: hidden;
+  scroll-behavior: auto;
 }
 
 /* Create / edit deal wizard: avoid an extra blank band after the footer when scrolling */

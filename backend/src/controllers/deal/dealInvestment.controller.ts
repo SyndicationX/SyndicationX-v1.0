@@ -39,6 +39,7 @@ import {
   listDealInvestmentsByDealId,
   mapDealInvestmentsToInvestorApi,
   resolveInvestorClassForDealInvestment,
+  recordFundApprovedAtHistory,
   saveSubscriptionDocument,
   updateDealInvestment,
 } from "../../services/deal/dealInvestment.service.js";
@@ -135,6 +136,34 @@ function fundApprovedFromRequestBody(
   if (s === "true" || s === "1" || s === "yes") return true;
   if (s === "false" || s === "0" || s === "no") return false;
   return fallback;
+}
+
+/** Optional `fund_approved_at` (`YYYY-MM-DD`). Absent means leave the stored date. */
+function fundApprovedAtFromRequestBody(
+  b: Record<string, unknown>,
+): { present: false } | { present: true; date: Date } | { present: true; invalid: true } {
+  const has =
+    Object.prototype.hasOwnProperty.call(b, "fund_approved_at") ||
+    Object.prototype.hasOwnProperty.call(b, "fundApprovedAt");
+  if (!has) return { present: false };
+  const raw = bodyString(
+    (b as { fund_approved_at?: unknown }).fund_approved_at ??
+      (b as { fundApprovedAt?: unknown }).fundApprovedAt,
+  ).trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!match) return { present: true, invalid: true };
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return { present: true, invalid: true };
+  }
+  return { present: true, date };
 }
 
 async function rejectIfExtraCompanyUserUnpaid(
@@ -304,23 +333,21 @@ export async function getDealInvestors(
       user.id,
       viewerEmail,
     );
-    const removedContacts = new Set(
+    const removedInvestmentIds = new Set(
       sponsorRemoved
-        .map((row) => String(row.contactId ?? "").trim().toLowerCase())
+        .map((row) => String(row.id ?? "").trim().toLowerCase())
         .filter(Boolean),
     );
     const mappedRemoved =
       sponsorRemoved.length > 0
-        ? await mapDealInvestmentsToInvestorApi(sponsorRemoved)
+        ? await mapDealInvestmentsToInvestorApi(sponsorRemoved, {
+            keepRemovedCommitment: true,
+          })
         : [];
     const investorsForViewer = [
       ...investors.filter((inv) => {
-        const kind = String(
-          (inv as { investorKind?: string }).investorKind ?? "",
-        );
-        if (kind !== "lp_roster" && kind !== "lp_investor") return true;
-        const cid = String(inv.contactId ?? "").trim().toLowerCase();
-        return !removedContacts.has(cid);
+        const id = String(inv.id ?? "").trim().toLowerCase();
+        return !removedInvestmentIds.has(id);
       }),
       ...mappedRemoved.map((row) => ({
         ...row,
@@ -573,16 +600,51 @@ export async function putDealInvestment(
         return;
       }
     }
+    const requestedFundedDate = fundApprovedAtFromRequestBody(b);
+    if (requestedFundedDate.present && "invalid" in requestedFundedDate) {
+      res.status(400).json({ message: "Funded date must be a valid date." });
+      return;
+    }
     const fundApprovedBy = fundApproved
       ? fundApprovedBecameTrue
         ? user.id
         : String(existing.fundApprovedBy ?? "").trim() || user.id
       : null;
-    const fundApprovedAt = fundApproved
+    let fundApprovedAt = fundApproved
       ? fundApprovedBecameTrue
         ? new Date()
         : existing.fundApprovedAt ?? new Date()
       : null;
+    if (
+      fundApproved &&
+      requestedFundedDate.present &&
+      "date" in requestedFundedDate
+    ) {
+      if (
+        !(await viewerCanApproveDealFundOnDeal({
+          dealId,
+          userId: user.id,
+          userRole: user.userRole,
+        }))
+      ) {
+        res.status(403).json({ message: FUND_APPROVAL_FORBIDDEN_MESSAGE });
+        return;
+      }
+      fundApprovedAt = requestedFundedDate.date;
+    }
+    const fundedDateEdited =
+      fundApproved &&
+      requestedFundedDate.present &&
+      "date" in requestedFundedDate;
+    const fundApprovedAtHistory =
+      fundApproved && fundApprovedAt && (fundedDateEdited || fundApprovedBecameTrue)
+        ? recordFundApprovedAtHistory({
+            history: existing.fundApprovedAtHistory,
+            previousDate: existing.fundApprovedAt ?? null,
+            nextDate: fundApprovedAt,
+            source: fundedDateEdited ? "edited" : "approved",
+          })
+        : undefined;
 
     let documentStoragePath: string | null = existing.documentStoragePath;
     if (file && "buffer" in file && file.buffer && file.buffer.length > 0) {
@@ -616,6 +678,7 @@ export async function putDealInvestment(
             fundApproved,
             fundApprovedBy,
             fundApprovedAt,
+            fundApprovedAtHistory,
             status,
             investorClass: resolvedInvestorClass,
             docSignedDate,
@@ -640,6 +703,7 @@ export async function putDealInvestment(
             fundApproved,
             fundApprovedBy,
             fundApprovedAt,
+            fundApprovedAtHistory,
             status,
             investorClass: resolvedInvestorClass,
             docSignedDate,

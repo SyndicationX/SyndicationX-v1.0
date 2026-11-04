@@ -5,10 +5,14 @@
 
 export const REMOVAL_REASON_MAX = 500;
 
+/** Stored on `deal_investment.status`. The row stays; it is not deleted. */
+export const REMOVED_INVESTMENT_STATUS = "Removed";
+
 export type RemovalAction = "remove_investment" | "remove_investor";
 
 export type RemovalMutationType =
   | "soft_delete_investment"
+  | "release_investment_commitment"
   | "unlink_investor"
   | "soft_delete_lp"
   | "clear_lp_soft_commitment"
@@ -115,35 +119,12 @@ function commitmentIdentity(row: RemovalInvestment): string {
 }
 
 function isOpenInvestment(row: RemovalInvestment): boolean {
-  return !row.removedAt && !row.investorUnlinkedAt;
+  return !investmentWasRemoved(row) && !row.investorUnlinkedAt;
 }
 
-function storedCommitmentAmount(raw: string | null | undefined): number {
-  const n = Number(String(raw ?? "").replace(/[$,\s]/g, ""));
-  return Number.isFinite(n) ? n : 0;
-}
-
-/** The amount shown from `deal_lp_investor.committed_amount` after the investment row is gone. */
-function pushClearLpCommitment(
-  mutations: RemovalMutation[],
-  lp: RemovalLp | null,
-  contact: string,
-): void {
-  if (!lp || lp.removedAt) return;
-  if (contactKey(lp.contactId) !== contact) return;
-  if (storedCommitmentAmount(lp.committedAmount) <= 0) return;
-  if (
-    mutations.some(
-      (item) => item.type === "clear_lp_soft_commitment" && item.id === lp.id,
-    )
-  ) {
-    return;
-  }
-  mutations.push({
-    type: "clear_lp_soft_commitment",
-    id: lp.id,
-    previous: lp.previous,
-  });
+function investmentWasRemoved(row: RemovalInvestment): boolean {
+  const status = String(row.status ?? "").trim().toLowerCase();
+  return Boolean(row.removedAt) || status === "removed";
 }
 
 /**
@@ -226,18 +207,7 @@ export function planInvestorRemoval(
 
   const contactId =
     selected?.contactId ?? input.lp?.contactId ?? input.member?.contactId ?? "";
-  const contact = contactKey(contactId);
-  const sameContactInvestments = input.investments.filter(
-    (row) => contactKey(row.contactId) === contact,
-  );
 
-  if (selected?.removedAt) {
-    return {
-      ok: false,
-      status: 409,
-      message: "This investment was already removed.",
-    };
-  }
   if (input.lp?.removedAt && input.target.kind === "lp") {
     return {
       ok: false,
@@ -249,64 +219,35 @@ export function planInvestorRemoval(
   const mutations: RemovalMutation[] = [];
 
   if (parsed.action === "remove_investment") {
-    const targets = selected
-      ? [selected]
-      : sameContactInvestments.filter(isOpenInvestment);
-    if (targets.length === 0) {
-      pushClearLpCommitment(mutations, input.lp, contact);
-      if (mutations.length === 0) {
-        return {
-          ok: false,
-          status: 400,
-          message: "This investor has no investment to remove.",
-        };
-      }
-    } else {
-      const removeIds = [
-        ...new Set(
-          targets.flatMap((row) => [
-            row.id,
-            ...associatedSponsorSoftCommitmentIds(row, sameContactInvestments),
-          ]),
-        ),
-      ];
-      const blocked = removeIds.filter((id) =>
-        input.investmentIdsWithMoney.includes(id),
-      );
-      if (blocked.length > 0) {
-        return {
-          ok: false,
-          status: 409,
-          message:
-            "This investment has payments or distributions and cannot be removed.",
-        };
-      }
-      for (const id of removeIds) {
-        const row = sameContactInvestments.find((item) => item.id === id);
-        if (!row) continue;
-        mutations.push({
-          type: "soft_delete_investment",
-          id,
-          previous: row.previous,
-        });
-      }
-
-      const removed = new Set(removeIds);
-      const stillActive = sameContactInvestments.some(
-        (row) => isOpenInvestment(row) && !removed.has(row.id),
-      );
-      if (!stillActive) pushClearLpCommitment(mutations, input.lp, contact);
+    if (!selected) {
+      return {
+        ok: false,
+        status: 400,
+        message:
+          "Choose the investment row to remove. Other investments for this investor stay on the deal.",
+      };
     }
-  } else if (!selected) {
-    const active = sameContactInvestments.filter(isOpenInvestment);
-    if (active.length > 0) {
+    if (investmentWasRemoved(selected)) {
+      mutations.push({
+        type: "release_investment_commitment",
+        id: selected.id,
+        previous: selected.previous,
+      });
+    } else if (input.investmentIdsWithMoney.includes(selected.id)) {
       return {
         ok: false,
         status: 409,
         message:
-          "This investor still has an investment on the deal. Remove that investment's association instead.",
+          "This investment has payments or distributions and cannot be removed.",
       };
+    } else {
+      mutations.push({
+        type: "soft_delete_investment",
+        id: selected.id,
+        previous: selected.previous,
+      });
     }
+  } else if (!selected) {
     if (!input.lp || input.lp.removedAt) {
       return { ok: false, status: 404, message: "Investor not found." };
     }
@@ -315,31 +256,18 @@ export function planInvestorRemoval(
       id: input.lp.id,
       previous: input.lp.previous,
     });
-    pushMemberDeletion(mutations, input.member, contact);
+  } else if (selected.investorUnlinkedAt) {
+    return {
+      ok: false,
+      status: 409,
+      message: "This investor was already removed from this row.",
+    };
   } else {
-    if (selected.investorUnlinkedAt) {
-      return {
-        ok: false,
-        status: 409,
-        message: "This investor was already removed from the investment.",
-      };
-    }
     mutations.push({
       type: "unlink_investor",
       id: selected.id,
       previous: selected.previous,
     });
-    const stillActive = sameContactInvestments.some(
-      (row) => row.id !== selected.id && isOpenInvestment(row),
-    );
-    if (!stillActive && input.lp && !input.lp.removedAt && contactKey(input.lp.contactId) === contact) {
-      mutations.push({
-        type: "soft_delete_lp",
-        id: input.lp.id,
-        previous: input.lp.previous,
-      });
-    }
-    if (!stillActive) pushMemberDeletion(mutations, input.member, contact);
   }
 
   if (mutations.length === 0) {
@@ -349,7 +277,9 @@ export function planInvestorRemoval(
   const investmentPrevious = mutations
     .filter(
       (item) =>
-        item.type === "soft_delete_investment" || item.type === "unlink_investor",
+        item.type === "soft_delete_investment" ||
+        item.type === "release_investment_commitment" ||
+        item.type === "unlink_investor",
     )
     .map((item) => item.previous);
   const lpPrevious = mutations
@@ -380,20 +310,6 @@ export function planInvestorRemoval(
       },
     },
   };
-}
-
-function pushMemberDeletion(
-  mutations: RemovalMutation[],
-  member: RemovalMember | null,
-  contact: string,
-): void {
-  if (!member || member.keepBecauseCompanyUser) return;
-  if (contactKey(member.contactId) !== contact) return;
-  mutations.push({
-    type: "delete_roster_member",
-    id: member.id,
-    previous: member.previous,
-  });
 }
 
 export type RemovalUnitOfWork = {

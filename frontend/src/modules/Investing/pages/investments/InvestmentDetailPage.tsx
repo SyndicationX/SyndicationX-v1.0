@@ -649,11 +649,13 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
   const activeCommitmentTotal = useMemo(() => {
     const lines = d.investedAsBreakdown ?? []
     if (lines.length === 0) return list.investedAmount
+    const archivedView = profileListTab === "archived"
     return lines.reduce((sum, line) => {
-      if (lineIsInvestorArchived(line, dealInvestorRows)) return sum
+      const archived = lineIsInvestorArchived(line, dealInvestorRows)
+      if (archived !== archivedView) return sum
       return sum + (Number(line.investedAmount) || 0)
     }, 0)
-  }, [d.investedAsBreakdown, dealInvestorRows, list.investedAmount])
+  }, [d.investedAsBreakdown, dealInvestorRows, list.investedAmount, profileListTab])
   const investedAmountNode = (
     <CardCompactAmount amount={activeCommitmentTotal} />
   )
@@ -742,6 +744,29 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
       return profileListTab === "archived" ? archived : !archived
     })
   }, [filteredProfileBreakdown, dealInvestorRows, profileListTab])
+  const [profilePage, setProfilePage] = useState(1)
+  const [profilePageSize, setProfilePageSize] = useState(10)
+  useEffect(() => {
+    setProfilePage(1)
+  }, [profileListTab, profileBreakdownQuery])
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(profileRowsForTab.length / profilePageSize))
+    if (profilePage > totalPages) setProfilePage(totalPages)
+  }, [profileRowsForTab.length, profilePageSize, profilePage])
+  const profilePagination = useMemo(
+    () => ({
+      page: profilePage,
+      pageSize: profilePageSize,
+      totalItems: profileRowsForTab.length,
+      onPageChange: setProfilePage,
+      onPageSizeChange: (n: number) => {
+        setProfilePageSize(n)
+        setProfilePage(1)
+      },
+      ariaLabel: "Profile and investment table pagination",
+    }),
+    [profilePage, profilePageSize, profileRowsForTab.length],
+  )
   const profileActiveCount = useMemo(
     () =>
       (d.investedAsBreakdown ?? []).filter(
@@ -1233,6 +1258,9 @@ function DetailForm({ d }: { d: InvestmentDetailRecord }) {
                           : "No active profiles on this deal."
                     }
                     initialSort={{ columnId: "profileName", direction: "asc" }}
+                    pagination={
+                      profileRowsForTab.length > 0 ? profilePagination : undefined
+                    }
                   />
                 </>
               ) : (

@@ -799,6 +799,20 @@
       "when": 1896170000000,
       "tag": "0114_deal_investment_optional_position_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1896180000000,
+      "tag": "0115_investor_bank_account_audit",
+      "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1896190000000,
+      "tag": "0116_deal_investment_fund_approved_at_history",
+      "breakpoints": true
     }
   ]
 }

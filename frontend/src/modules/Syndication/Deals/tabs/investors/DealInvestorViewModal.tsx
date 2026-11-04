@@ -35,6 +35,7 @@ import {
   isPrivacyRedacted,
 } from "../../../../../common/utils/displayEmail"
 import { fetchDistributionPayouts } from "@/modules/Investing/api/stripeInvestorPaymentsApi"
+import { BankAccountSetupBadge } from "../distributions/BankAccountSetupBadge"
 import { fetchDealInvestors } from "../../api/dealsApi"
 import { fetchDistributionSetup } from "../../distribution-setup/api/distributionSetupApi"
 import {
@@ -426,6 +427,7 @@ export function DealInvestorViewModal({
           ),
         ]
         const payoutByDist = new Map<string, string>()
+        const setupByDist = new Map<string, "set_up" | "not_set_up">()
         await Promise.all(
           distIds.map(async (distId) => {
             try {
@@ -433,12 +435,23 @@ export function DealInvestorViewModal({
                 dealIdTrimmed,
                 distId,
               )
-              const hit = list.find((p) =>
+              const hit = list.payouts.find((p) =>
                 payoutMatchesInvestor(matchKeys, p.investmentId),
               )
               payoutByDist.set(distId, hit?.status?.trim() || "not sent")
+              const setups = list.bankAccountSetup.filter((line) =>
+                payoutMatchesInvestor(matchKeys, line.investmentId),
+              )
+              setupByDist.set(
+                distId,
+                setups.length > 0 &&
+                  setups.every((line) => line.status === "set_up")
+                  ? "set_up"
+                  : "not_set_up",
+              )
             } catch {
               payoutByDist.set(distId, "not sent")
+              setupByDist.set(distId, "not_set_up")
             }
           }),
         )
@@ -447,6 +460,8 @@ export function DealInvestorViewModal({
           history.map((h) => ({
             ...h,
             achStatus: payoutByDist.get(h.distributionId) ?? h.achStatus,
+            bankAccountSetup:
+              setupByDist.get(h.distributionId) ?? h.bankAccountSetup,
           })),
         )
       })
@@ -535,6 +550,13 @@ export function DealInvestorViewModal({
         colWidth: "7.5rem",
         sortValue: (r) => r.dateSort,
         cell: (r) => r.date,
+      },
+      {
+        id: "bankAccountSetup",
+        header: "Bank account setup",
+        colWidth: "9rem",
+        sortValue: (r) => r.bankAccountSetup,
+        cell: (r) => <BankAccountSetupBadge status={r.bankAccountSetup} />,
       },
       {
         id: "achStatus",

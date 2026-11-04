@@ -1664,6 +1664,9 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
           )
         : null}
 
+      {typeof document !== "undefined"
+        ? createPortal(
+            <>
       {viewRow ? (
         <div
           className="um_modal_overlay"
@@ -2015,6 +2018,10 @@ export default function CompanyPage({ variant = "default" }: CompanyPageProps = 
         companies={customersTabRows}
         listKind={customersListTab}
       />
+            </>,
+            document.body,
+          )
+        : null}
     </section>
   );
 }

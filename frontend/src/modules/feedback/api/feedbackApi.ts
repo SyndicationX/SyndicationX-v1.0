@@ -59,6 +59,8 @@ function asFeedback(raw: unknown): FeedbackItem | null {
     username: String(r.username ?? "").trim(),
     userEmail: String(r.userEmail ?? "").trim(),
     userRole: String(r.userRole ?? "").trim() || null,
+    companyName:
+      String(r.companyName ?? r.company_name ?? "").trim() || null,
     pageKey: String(r.pageKey ?? "").trim(),
     pageLabel: String(r.pageLabel ?? "").trim(),
     subPageKey: String(r.subPageKey ?? "").trim(),

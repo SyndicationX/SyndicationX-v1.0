@@ -36,10 +36,9 @@ export type OfferingPreviewDisplayDocument = {
 
 /**
  * Which document scopes appear on a given surface.
- * - Offering link + Preview offering: `offering_page` and `offering_link_only`.
- * - LP portal (signed-in LP on the deal): `offering_page` and `lp_investor`.
- * - `offering_link_only`: public offering only — not the LP portal.
- * - `not_visible`: never on offering link, preview, or LP portal.
+ * - Preview offering and the no-login offering link: `offering_page` and `offering_link_only`.
+ * - Signed-in investor deal preview: those, plus `lp_investor` (LP portal only).
+ * - `not_visible`: off the public offering link. Shared With recipients still see it in Investing.
  */
 export function sectionVisibleOnOfferingPreview(
   scope: SectionSharedWithScope,
@@ -47,7 +46,11 @@ export function sectionVisibleOnOfferingPreview(
 ): boolean {
   if (scope === "not_visible") return false
   if (ctx.isLpDealWorkspace) {
-    return scope === "offering_page" || scope === "lp_investor"
+    return (
+      scope === "offering_page" ||
+      scope === "offering_link_only" ||
+      scope === "lp_investor"
+    )
   }
   return scope === "offering_page" || scope === "offering_link_only"
 }
@@ -116,13 +119,13 @@ export function documentVisibilitySummary(scope: SectionSharedWithScope): string
 
 export function documentVisibilityChangeCopy(scope: SectionSharedWithScope): string {
   if (scope === "not_visible") {
-    return "This file will be Hidden by default — hidden from the public offering link, preview, and LP portal. Only the sponsor workspace will show it."
+    return "This file will be Hidden by default — hidden from the public offering link and preview. People chosen in Shared With still see it in Investing."
   }
   if (scope === "lp_investor") {
     return "Signed-in investors will see this file on the Offering Documents tab in the LP portal. It will not appear on the public offering link."
   }
   if (scope === "offering_link_only") {
-    return "This file will appear on Preview offering and the no-login shared investor link. It will not appear in the LP portal."
+    return "This file will appear on Preview offering, the no-login shared investor link, and the signed-in Investing deal preview."
   }
   return "This file will appear on the public offering link, preview, and the Offering Documents tab for signed-in investors."
 }

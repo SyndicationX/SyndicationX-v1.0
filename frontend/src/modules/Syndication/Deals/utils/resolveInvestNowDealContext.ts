@@ -146,6 +146,11 @@ export function pickInvestNowSponsorDisplayName(
     investorAddedByDisplayName?: string | null
     /** Company of the sponsor stored on this investor's roster row. */
     investorAddedByCompanyName?: string | null
+    /**
+     * When false, do not substitute the deal lead sponsor.
+     * Investing tables use the investor's own sponsor only.
+     */
+    includeLeadSponsor?: boolean
 
   },
 
@@ -164,7 +169,10 @@ export function pickInvestNowSponsorDisplayName(
   )
   if (fromReferralCompany) return fromReferralCompany
 
-  const fromLeadCompany = companyLabel(membersPayload.leadSponsorCompanyName)
+  const fromLeadCompany =
+    options?.includeLeadSponsor === false
+      ? ""
+      : companyLabel(membersPayload.leadSponsorCompanyName)
   if (fromLeadCompany) return fromLeadCompany
 
   const fromInviteCompany = companyLabel(membersPayload.inviteSponsorCompanyName)

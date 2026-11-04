@@ -107,6 +107,10 @@ export interface DealInvestorRow {
   sponsorRemoved?: boolean
   /** Set when Invest Now Finish records the commitment. */
   commitmentCompletedAtIso?: string
+  /** W-9 name and address are stored, so the questionnaire step is already done. */
+  investorW9Saved?: boolean
+  /** Questionnaire answers are stored on this investment. */
+  investorQuestionnaireSaved?: boolean
   /** Portal user who added this investor (`deal_lp_investor` / `deal_member.added_by`). */
   /** Sponsor / Co-sponsor display name for this investor on the deal (Sponsor name column). */
   addedByDisplayName?: string

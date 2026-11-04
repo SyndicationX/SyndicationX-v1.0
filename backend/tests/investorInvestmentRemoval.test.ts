@@ -6,6 +6,7 @@ import {
   isSoftCommitmentStatus,
   parseRemovalRequest,
   planInvestorRemoval,
+  REMOVED_INVESTMENT_STATUS,
   runRemovalUnitOfWork,
   type RemovalInvestment,
   type RemovalLp,
@@ -135,7 +136,11 @@ describe("investor and investment removal", () => {
     });
     assert.equal(planned.ok, true);
     if (!planned.ok) return;
-    assert.deepEqual(planned.plan.affectedIds, ["inv-a", "soft-a"]);
+    assert.deepEqual(planned.plan.affectedIds, ["inv-a"]);
+    assert.equal(
+      planned.plan.mutations.some((item) => item.id === "soft-a"),
+      false,
+    );
     assert.equal(
       planned.plan.mutations.some((item) => item.id === "hard-a"),
       false,
@@ -157,16 +162,62 @@ describe("investor and investment removal", () => {
       false,
     );
     assert.equal(planned.plan.affectedIds.includes(USER_ACCOUNT), false);
-    assert.equal(planned.plan.previousValues.investments.length, 2);
+    assert.equal(planned.plan.previousValues.investments.length, 1);
+    assert.equal(
+      planned.plan.mutations.some(
+        (item) => item.type === "clear_lp_soft_commitment",
+      ),
+      false,
+    );
     assert.equal(
       planned.plan.previousValues.investments[0]?.commitmentAmount,
       "1000",
     );
     assert.equal(planned.plan.reason, "Entered on the wrong class");
     assert.equal(planned.plan.actorUserId, "sponsor-1");
+    assert.equal(REMOVED_INVESTMENT_STATUS, "Removed");
+    assert.equal(
+      planned.plan.mutations.every((item) => item.type !== "soft_delete_lp"),
+      true,
+    );
+    assert.equal(
+      planned.plan.mutations.every((item) => item.type !== "delete_roster_member"),
+      true,
+    );
   });
 
-  it("clears the sponsor soft commitment when that was the only investment", () => {
+  it("does not remove every investment when the request is not for one investment row", () => {
+    const first = investment({
+      id: "inv-a",
+      contactId: "contact-a",
+      userInvestorProfileId: "profile-book-1",
+      status: "Soft committed",
+    });
+    const second = investment({
+      id: "inv-b",
+      contactId: "contact-a",
+      userInvestorProfileId: "profile-book-1",
+      status: "Soft commitment",
+    });
+    const planned = planInvestorRemoval({
+      action: "remove_investment",
+      reason: "Wrong row",
+      confirmed: true,
+      actorUserId: "sponsor-1",
+      removedName: "Ada",
+      removedRole: "LP Investor",
+      target: { kind: "lp", id: "lp-1" },
+      investments: [first, second],
+      lp: lp("contact-a"),
+      member: member("contact-a"),
+      investmentIdsWithMoney: [],
+    });
+    assert.equal(planned.ok, false);
+    if (planned.ok) return;
+    assert.equal(planned.status, 400);
+  });
+
+  it("keeps the investor when that was the only investment", () => {
     const selected = investment({
       id: "inv-a",
       contactId: "contact-a",
@@ -189,9 +240,16 @@ describe("investor and investment removal", () => {
     if (!planned.ok) return;
     assert.deepEqual(
       planned.plan.mutations.map((item) => item.type),
-      ["soft_delete_investment", "clear_lp_soft_commitment"],
+      ["soft_delete_investment"],
     );
-    assert.equal(planned.plan.previousValues.lpInvestors[0]?.committed_amount, "1000");
+    assert.equal(
+      planned.plan.mutations.some((item) => item.type === "soft_delete_lp"),
+      false,
+    );
+    assert.equal(
+      planned.plan.mutations.some((item) => item.type === "delete_roster_member"),
+      false,
+    );
   });
 
   it("clears a roster commitment and keeps that amount in the removal log", () => {
@@ -214,14 +272,50 @@ describe("investor and investment removal", () => {
       member: null,
       investmentIdsWithMoney: [],
     });
+    assert.equal(planned.ok, false);
+    if (planned.ok) return;
+    assert.equal(planned.status, 400);
+  });
+
+  it("clears a removed investment's committed amount without removing the investor", () => {
+    const alreadyRemoved = investment({
+      id: "inv-a",
+      contactId: "contact-a",
+      status: "Removed",
+      removedAt: "2026-10-29T12:00:00.000Z",
+    });
+    const other = investment({
+      id: "inv-b",
+      contactId: "contact-a",
+      status: "Soft committed",
+    });
+    const planned = planInvestorRemoval({
+      action: "remove_investment",
+      reason: "Drop the amount that is still showing",
+      confirmed: true,
+      actorUserId: "sponsor-1",
+      removedName: "Ada",
+      removedRole: "LP Investor",
+      target: { kind: "investment", id: "inv-a" },
+      investments: [alreadyRemoved, other],
+      lp: lp("contact-a"),
+      member: member("contact-a"),
+      investmentIdsWithMoney: [],
+    });
     assert.equal(planned.ok, true);
     if (!planned.ok) return;
     assert.deepEqual(
       planned.plan.mutations.map((item) => item.type),
-      ["clear_lp_soft_commitment"],
+      ["release_investment_commitment"],
     );
-    assert.equal(planned.plan.previousValues.lpInvestors[0]?.committed_amount, "1000");
-    assert.equal(planned.plan.affectedIds[0], "lp-1");
+    assert.equal(
+      planned.plan.mutations.some((item) => item.type === "soft_delete_lp"),
+      false,
+    );
+    assert.equal(
+      planned.plan.mutations.some((item) => item.type === "delete_roster_member"),
+      false,
+    );
   });
 
   it("logs the roster commitment when the removed investment is not a soft commitment", () => {
@@ -247,13 +341,49 @@ describe("investor and investment removal", () => {
     if (!planned.ok) return;
     assert.deepEqual(
       planned.plan.mutations.map((item) => item.type),
-      ["soft_delete_investment", "clear_lp_soft_commitment"],
+      ["soft_delete_investment"],
     );
     assert.equal(
       planned.plan.previousValues.investments[0]?.commitmentAmount,
       "1000",
     );
-    assert.equal(planned.plan.previousValues.lpInvestors[0]?.committed_amount, "1000");
+    assert.equal(planned.plan.previousValues.lpInvestors.length, 0);
+  });
+
+  it("removes the investor after that investment was already removed", () => {
+    const alreadyRemoved = investment({
+      id: "inv-a",
+      contactId: "contact-a",
+      status: "Removed",
+      removedAt: "2026-10-29T12:00:00.000Z",
+    });
+    const planned = planInvestorRemoval({
+      action: "remove_investor",
+      reason: "Take the investor off the deal",
+      confirmed: true,
+      actorUserId: "sponsor-1",
+      removedName: "Ada",
+      removedRole: "LP Investor",
+      target: { kind: "investment", id: "inv-a" },
+      investments: [alreadyRemoved],
+      lp: lp("contact-a"),
+      member: member("contact-a"),
+      investmentIdsWithMoney: [],
+    });
+    assert.equal(planned.ok, true);
+    if (!planned.ok) return;
+    assert.deepEqual(
+      planned.plan.mutations.map((item) => item.type),
+      ["unlink_investor"],
+    );
+    assert.equal(
+      planned.plan.mutations.some((item) => item.type === "soft_delete_investment"),
+      false,
+    );
+    assert.equal(
+      planned.plan.mutations.some((item) => item.type === "soft_delete_lp"),
+      false,
+    );
   });
 
   it("removes the investor association without deleting the account or other investments", () => {
@@ -314,7 +444,7 @@ describe("investor and investment removal", () => {
     if (!planned.ok) return;
     assert.deepEqual(
       planned.plan.mutations.map((item) => item.type),
-      ["unlink_investor", "soft_delete_lp"],
+      ["unlink_investor"],
     );
     assert.equal(blocksLastLeadSponsorRemoval({
       deletesRosterMember: false,
@@ -342,7 +472,11 @@ describe("investor and investment removal", () => {
     if (!planned.ok) return;
     assert.equal(
       planned.plan.mutations.some((item) => item.type === "delete_roster_member"),
-      true,
+      false,
+    );
+    assert.deepEqual(
+      planned.plan.mutations.map((item) => item.type),
+      ["unlink_investor"],
     );
     assert.equal(
       blocksLastLeadSponsorRemoval({

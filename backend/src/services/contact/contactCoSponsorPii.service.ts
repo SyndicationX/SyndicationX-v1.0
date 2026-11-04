@@ -4,10 +4,10 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * CRM contacts on this company's deals whose Sponsor name (`added_by`) is a
- * co-sponsor. The Contacts list does not merge these rows in: other users in
- * the company must not see a co-sponsor's contacts. Kept for callers that
- * need the id set without returning it from the directory.
+ * CRM contacts on this company's deals whose Sponsor name (`added_by`) is an
+ * outside Admin sponsor or Co-sponsor. The Contacts list does not merge these
+ * rows in. A Lead Sponsor of the company is not included. Kept for callers
+ * that need the id set without returning it from the directory.
  */
 export async function listContactIdsAddedByCoSponsorsOnOrganizationDeals(
   organizationId: string,
@@ -34,7 +34,14 @@ export async function listContactIdsAddedByCoSponsorsOnOrganizationDeals(
          )
        )
        WHERE dm.is_draft = false
-         AND replace(lower(trim(dm.deal_member_role)), '_', ' ') IN ('co-sponsor', 'co sponsor')
+         AND replace(lower(trim(dm.deal_member_role)), '_', ' ') IN ('co-sponsor', 'co sponsor', 'admin sponsor')
+         AND u.organization_id IS DISTINCT FROM $1::uuid
+         AND NOT EXISTS (
+           SELECT 1
+           FROM user_company_membership sponsor_membership
+           WHERE sponsor_membership.user_id = u.id
+             AND sponsor_membership.company_id = $1::uuid
+         )
          AND NOT EXISTS (
            SELECT 1
            FROM deal_member lead_dm
@@ -42,7 +49,7 @@ export async function listContactIdsAddedByCoSponsorsOnOrganizationDeals(
              AND lead_dm.is_draft = false
              AND (
                lower(trim(lead_dm.deal_member_role)) IN (
-                 'lead sponsor', 'lead_sponsor', 'admin sponsor', 'admin_sponsor'
+                 'lead sponsor', 'lead_sponsor'
                )
                OR (
                  position('lead' in lower(trim(lead_dm.deal_member_role))) > 0

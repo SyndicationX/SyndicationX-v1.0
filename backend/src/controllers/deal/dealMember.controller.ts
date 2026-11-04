@@ -8,6 +8,7 @@ import {
   assertDealIdInViewerScope,
   assertDealIdReadableOrAssignedParticipant,
   resolveDealViewerScope,
+  viewerInvestorCompanyLimitedDeal,
 } from "../../services/deal/dealAccess.service.js";
 import { removeInvestorOrInvestment } from "../../services/deal/investorInvestmentRemoval.service.js";
 import { parseRemovalRequest } from "../../services/deal/investorInvestmentRemoval.plan.js";
@@ -167,8 +168,21 @@ export async function getDealMembers(
         resolveDealLeadSponsorDisplayName(dealId),
         loadInvestorInviteCompanyDisplayName(user.id),
       ]);
-    const members =
-      viewerDealMemberRole === "co_sponsor" ? [] : membersRaw;
+    const investorCompanyLimited =
+      viewerInvestorCompanyLimitedDeal(scope, dealId) &&
+      !(await isPortalUserSponsorOnDeal(dealId, user.id));
+    const members = investorCompanyLimited
+      ? membersRaw.filter((row) => {
+          const role = String(row.investorRole ?? "")
+            .trim()
+            .toLowerCase()
+            .replace(/[_-]+/g, " ")
+            .replace(/\s+/g, " ");
+          return role === "lead sponsor";
+        })
+      : viewerDealMemberRole === "co_sponsor"
+        ? []
+        : membersRaw;
 
     const referringSponsor = sponsorRef
       ? await resolveOfferingPreviewSponsorAttribution(dealId, sponsorRef)

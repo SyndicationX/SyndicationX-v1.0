@@ -106,6 +106,24 @@ const SigninForm = () => {
     setEmail((prev) => (prev.trim() ? prev : emailPrefill));
   }, [emailPrefill]);
 
+  useEffect(() => {
+    if (!sessionStorage.getItem(SESSION_BEARER_KEY)) return;
+    const next =
+      parseSafeNextPath(searchParams.get("next")) ??
+      parseSafeNextPath(routeState?.from) ??
+      parseSafeNextPath(sessionStorage.getItem(AUTH_RETURN_NEXT_KEY));
+    if (!next || !isLinkedSignInReturn(next)) return;
+    if (/(?:\?|&)portal=investing(?:&|$)/.test(next)) {
+      try {
+        sessionStorage.setItem(SESSION_PORTAL_MODE_KEY, "investing");
+      } catch {
+        /* sessionStorage unavailable */
+      }
+    }
+    sessionStorage.removeItem(AUTH_RETURN_NEXT_KEY);
+    navigate(next, { replace: true });
+  }, [navigate, routeState?.from, searchParams]);
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!apiV1) {
@@ -214,6 +232,13 @@ const SigninForm = () => {
         }
       } else if (data.userDetails != null) {
         openSyndicatingForInvestorSponsor(data.userDetails);
+      }
+      if (from && /(?:\?|&)portal=investing(?:&|$)/.test(from)) {
+        try {
+          sessionStorage.setItem(SESSION_PORTAL_MODE_KEY, "investing");
+        } catch {
+          /* sessionStorage unavailable */
+        }
       }
       let claimedDealId = "";
       if (pendingPortfolioIntent?.previewToken) {

@@ -22,6 +22,7 @@ import {
   redactCoSponsorAddedInvestorEmailsForLeadAdminViewer,
   insertDealInvestment,
   isLpInvestorRole,
+  isRetiredDealInvestment,
   LP_INVESTOR_ROLE_STORED,
   listDealInvestmentsByDealId,
   loadInvitationMailSentFlags,
@@ -47,6 +48,7 @@ import {
   retainInviteSponsorOnLpRoster,
 } from "../contact/investorInviteLink.service.js";
 import { resolveInvestNowAddedByUserId } from "./crossOrgColleagueDeal.service.js";
+import { sponsorUsersShareCompany } from "./dealInvestorSponsor.service.js";
 
 function normalizeContactKey(raw: string): string {
   return String(raw ?? "")
@@ -334,6 +336,7 @@ export function syntheticInvestmentFromDealLpInvestor(
     fundApproved: false,
     fundApprovedBy: null,
     fundApprovedAt: null,
+    fundApprovedAtHistory: [],
     fundApprovedCommitmentSnapshot: "",
     status: "",
     investorClass: m.investorClass,
@@ -457,6 +460,7 @@ export async function listMergedLpInvestorsForDeal(
 ): Promise<DealInvestmentRow[]> {
   const allInvestments = await listDealInvestmentsByDealId(dealId, {
     lpInvestorsOnly: false,
+    includeStatusRemoved: true,
   });
   const autosaveKey = normalizeContactKey(
     DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER,
@@ -512,6 +516,14 @@ export async function listMergedLpInvestorsForDeal(
 
   const rows: DealInvestmentRow[] = [];
   const coveredCanonical = new Set<string>();
+  const positiveLpCanonical = new Set<string>();
+  for (const inv of investments) {
+    if (inv.investorUnlinkedAt) continue;
+    if (!isLpInvestorRole(inv.investor_role)) continue;
+    if (committedNumericFromDealInvestmentRow(inv) <= 0) continue;
+    const canonical = canonicalOf(inv.contactId ?? "");
+    if (canonical) positiveLpCanonical.add(canonical);
+  }
 
   for (const inv of investments) {
     const k = normalizeContactKey(inv.contactId ?? "");
@@ -521,13 +533,19 @@ export async function listMergedLpInvestorsForDeal(
       continue;
     }
     const onLpRoster = Boolean(canonical && rosterByCanonical.has(canonical));
+    if (inv.investorUnlinkedAt) continue;
     const lpRole = isLpInvestorRole(role);
     const sponsorRole = isDealMembersSponsorRole(role);
     const committed = committedNumericFromDealInvestmentRow(inv);
+    const invested = Boolean(canonical && positiveLpCanonical.has(canonical));
+    // The invite / sponsor shell stays off this list once the same person has invested.
+    const inviteShell =
+      committed <= 0 && (invested || (sponsorRole && onLpRoster));
 
     // LP commitments always show. Lead/Admin/Co only when they are also investors.
     const include =
-      lpRole || onLpRoster || (sponsorRole && committed > 0);
+      !inviteShell &&
+      (lpRole || onLpRoster || (sponsorRole && committed > 0));
 
     if (!include) continue;
 
@@ -626,7 +644,9 @@ export async function buildLpInvestorsFromMerged(
   investors: LpInvestorApiRow[];
   kpis: ReturnType<typeof buildInvestorKpisFromRows>;
 }> {
-  const kpis = buildInvestorKpisFromRows(merged);
+  const kpis = buildInvestorKpisFromRows(
+    merged.filter((row) => !isRetiredDealInvestment(row)),
+  );
   const lpRosterIds = await resolveLpRosterIdSet(dealId, merged);
   const base = await mapMergedLpRowsToInvestorApi(dealId, merged, lpRosterIds);
 
@@ -836,6 +856,13 @@ export type UpsertDealLpInvestorInput = {
 export const LP_INVESTOR_ALREADY_ON_DEAL_MESSAGE =
   "This person is already on the Investors list for this deal.";
 
+/** Clears a soft-removed LP roster row when a new commitment is saved. */
+export const lpRosterActiveAgain = {
+  removedAt: null,
+  removedByUserId: null,
+  removalReason: "",
+} as const;
+
 export async function findDealLpInvestorByDealAndContact(
   dealId: string,
   contactMemberId: string,
@@ -923,9 +950,8 @@ export async function upsertDealLpInvestor(
         ...(input.isDraft === true
           ? {}
           : {
-              removedAt: null,
-              removedByUserId: null,
-              removalReason: "",
+              ...lpRosterActiveAgain,
+              ...(existing.removedAt ? { committed_amount: "" } : {}),
             }),
       })
       .where(eq(dealLpInvestor.id, existing.id))
@@ -1428,6 +1454,7 @@ async function sumLpDealInvestmentCommittedForContact(
     );
   let t = 0;
   for (const r of rows) {
+    if (isRetiredDealInvestment(r)) continue;
     if (isLpInvestorRole(r.investor_role)) {
       t += committedNumericFromDealInvestmentRow(r);
     }
@@ -1436,11 +1463,9 @@ async function sumLpDealInvestmentCommittedForContact(
 }
 
 /**
- * LP self-service: **adds** the submitted amount to the existing committed total on the latest
- * LP `deal_investment` for this deal + contact (locked row, single transaction). Creates a row
- * when missing (requires `profile_id` on first commit). If the request sends a **different**
- * commitment `profile_id` (individual / joint / …) than the locked row, a **new** `deal_investment`
- * is inserted for this tranche. Syncs `deal_lp_investor.committed_amount` to the sum of LP rows.
+ * LP self-service commitment. Each call stores a new `deal_investment` row for this
+ * investor on the deal. Earlier investments are left unchanged.
+ * Syncs `deal_lp_investor.committed_amount` to the sum of that contact’s open LP rows.
  */
 export async function updateMyCommittedAmountForLpDeal(params: {
   dealId: string;
@@ -1496,6 +1521,19 @@ export async function updateMyCommittedAmountForLpDeal(params: {
       : "";
   const keepSameOrgSponsor = async (lpRowId: string | null | undefined) => {
     if (!assignedSponsorUserId || !lpRowId) return;
+    const [existing] = await db
+      .select({ addedBy: dealLpInvestor.addedBy })
+      .from(dealLpInvestor)
+      .where(eq(dealLpInvestor.id, lpRowId))
+      .limit(1);
+    const current = String(existing?.addedBy ?? "").trim();
+    if (
+      current &&
+      current.toLowerCase() !== viewerUserId.toLowerCase() &&
+      (await sponsorUsersShareCompany(current, assignedSponsorUserId))
+    ) {
+      return;
+    }
     await db
       .update(dealLpInvestor)
       .set({ addedBy: assignedSponsorUserId, updatedAt: new Date() })
@@ -1524,34 +1562,15 @@ export async function updateMyCommittedAmountForLpDeal(params: {
     };
   }
 
-  const invCandidates = await db
-    .select()
-    .from(dealInvestment)
-    .where(
-      and(
-        eq(dealInvestment.dealId, params.dealId),
-        eq(dealInvestment.contactId, targetContactMemberId),
-      ),
-    )
-    .orderBy(desc(dealInvestment.createdAt));
-
-  let inv: DealInvestmentRow | undefined;
-  for (const row of invCandidates) {
-    if (isLpInvestorRole(row.investor_role)) {
-      inv = row;
-      break;
-    }
-  }
   const now = new Date();
 
-  if (!inv) {
-    if (!profileOpt) {
-      return {
-        ok: false,
-        message:
-          "Investor profile is required to record your first commitment on this deal.",
-      };
-    }
+  if (!profileOpt) {
+    return {
+      ok: false,
+      message:
+        "Investor profile is required to record your first commitment on this deal.",
+    };
+  }
     const icRaw = target?.investorClass?.trim() ?? "";
 
     console.log("icRaw =>", icRaw);
@@ -1561,23 +1580,52 @@ export async function updateMyCommittedAmountForLpDeal(params: {
       : await resolveFirstInvestorClassForDeal(params.dealId);
     if (!classRes.ok) return { ok: false, message: classRes.message };
 
-    await insertDealInvestment({
-      dealId: params.dealId,
-      input: {
-        offeringId: "",
-        contactId: targetContactMemberId,
-        contactDisplayName: "",
-        profileId: profileOpt,
-        investor_role: LP_INVESTOR_ROLE_STORED,
-        fundApproved: false,
-        status: "",
-        investorClass: classRes.storedInvestorClass,
-        docSignedDate: null,
-        commitmentAmount: incrementStr,
-        extraContributionAmounts: [],
-        documentStoragePath: null,
-      },
-    });
+    const inviteShell = await db
+      .select()
+      .from(dealInvestment)
+      .where(
+        and(
+          eq(dealInvestment.dealId, params.dealId),
+          eq(dealInvestment.contactId, targetContactMemberId),
+          eq(dealInvestment.isDraft, false),
+        ),
+      )
+      .orderBy(desc(dealInvestment.createdAt));
+    const shell = inviteShell.find(
+      (row) =>
+        !isRetiredDealInvestment(row) &&
+        isLpInvestorRole(row.investor_role) &&
+        committedNumericFromDealInvestmentRow(row) <= 0,
+    );
+    if (shell) {
+      await db
+        .update(dealInvestment)
+        .set({
+          profileId: profileOpt,
+          investorClass: classRes.storedInvestorClass,
+          commitmentAmount: incrementStr,
+          extraContributionAmounts: [],
+        })
+        .where(eq(dealInvestment.id, shell.id));
+    } else {
+      await insertDealInvestment({
+        dealId: params.dealId,
+        input: {
+          offeringId: "",
+          contactId: targetContactMemberId,
+          contactDisplayName: "",
+          profileId: profileOpt,
+          investor_role: LP_INVESTOR_ROLE_STORED,
+          fundApproved: false,
+          status: "",
+          investorClass: classRes.storedInvestorClass,
+          docSignedDate: null,
+          commitmentAmount: incrementStr,
+          extraContributionAmounts: [],
+          documentStoragePath: null,
+        },
+      });
+    }
 
     if (!target) {
       if (!viewerUserId) {
@@ -1599,74 +1647,6 @@ export async function updateMyCommittedAmountForLpDeal(params: {
       });
       console.log("inside target", incrementStr);
     }
-    await db
-      .update(dealLpInvestor)
-      .set({
-        profileId: profileOpt,
-        committed_amount: incrementStr,
-        updatedAt: now,
-      })
-      .where(eq(dealLpInvestor.id, target.id));
-
-    await keepInviteSponsor(target.id);
-    await keepSameOrgSponsor(target.id);
-    return { ok: true };
-  }
-
-  const oldKind = normalizeLpCommitmentProfileId(
-    String(inv.profileId ?? ""),
-  );
-  const switchingCommitmentKind = Boolean(
-    profileOpt && oldKind && profileOpt !== oldKind,
-  );
-  if (switchingCommitmentKind && profileOpt) {
-    const rowProfileId = profileOpt;
-    let roster: DealLpInvestorRow | undefined = target;
-    if (!roster) {
-      if (!viewerUserId) {
-        return {
-          ok: false,
-          message:
-            "Could not determine your account id for LP Investor linking.",
-        };
-      }
-      const icRaw = inv.investorClass?.trim() ?? "";
-      const classRes = icRaw
-        ? await resolveInvestorClassForDealInvestment(
-            params.dealId,
-            icRaw,
-          )
-        : await resolveFirstInvestorClassForDeal(params.dealId);
-      if (!classRes.ok) return { ok: false, message: classRes.message };
-      roster = await upsertDealLpInvestor(params.dealId, {
-        contactMemberId: targetContactMemberId,
-        contactDisplayName: String(inv.contactDisplayName ?? "").trim() || "",
-        profileId: rowProfileId,
-        investorClass: classRes.storedInvestorClass,
-        sendInvitationMail: "no",
-        addedByUserId: rosterAddedByUserId,
-        emailFromClient: e,
-        roleFromClient: LP_INVESTOR_TABLE_ROLE,
-      });
-    }
-    await insertDealInvestment({
-      dealId: params.dealId,
-      input: {
-        offeringId: String(inv.offeringId ?? "").trim(),
-        contactId: targetContactMemberId,
-        contactDisplayName: String(inv.contactDisplayName ?? "").trim() || "",
-        profileId: rowProfileId,
-        userInvestorProfileId: null,
-        investor_role: LP_INVESTOR_ROLE_STORED,
-        fundApproved: false,
-        status: "",
-        investorClass: String(inv.investorClass ?? "").trim() || "",
-        docSignedDate: null,
-        commitmentAmount: incrementStr,
-        extraContributionAmounts: [],
-        documentStoragePath: null,
-      },
-    });
     const syncedSum = await sumLpDealInvestmentCommittedForContact(
       params.dealId,
       targetContactMemberId,
@@ -1674,98 +1654,14 @@ export async function updateMyCommittedAmountForLpDeal(params: {
     await db
       .update(dealLpInvestor)
       .set({
+        profileId: profileOpt,
         committed_amount: syncedSum,
         updatedAt: now,
-        profileId: rowProfileId,
+        ...lpRosterActiveAgain,
       })
-      .where(eq(dealLpInvestor.id, roster.id));
-    await keepInviteSponsor(roster.id);
-    await keepSameOrgSponsor(roster.id);
+      .where(eq(dealLpInvestor.id, target.id));
+
+    await keepInviteSponsor(target.id);
+    await keepSameOrgSponsor(target.id);
     return { ok: true };
-  }
-
-  try {
-    await db.transaction(async (tx) => {
-      await tx.execute(
-        sql`SELECT 1 FROM deal_investment WHERE id = ${inv.id}::uuid FOR UPDATE`,
-      );
-      const [fresh] = await tx
-        .select()
-        .from(dealInvestment)
-        .where(eq(dealInvestment.id, inv.id))
-        .limit(1);
-      if (!fresh) {
-        throw new Error("LP_COMMITMENT_ROW_MISSING");
-      }
-      const previous = committedNumericFromDealInvestmentRow(fresh);
-      const newTotal = previous + increment;
-      const wasFundApproved = Boolean(fresh.fundApproved);
-      await tx
-        .update(dealInvestment)
-        .set({
-          commitmentAmount: formatCumulativeCommitmentStored(newTotal),
-          extraContributionAmounts: [],
-          ...(profileOpt ? { profileId: profileOpt } : {}),
-          ...(wasFundApproved
-            ? { fundApproved: false, status: "" }
-            : {}),
-        })
-        .where(eq(dealInvestment.id, inv.id));
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg === "LP_COMMITMENT_ROW_MISSING") {
-      return {
-        ok: false,
-        message: "Could not update commitment (investment row missing).",
-      };
-    }
-    throw e;
-  }
-
-  const [invAfterCommit] = await db
-    .select({ commitmentAmount: dealInvestment.commitmentAmount })
-    .from(dealInvestment)
-    .where(eq(dealInvestment.id, inv.id))
-    .limit(1);
-  const syncedCommittedFromInvestment = String(
-    invAfterCommit?.commitmentAmount ?? "",
-  ).trim();
-
-  if (!target) {
-    if (!viewerUserId) {
-      return {
-        ok: false,
-        message: "Could not determine your account id for LP roster linking.",
-      };
-    }
-    const icRaw = inv.investorClass?.trim() ?? "";
-    const classRes = icRaw
-      ? await resolveInvestorClassForDealInvestment(params.dealId, icRaw)
-      : await resolveFirstInvestorClassForDeal(params.dealId);
-    if (!classRes.ok) return { ok: false, message: classRes.message };
-    target = await upsertDealLpInvestor(params.dealId, {
-      contactMemberId: targetContactMemberId,
-      contactDisplayName: "",
-      profileId: profileOpt ?? "",
-      investorClass: classRes.storedInvestorClass,
-      sendInvitationMail: "no",
-      addedByUserId: rosterAddedByUserId,
-      emailFromClient: e,
-      roleFromClient: LP_INVESTOR_TABLE_ROLE,
-    });
-  }
-
-  await db
-    .update(dealLpInvestor)
-    .set({
-      committed_amount: syncedCommittedFromInvestment,
-      updatedAt: now,
-      ...(profileOpt ? { profileId: profileOpt } : {}),
-    })
-    .where(eq(dealLpInvestor.id, target.id));
-
-  await keepInviteSponsor(target.id);
-  await keepSameOrgSponsor(target.id);
-  return { ok: true };
 }

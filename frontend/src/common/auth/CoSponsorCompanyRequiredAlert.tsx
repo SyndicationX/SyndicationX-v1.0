@@ -1,4 +1,4 @@
-import { X } from "lucide-react"
+import { ArrowLeft, Plus, X } from "lucide-react"
 import { Link } from "react-router-dom"
 import "@/modules/Syndication/usermanagement/user_management.css"
 
@@ -23,7 +23,7 @@ export function CoSponsorCompanyRequiredAlert({
       >
         <div className="um_modal_head">
           <h2 id="cosponsor-company-required-title" className="um_modal_title">
-            Create a company
+            Add Company
           </h2>
           {onDismiss ? (
             <button
@@ -37,7 +37,7 @@ export function CoSponsorCompanyRequiredAlert({
           ) : null}
         </div>
         <p className="um_modal_desc cosponsor_company_required_message">
-          Create a company to open this deal.
+          Add a company to open this deal.
         </p>
         <div className="um_modal_actions">
           {onDismiss ? (
@@ -46,10 +46,12 @@ export function CoSponsorCompanyRequiredAlert({
               className="um_btn_secondary"
               onClick={onDismiss}
             >
+              <X size={16} strokeWidth={2} aria-hidden />
               Close
             </button>
           ) : (
             <Link className="um_btn_secondary" to="/deals">
+              <ArrowLeft size={16} strokeWidth={2} aria-hidden />
               Back to deals
             </Link>
           )}
@@ -58,7 +60,8 @@ export function CoSponsorCompanyRequiredAlert({
             to="/account/company"
             onClick={() => onDismiss?.()}
           >
-            Create a company
+            <Plus size={16} strokeWidth={2} aria-hidden />
+            Add Company
           </Link>
         </div>
       </div>

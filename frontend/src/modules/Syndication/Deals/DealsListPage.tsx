@@ -1023,6 +1023,29 @@ export function DealsListPage({
         ),
       },
       {
+        id: "committed",
+        header: (
+          <DealTableColumnHeader
+            label="Committed"
+            hint="Committed amount from the deal Investors tab (same KPI as when you open the deal)."
+            headerAlign="right"
+          />
+        ),
+        align: "right",
+        colWidth: "10.75rem",
+        thClassName: "deals_th_align_right",
+        tdClassName: "um_td_numeric deals_td_align_right",
+        sortValue: (row) => {
+          const m = investorMetricsByDealId[row.id]
+          return committedSortValue(m?.committedRaw ?? row.totalAccepted)
+        },
+        cell: (row) => {
+          const m = investorMetricsByDealId[row.id]
+          const raw = m?.committedRaw ?? row.totalAccepted
+          return <TableCompactAmountCell amount={raw} />
+        },
+      },
+      {
         id: "funded",
         header: (
           <DealTableColumnHeader
@@ -1070,29 +1093,6 @@ export function DealsListPage({
           return (
             <TableCompactAmountCell amount={m?.remainingRaw ?? "0"} />
           )
-        },
-      },
-      {
-        id: "committed",
-        header: (
-          <DealTableColumnHeader
-            label="Committed"
-            hint="Committed amount from the deal Investors tab (same KPI as when you open the deal)."
-            headerAlign="right"
-          />
-        ),
-        align: "right",
-        colWidth: "10.75rem",
-        thClassName: "deals_th_align_right",
-        tdClassName: "um_td_numeric deals_td_align_right",
-        sortValue: (row) => {
-          const m = investorMetricsByDealId[row.id]
-          return committedSortValue(m?.committedRaw ?? row.totalAccepted)
-        },
-        cell: (row) => {
-          const m = investorMetricsByDealId[row.id]
-          const raw = m?.committedRaw ?? row.totalAccepted
-          return <TableCompactAmountCell amount={raw} />
         },
       },
     ]

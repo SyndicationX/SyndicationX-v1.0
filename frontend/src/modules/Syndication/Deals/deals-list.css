@@ -908,7 +908,7 @@ a.deals_list_add_link.um_btn_primary {
 .deals_table_th_hint {
   flex-shrink: 0;
   color: var(--portal-text-muted);
-  cursor: help;
+  cursor: pointer;
 }
 
 /* Match Members table name / link treatment */

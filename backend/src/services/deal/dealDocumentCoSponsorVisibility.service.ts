@@ -271,14 +271,23 @@ function isBuiltInDocumentSectionId(section: PreviewSection): boolean {
   return BUILT_IN_DOCUMENT_SECTION_IDS.has(String(section.id ?? "").trim());
 }
 
+/** Offering link (and Offering link + LP portal) stays on the Investing deal preview. */
+function documentShownOnOfferingLink(
+  doc: NestedDoc,
+  section: PreviewSection,
+): boolean {
+  const raw = doc.sharedWithScope ?? section.sharedWithScope;
+  return raw === "offering_link_only" || raw === "offering_page";
+}
+
 function filterSectionsByNestedVisibility(
   sections: PreviewSection[],
-  visible: (d: NestedDoc) => boolean,
+  visible: (d: NestedDoc, section: PreviewSection) => boolean,
 ): PreviewSection[] {
   return sections
     .map((s) => ({
       ...s,
-      nestedDocuments: nestedDocsOf(s).filter((d) => visible(d)),
+      nestedDocuments: nestedDocsOf(s).filter((d) => visible(d, s)),
     }))
     .filter(
       (s) => nestedDocsOf(s).length > 0 || isBuiltInDocumentSectionId(s),
@@ -302,6 +311,8 @@ export async function scopeOfferingInvestorPreviewJsonForViewer(params: {
   viewerRole?: string | null;
   json: string | null | undefined;
   requireSponsorScope?: boolean;
+  /** Investing deal preview: sponsors still see Offering link files. */
+  keepOfferingLinkDocuments?: boolean;
 }): Promise<string | null> {
   const json = params.json ?? null;
   try {
@@ -314,7 +325,9 @@ export async function scopeOfferingInvestorPreviewJsonForViewer(params: {
       const { visibility, sections } = parsePreviewParts(json);
       return canonicalFromParts(
         visibility,
-        filterSectionsByNestedVisibility(sections, (d) =>
+        filterSectionsByNestedVisibility(sections, (d, section) =>
+          (params.keepOfferingLinkDocuments &&
+            documentShownOnOfferingLink(d, section)) ||
           nestedDocumentVisibleToCoSponsorRaw(d, coCtx),
         ),
       );
@@ -334,7 +347,9 @@ export async function scopeOfferingInvestorPreviewJsonForViewer(params: {
     const { visibility, sections } = parsePreviewParts(json);
     return canonicalFromParts(
       visibility,
-      filterSectionsByNestedVisibility(sections, (d) =>
+      filterSectionsByNestedVisibility(sections, (d, section) =>
+        (params.keepOfferingLinkDocuments &&
+          documentShownOnOfferingLink(d, section)) ||
         nestedDocumentVisibleToLeadOrAdminRaw(d, leadCtx),
       ),
     );

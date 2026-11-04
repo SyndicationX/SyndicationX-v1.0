@@ -27,6 +27,8 @@ import {
   listDealsForViewerIncludingAssignedParticipation,
   filterDealsVisibleToInvestorParticipants,
   resolveDealViewerScope,
+  omitInvestorCompanyDealsFromInvestingList,
+  viewerInvestorCompanyLimitedDeal,
   withCrossOrgColleagueSponsoredDeals,
   type DealViewerScope,
 } from "../../services/deal/dealAccess.service.js";
@@ -136,6 +138,7 @@ import {
   invalidateDealsListCache,
 } from "../../services/cache/listReadCache.js";
 import {
+  listDirectInvestingParticipantDealIdsForUser,
   listInvestingParticipantDealIdsForUser,
   mapLpInvestorRoleDisplayByDealIdForUserEmail,
 } from "../../services/investing/lpInvestorAccess.service.js";
@@ -151,6 +154,7 @@ import {
   dealPackageUpgradeDue,
   dealSaasBillingListFields,
   dealSaasPaymentRequiredPayload,
+  resolveNextBillingDate,
   evaluateDealSaasWorkspaceAccessRefreshing,
   mapDealRaiseAmountByDealIds,
 } from "../../services/billing/dealBilling.service.js";
@@ -209,6 +213,7 @@ async function sendDealSaasLockIfNeeded(
     upgrade?.due ? { locked: true, reason: "unpaid" } : evaluated.access,
     { viewerIsLeadSponsor },
   );
+  payload.nextBillingDate = await resolveNextBillingDate(evaluated.row);
   if (upgrade?.due) {
     const label = String(evaluated.row.dealName ?? "").trim()
       ? `“${String(evaluated.row.dealName).trim()}”`
@@ -402,6 +407,29 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
             !scope.assignedParticipationOnly));
       if (investingUsesWorkspaceDeals) {
         rows = await listDealsForViewerIncludingAssignedParticipation(scope);
+        /**
+         * A company login can also be the investor on another company's deal.
+         * One email is one person, so those roster rows are added here.
+         */
+        if (includeParticipantViewerEmailNorm.includes("@")) {
+          const directIds = await listDirectInvestingParticipantDealIdsForUser({
+            userId: user.id,
+            emailNorm: includeParticipantViewerEmailNorm,
+            applyContactOfferingVisibility: true,
+          });
+          if (directIds.length > 0) {
+            const extra = await listAddDealFormsByIds(directIds);
+            const seen = new Set(
+              rows.map((row) => String(row.id).trim().toLowerCase()),
+            );
+            rows = [
+              ...rows,
+              ...extra.filter(
+                (row) => !seen.has(String(row.id).trim().toLowerCase()),
+              ),
+            ];
+          }
+        }
       } else {
         const participantDealIds = includeParticipantViewerEmailNorm
           ? await listInvestingParticipantDealIdsForUser({
@@ -516,6 +544,20 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
           kept.add(key);
         }
       }
+    }
+
+    if (
+      includeParticipantDeals &&
+      (scope.investorCompanySyndicationDealIds?.length ?? 0) > 0
+    ) {
+      const directIds = includeParticipantViewerEmailNorm.includes("@")
+        ? await listDirectInvestingParticipantDealIdsForUser({
+            userId: user.id,
+            emailNorm: includeParticipantViewerEmailNorm,
+            applyContactOfferingVisibility: false,
+          })
+        : [];
+      rows = omitInvestorCompanyDealsFromInvestingList(rows, scope, directIds);
     }
 
     const dealIds = rows.map((r) => String(r.id ?? ""));
@@ -992,6 +1034,7 @@ export async function getDealOfferingInvestorPreview(
         viewerRole: user.userRole,
         json: row.offeringInvestorPreviewJson ?? null,
         requireSponsorScope: crossOrgViewOnly,
+        keepOfferingLinkDocuments: true,
       }),
     });
   } catch (err) {
@@ -1816,6 +1859,10 @@ export async function getDealById(req: Request, res: Response): Promise<void> {
         viewerIsLeadSponsor,
         viewerCanEditDeal: await viewerMayEditDealProfile(dealId, user.id),
         viewerCanManageDeal: !crossOrgViewOnly,
+        viewerInvestorCompanyLimited:
+          !scope.isPlatformAdmin &&
+          viewerInvestorCompanyLimitedDeal(scope, dealId) &&
+          !(await isPortalUserSponsorOnDeal(dealId, user.id)),
         ...(listRow ? { listRow } : {}),
       },
     });

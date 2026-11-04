@@ -52,12 +52,13 @@ function configFromCloudinaryUrl(envUrl: string): {
   const cloud_name = u.hostname.trim();
   const api_key = (u.username ?? "").trim();
   const api_secret = (u.password ?? "").trim();
-  if (!cloud_name || !api_key || !api_secret) {
+  const nameFromEnv = unquote(String(process.env.CLOUDINARY_CLOUD_NAME ?? ""));
+  if ((!cloud_name && !nameFromEnv) || !api_key || !api_secret) {
     throw new Error(
-      "Invalid CLOUDINARY_URL: missing API key, secret, or cloud name. Format: cloudinary://<API_KEY>:<API_SECRET>@<CLOUD_NAME> (e.g. cloudinary://1234567890:xxxxx@mycloud). If your API secret includes special characters, URL-encode them in the string.",
+      "Invalid CLOUDINARY_URL: missing API key, secret, or cloud name. Format: cloudinary://<API_KEY>:<API_SECRET>@<CLOUD_NAME>, or set CLOUDINARY_CLOUD_NAME in backend/.env.local. If your API secret includes special characters, URL-encode them in the string.",
     );
   }
-  return { cloud_name, api_key, api_secret };
+  return { cloud_name: nameFromEnv || cloud_name, api_key, api_secret };
 }
 
 function applyCloudinaryConfigFromEnv(): void {
@@ -71,15 +72,23 @@ function applyCloudinaryConfigFromEnv(): void {
   const url = unquote(String(process.env.CLOUDINARY_URL ?? ""));
   if (url) {
     const parsed = configFromCloudinaryUrl(url);
+    const cloud_name = name || parsed.cloud_name;
+    if (!cloud_name) {
+      throw new Error(
+        "CLOUDINARY_CLOUD_NAME is not set. Add it to backend/.env.local.",
+      );
+    }
     cloudinary.config({
-      cloud_name: parsed.cloud_name,
-      api_key: parsed.api_key,
-      api_secret: parsed.api_secret,
+      cloud_name,
+      api_key: key || parsed.api_key,
+      api_secret: sec || parsed.api_secret,
       secure: true,
     });
     return;
   }
-  throw new Error("Cloudinary is not configured (set CLOUDINARY_URL or all of CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET).");
+  throw new Error(
+    "Cloudinary is not configured (set CLOUDINARY_CLOUD_NAME in backend/.env.local, plus CLOUDINARY_URL or CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET).",
+  );
 }
 
 function configureIfNeeded(): void {

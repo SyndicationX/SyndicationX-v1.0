@@ -853,7 +853,7 @@ a.deal_offering_add_ic_header.um_btn_primary {
 .deal_offering_ov_help {
   display: inline-flex;
   color: var(--portal-text-muted, #94a3b8);
-  cursor: help;
+  cursor: pointer;
 }
 
 .deal_offering_ov_value_cell {

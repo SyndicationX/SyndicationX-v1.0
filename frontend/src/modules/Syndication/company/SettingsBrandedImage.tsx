@@ -1,57 +1,15 @@
 import { useMemo } from "react";
 
-import { Cloudinary } from "@cloudinary/url-gen";
-
 import { normalizeDealGallerySrc } from "../../../common/utils/apiBaseUrl";
 import {
   cloudinaryImgReferrerPolicy,
+  getCloudinaryInstance,
   normalizeCloudinaryDeliveryUrl,
 } from "../../../common/utils/cloudinaryImage";
 
-
-
-/** Public cloud name; override with VITE_CLOUDINARY_CLOUD_NAME in your env. */
-
-const DEFAULT_CLOUDINARY_NAME = "dzlkuqizv";
-
-
-
-let cldSingleton: Cloudinary | null = null;
-
-
-
-function getCloudinaryInstance(): Cloudinary {
-
-  if (!cldSingleton) {
-
-    const cloudName = (
-
-      import.meta.env.VITE_CLOUDINARY_CLOUD_NAME ?? DEFAULT_CLOUDINARY_NAME
-
-    ).toString();
-
-    cldSingleton = new Cloudinary({
-
-      cloud: { cloudName: cloudName.trim() || DEFAULT_CLOUDINARY_NAME },
-
-    });
-
-  }
-
-  return cldSingleton;
-
-}
-
-
-
 function resolveBrandedImageSrc(
-
-  cld: Cloudinary,
-
   publicId: string | null,
-
   url: string | null,
-
 ): string | null {
 
   const u = url != null && String(url).trim() ? String(url).trim() : "";
@@ -68,7 +26,7 @@ function resolveBrandedImageSrc(
 
   if (!id) return null;
 
-  return cld.image(id).toURL();
+  return getCloudinaryInstance().image(id).toURL();
 
 }
 
@@ -167,13 +125,11 @@ export function SettingsBrandedImage({
 
 }: SettingsBrandedImageProps) {
 
-  const cld = useMemo(() => getCloudinaryInstance(), []);
-
   const src = useMemo(
 
-    () => resolveBrandedImageSrc(cld, publicId, url),
+    () => resolveBrandedImageSrc(publicId, url),
 
-    [cld, publicId, url],
+    [publicId, url],
 
   );
 

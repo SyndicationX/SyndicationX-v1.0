@@ -16,6 +16,7 @@ import { readOfferingPreviewDocuments } from "@/modules/Syndication/Deals/utils/
 import type { NestedPreviewDocument, OfferingPreviewSection } from "@/modules/Syndication/Deals/utils/offeringPreviewDocSections"
 import type { InvestmentDocumentAudienceContext } from "./investmentDocumentAudience"
 import {
+  documentHasSharedWithAudience,
   EMPTY_INVESTMENT_DOCUMENT_AUDIENCE,
   nestedDocumentVisibleToInvestor,
 } from "./investmentDocumentAudience"
@@ -143,7 +144,14 @@ function documentVisibleToInvestorOnLpPortal(
     return false
   }
   const scope = effectiveDocumentSharedWithScope(doc, sec)
+  // Hidden by default stays off the public link. People chosen in Shared With still see it.
+  if (scope === "not_visible") {
+    if (!documentHasSharedWithAudience(doc)) return false
+    return nestedDocumentVisibleToInvestor(doc, audience)
+  }
   if (!sectionVisibleOnOfferingPreview(scope, LP_PORTAL_DOCUMENT_CTX)) return false
+  // Offering link is the deal preview. Sponsors and investors on the deal see it in Investing.
+  if (scope === "offering_link_only" || scope === "offering_page") return true
   return nestedDocumentVisibleToInvestor(doc, audience)
 }
 

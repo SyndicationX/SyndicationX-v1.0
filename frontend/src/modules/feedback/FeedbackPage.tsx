@@ -1,5 +1,6 @@
 import {
   CheckCircle2,
+  CircleCheck,
   ClipboardList,
   Download,
   Eye,
@@ -418,6 +419,7 @@ export default function FeedbackPage() {
             className="um_btn_primary feedback_review_btn"
             onClick={() => openReview(row)}
           >
+            <Eye size={16} strokeWidth={2} aria-hidden />
             Review
           </button>
         ),
@@ -463,6 +465,7 @@ export default function FeedbackPage() {
             className="um_btn_primary feedback_review_btn"
             onClick={() => openReview(row)}
           >
+            <CircleCheck size={16} strokeWidth={2} aria-hidden />
             Resolve
           </button>
         ),
@@ -738,7 +741,7 @@ export default function FeedbackPage() {
             </div>
             {actions}
           </div>
-          <div className="um_members_tab_content" role="tabpanel">
+          <div className="um_members_tab_content feedback_table_host" role="tabpanel">
             {error ? <p className="feedback_form_error">{error}</p> : null}
             <DataTable
               columns={adminColumns}
@@ -755,6 +758,8 @@ export default function FeedbackPage() {
               visualVariant="members"
               membersShell="plain"
               stripedRows
+              forceHorizontalScroll={false}
+              floatingHorizontalScroll={false}
               controlledSort={{ value: table.sort, onChange: table.setSort }}
               pagination={table.total > 0 ? pagination : undefined}
             />
@@ -767,18 +772,22 @@ export default function FeedbackPage() {
             submission until a platform admin reviews or resolves it.
           </p>
           {error ? <p className="feedback_form_error">{error}</p> : null}
-          <DataTable
-            columns={myColumns}
-            rows={visible}
-            getRowKey={(row) => row.id}
-            emptyLabel="You have not submitted feedback yet."
-            isLoading={loading}
-            visualVariant="members"
-            membersShell="plain"
-            stripedRows
-            controlledSort={{ value: table.sort, onChange: table.setSort }}
-            pagination={table.total > 0 ? pagination : undefined}
-          />
+          <div className="feedback_table_host">
+            <DataTable
+              columns={myColumns}
+              rows={visible}
+              getRowKey={(row) => row.id}
+              emptyLabel="You have not submitted feedback yet."
+              isLoading={loading}
+              visualVariant="members"
+              membersShell="plain"
+              stripedRows
+              forceHorizontalScroll={false}
+              floatingHorizontalScroll={false}
+              controlledSort={{ value: table.sort, onChange: table.setSort }}
+              pagination={table.total > 0 ? pagination : undefined}
+            />
+          </div>
         </>
       )}
 

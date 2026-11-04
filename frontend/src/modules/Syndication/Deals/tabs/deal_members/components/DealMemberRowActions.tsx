@@ -1,4 +1,5 @@
 import {
+  Calendar,
   Banknote,
   Eye,
   FileSignature,
@@ -11,6 +12,7 @@ import {
   Send,
   Trash2,
   UserMinus,
+  Users,
   X,
 } from "lucide-react"
 import {
@@ -92,14 +94,23 @@ export interface DealMemberRowActionsProps {
   offeringLinkBlockedBecauseDraft?: boolean
   /** Investors tab: advance investment to “funding instructions sent” (optional). */
   onApproveFund?: (row: DealInvestorRow) => void | Promise<void>
+  /** Investors tab: change the funded date after the fund is approved. */
+  onEditFundedDate?: (row: DealInvestorRow) => void
   /** When true, “Approve fund” is disabled (e.g. LP-only roster row or busy). */
   approveFundDisabled?: boolean
+  /** True while this row’s approve-fund request is in flight. */
+  approveFundBusy?: boolean
   /** Optional tooltip when Approve fund is disabled. */
   approveFundDisabledTitle?: string
   /** Open the row for reading only. Hides edit, invite, eSign, and delete. */
   viewOnly?: boolean
   /** Lead and admin sponsors cannot remove a co-sponsor's investor. */
   removeHidden?: boolean
+  /**
+   * Lead sponsor: reassign this investor's sponsor to someone in the same
+   * sponsor company. Stays available when other actions are view-only.
+   */
+  onUpdateSponsor?: (row: DealInvestorRow) => void
   /**
    * Lead and admin sponsors may only view a co-sponsor's investor.
    * Other menu items stay visible and disabled.
@@ -130,10 +141,13 @@ export function DealMemberRowActions({
   offeringLinkAvailable = false,
   offeringLinkBlockedBecauseDraft = false,
   onApproveFund,
+  onEditFundedDate,
   approveFundDisabled = false,
+  approveFundBusy = false,
   approveFundDisabledTitle,
   viewOnly = false,
   removeHidden = false,
+  onUpdateSponsor,
   actionsLimitedToView = false,
   actionsLimitedToViewTitle = "This investor was added by a co-sponsor. Only view is available.",
 }: DealMemberRowActionsProps) {
@@ -470,6 +484,7 @@ export function DealMemberRowActions({
       className="deal_member_row_actions"
       role="group"
       aria-label={`Actions for ${memberLabel}`}
+      aria-busy={approveFundBusy || undefined}
     >
       {leadSponsorBlockedModal}
       {deleteModal}
@@ -479,11 +494,28 @@ export function DealMemberRowActions({
           className="um_kebab_trigger"
           aria-haspopup="menu"
           aria-expanded={menuOpen}
-          title="Actions"
-          aria-label={`Actions for ${memberLabel}`}
-          onClick={() => setMenuOpen((v) => !v)}
+          title={approveFundBusy ? "Approving fund…" : "Actions"}
+          aria-label={
+            approveFundBusy
+              ? `Approving fund for ${memberLabel}`
+              : `Actions for ${memberLabel}`
+          }
+          disabled={approveFundBusy}
+          onClick={() => {
+            if (approveFundBusy) return
+            setMenuOpen((v) => !v)
+          }}
         >
-          <MoreHorizontal size={18} strokeWidth={2} aria-hidden />
+          {approveFundBusy ? (
+            <Loader2
+              className="deal_inv_mail_status_spin"
+              size={18}
+              strokeWidth={2}
+              aria-hidden
+            />
+          ) : (
+            <MoreHorizontal size={18} strokeWidth={2} aria-hidden />
+          )}
         </button>
         {menuOpen && typeof document !== "undefined"
           ? createPortal(
@@ -523,6 +555,39 @@ export function DealMemberRowActions({
                     </button>
                   </li>
                 ) : null}
+                {onEditFundedDate && !viewOnly ? (
+                  <li role="none">
+                    <button
+                      type="button"
+                      className={`um_kebab_menuitem${
+                        draftRow || actionsLimitedToView
+                          ? " um_kebab_menuitem_disabled"
+                          : ""
+                      }`}
+                      role="menuitem"
+                      disabled={draftRow || actionsLimitedToView}
+                      title={
+                        actionsLimitedToView
+                          ? actionsLimitedToViewTitle
+                          : draftRow
+                            ? "Available after the investor is saved"
+                            : "Change the funded date"
+                      }
+                      onClick={() => {
+                        if (draftRow || actionsLimitedToView) return
+                        runMenuAction(() => onEditFundedDate(row))
+                      }}
+                    >
+                      <Calendar
+                        className="um_kebab_menuitem_icon"
+                        size={16}
+                        strokeWidth={2}
+                        aria-hidden
+                      />
+                      Edit funded date
+                    </button>
+                  </li>
+                ) : null}
                 {onView ? (
                   <li role="none">
                     <button
@@ -538,6 +603,35 @@ export function DealMemberRowActions({
                         aria-hidden
                       />
                       View
+                    </button>
+                  </li>
+                ) : null}
+                {onUpdateSponsor && !viewOnly ? (
+                  <li role="none">
+                    <button
+                      type="button"
+                      className={`um_kebab_menuitem${
+                        draftRow ? " um_kebab_menuitem_disabled" : ""
+                      }`}
+                      role="menuitem"
+                      disabled={draftRow}
+                      title={
+                        draftRow
+                          ? "Available after the investor is saved"
+                          : "Change the sponsor to someone in this investor's sponsor company"
+                      }
+                      onClick={() => {
+                        if (draftRow) return
+                        runMenuAction(() => onUpdateSponsor(row))
+                      }}
+                    >
+                      <Users
+                        className="um_kebab_menuitem_icon"
+                        size={16}
+                        strokeWidth={2}
+                        aria-hidden
+                      />
+                      Update sponsor
                     </button>
                   </li>
                 ) : null}

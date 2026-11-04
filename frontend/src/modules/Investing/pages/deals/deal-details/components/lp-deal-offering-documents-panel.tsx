@@ -139,6 +139,7 @@ export function LpDealOfferingDocumentsPanel({
   if (loadPending) {
     return (
       <section
+        id="deal-documents"
         className={sectionClassName}
         aria-labelledby={headingId}
       >
@@ -152,8 +153,36 @@ export function LpDealOfferingDocumentsPanel({
     )
   }
 
+  if (embedded && !hasVisibleDocs) {
+    return (
+      <section
+        id="deal-documents"
+        className={sectionClassName}
+        aria-labelledby={headingId}
+      >
+        <h2 id={headingId} className={headingClassName}>
+          {headingLabel}
+        </h2>
+        {previewSyncFailed && !hasSectionsOnDeal ? (
+          <p
+            className="lpdd_offering_docs_status lpdd_offering_docs_status--alert"
+            role="alert"
+          >
+            Could not load the latest document list from the server. Try
+            refreshing the page.
+          </p>
+        ) : (
+          <p className="deal_offer_pf_muted deal_offer_pf_muted--compact">
+            No documents are listed on this shared preview yet.
+          </p>
+        )}
+      </section>
+    )
+  }
+
   return (
     <section
+      id="deal-documents"
       className={sectionClassName}
       aria-labelledby={headingId}
     >

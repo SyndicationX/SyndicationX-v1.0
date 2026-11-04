@@ -4,11 +4,17 @@ import {
   mapSignFlowTemplateFieldsForInvestor,
   resolveSignFlowFieldTemplateAnchor,
 } from "../src/services/esign/signflow.service.js";
+import { PDFDocument } from "pdf-lib";
+import {
+  computePdfPageFingerprints,
+  remapSignFlowFieldsToSigningPdf,
+} from "../src/services/deal/esignPdfPageMap.service.js";
 import {
   alignSignFlowRadioFieldSizeToChoiceBox,
   esignDocumentChoiceFieldSize,
   keepChoiceFieldsThroughPrefill,
   normalizeSignFlowChoiceFieldOptionNumbers,
+  prependPdfBuffers,
   restoreFlattenedChoiceFields,
 } from "../src/services/deal/esignPdfMerge.service.js";
 
@@ -66,6 +72,45 @@ describe("signflow field page anchors", () => {
     assert.equal(field?.page, 2);
     assert.equal(field?.templatePage, 2);
     assert.equal(field?.pageHash, undefined);
+  });
+});
+
+describe("questionnaire page hash placement", () => {
+  it("keeps a field on its document page after answer pages are prepended", async () => {
+    async function makePdf(label: string, pages: number) {
+      const doc = await PDFDocument.create();
+      for (let i = 0; i < pages; i += 1) {
+        const page = doc.addPage([600, 800]);
+        page.drawText(`${label} page ${i + 1} body text`);
+      }
+      return Buffer.from(await doc.save());
+    }
+
+    const template = await makePdf("agreement", 2);
+    const answers = await makePdf("answers", 2);
+    const merged = await prependPdfBuffers(template, [answers]);
+    const hashes = await computePdfPageFingerprints(template);
+    const [field] = await remapSignFlowFieldsToSigningPdf(
+      [
+        {
+          type: "signature",
+          label: "Investor Signature",
+          x: 12,
+          y: 40,
+          width: 30,
+          height: 6,
+          page: 2,
+          templatePage: 2,
+          pageHash: "stale-page-number-hash",
+          recipientId: "rec_investor",
+        },
+      ],
+      template,
+      merged.buffer,
+    );
+
+    assert.equal(field?.page, 4);
+    assert.equal(field?.pageHash, hashes[1]);
   });
 });
 

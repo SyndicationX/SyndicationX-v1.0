@@ -38,6 +38,8 @@ import {
   extraCompanyUserChargeDescription,
   extraCompanyUsersToCharge,
   catalogPackagePriceCents,
+  nextBillingDateFromPayment,
+  paymentCoversRequiredPackage,
   couponCheckoutLineCents,
   couponDurationAppliesToOneTime,
   differenceRepeatPriceCents,
@@ -218,11 +220,16 @@ export function dealPaidPlanNeedsUpgrade(
   return BILLING_PLAN_RANK[suggested] > BILLING_PLAN_RANK[current];
 }
 
-/** Sum of paid invoices for a deal subscription. Used when the Stripe Price cannot be read. */
+type SubscriptionPayment = {
+  totalPaidCents: number;
+  firstPaidAt: Date | null;
+};
+
+/** Paid invoices for a deal subscription: money collected, and the first payment date. */
 async function collectedInvoiceCentsBySubscription(
   subscriptionIds: Array<string | null | undefined>,
-): Promise<Map<string, number>> {
-  const amounts = new Map<string, number>();
+): Promise<Map<string, SubscriptionPayment>> {
+  const amounts = new Map<string, SubscriptionPayment>();
   const ids = [
     ...new Set(
       subscriptionIds.map((id) => String(id ?? "").trim()).filter(Boolean),
@@ -233,6 +240,7 @@ async function collectedInvoiceCentsBySubscription(
     .select({
       stripeSubscriptionId: companyBillingInvoices.stripeSubscriptionId,
       totalPaidCents: sql<number>`coalesce(sum(${companyBillingInvoices.amountPaidCents}), 0)::int`,
+      firstPaidAt: sql<Date | null>`min(${companyBillingInvoices.paidAt})`,
     })
     .from(companyBillingInvoices)
     .where(
@@ -245,7 +253,16 @@ async function collectedInvoiceCentsBySubscription(
   for (const row of rows) {
     const id = String(row.stripeSubscriptionId ?? "").trim();
     const total = Number(row.totalPaidCents) || 0;
-    if (id && total > 0) amounts.set(id, total);
+    const firstPaidAt = row.firstPaidAt ? new Date(row.firstPaidAt) : null;
+    if (id && total > 0) {
+      amounts.set(id, {
+        totalPaidCents: total,
+        firstPaidAt:
+          firstPaidAt && Number.isFinite(firstPaidAt.getTime())
+            ? firstPaidAt
+            : null,
+      });
+    }
   }
   return amounts;
 }
@@ -281,27 +298,28 @@ export async function dealSubscriptionPriceGapCents(params: {
     return 0;
   }
   let paidCents = catalogPackagePriceCents(currentPlan, cycle, currentSeat);
-  const priceId = String(params.stripePriceId ?? "").trim();
-  let readStripePrice = false;
-  if (priceId) {
-    try {
-      const price = await getStripeClient().prices.retrieve(priceId);
-      if (typeof price.unit_amount === "number" && price.unit_amount > 0) {
-        paidCents = price.unit_amount;
-        readStripePrice = true;
+  const collected = await collectedInvoiceCentsBySubscription([
+    params.stripeSubscriptionId,
+  ]);
+  const invoicePaid = collected.get(
+    String(params.stripeSubscriptionId ?? "").trim(),
+  )?.totalPaidCents;
+  // The invoice is the amount the sponsor paid. A missing Stripe Price or a
+  // coupon must not replace that with the catalog price of a different package.
+  if (invoicePaid != null && invoicePaid > 0) {
+    paidCents = invoicePaid;
+  } else {
+    const priceId = String(params.stripePriceId ?? "").trim();
+    if (priceId) {
+      try {
+        const price = await getStripeClient().prices.retrieve(priceId);
+        if (typeof price.unit_amount === "number" && price.unit_amount > 0) {
+          paidCents = price.unit_amount;
+        }
+      } catch (err) {
+        console.warn("dealSubscriptionPriceGapCents:", err);
       }
-    } catch (err) {
-      console.warn("dealSubscriptionPriceGapCents:", err);
     }
-  }
-  if (!readStripePrice && !params.couponRedeemed) {
-    const collected = await collectedInvoiceCentsBySubscription([
-      params.stripeSubscriptionId,
-    ]);
-    const invoicePaid = collected.get(
-      String(params.stripeSubscriptionId ?? "").trim(),
-    );
-    if (invoicePaid != null) paidCents = invoicePaid;
   }
   return priceGapCents(
     paidCents,
@@ -654,21 +672,38 @@ export async function dealPackageUpgradeDue(row: AddDealFormRow): Promise<{
     };
   }
   const suggestedPlanId = await suggestedPlanIdForDeal(String(row.id));
+  const snapshot = await getDealCompanyUserSnapshot(String(row.id));
+  const coGpCount = snapshot?.coGpCount ?? 0;
+  const payment = await subscriptionPayment(row.stripeSubscriptionId);
+  if (
+    paymentCoversRequiredPackage({
+      paidCents: payment?.totalPaidCents,
+      cycle: row.stripeBillingCycle,
+      planId: suggestedPlanId,
+      seatBand: suggestedSeatBandForDeal(suggestedPlanId, coGpCount),
+    })
+  ) {
+    return {
+      due: false,
+      suggestedPlanId,
+      needsPlanUpgrade: false,
+      needsCoGpUpgrade: false,
+    };
+  }
   const needsPlanUpgrade = dealPaidPlanNeedsUpgrade(
     row.stripePlanId,
     suggestedPlanId,
   );
-  const snapshot = await getDealCompanyUserSnapshot(String(row.id));
   const needsCoGpUpgrade = coGpSeatBandNeedsUpgrade(
     snapshot?.seatBand,
-    snapshot?.coGpCount ?? 0,
+    coGpCount,
     suggestedPlanId,
   );
   const owesPriceGap = await unpaidPackagePriceGap({
     row,
     suggestedPlanId,
     seatBand: snapshot?.seatBand,
-    coGpCount: snapshot?.coGpCount ?? 0,
+    coGpCount,
   });
   return {
     due: needsPlanUpgrade || needsCoGpUpgrade || owesPriceGap,
@@ -676,6 +711,14 @@ export async function dealPackageUpgradeDue(row: AddDealFormRow): Promise<{
     needsPlanUpgrade: needsPlanUpgrade || owesPriceGap,
     needsCoGpUpgrade,
   };
+}
+
+async function subscriptionPayment(
+  subscriptionId: string | null | undefined,
+): Promise<SubscriptionPayment | null> {
+  const id = String(subscriptionId ?? "").trim();
+  if (!id) return null;
+  return (await collectedInvoiceCentsBySubscription([id])).get(id) ?? null;
 }
 
 async function unpaidPackagePriceGap(params: {
@@ -697,7 +740,7 @@ async function unpaidPackagePriceGap(params: {
     stripePriceId: params.row.stripePriceId,
     stripePlanId: params.row.stripePlanId,
     stripeBillingCycle: params.row.stripeBillingCycle,
-    stripeSeatBand: params.row.stripeSeatBand ?? params.seatBand,
+    stripeSeatBand: params.seatBand ?? params.row.stripeSeatBand,
     stripeSubscriptionId: params.row.stripeSubscriptionId,
     couponRedeemed: Boolean(String(params.row.saasCouponCode ?? "").trim()),
     nextPlanId: params.suggestedPlanId,
@@ -721,12 +764,16 @@ export async function dealSaasLockHttpPayload(
   extras?: { viewerIsLeadSponsor?: boolean },
 ): Promise<DealSaasPaymentRequiredPayload | null> {
   const evaluated = await evaluateDealSaasWorkspaceAccessRefreshing(row);
+  const nextBillingDate = await resolveNextBillingDate(evaluated.row);
   if (evaluated.access.locked) {
-    return dealSaasPaymentRequiredPayload(
-      evaluated.row,
-      evaluated.access,
-      extras,
-    );
+    return {
+      ...dealSaasPaymentRequiredPayload(
+        evaluated.row,
+        evaluated.access,
+        extras,
+      ),
+      nextBillingDate,
+    };
   }
   const upgrade = await dealPackageUpgradeDue(evaluated.row);
   if (!upgrade.due) return null;
@@ -736,6 +783,7 @@ export async function dealSaasLockHttpPayload(
       { locked: true, reason: "unpaid" },
       extras,
     ),
+    nextBillingDate,
     needsPlanUpgrade: true,
     suggestedPlanId: upgrade.suggestedPlanId,
     message: upgradeDifferenceLockMessage(evaluated.row.dealName),
@@ -771,9 +819,11 @@ function nextBillingDateForList(
     | "pendingDealStage"
     | "stripeSubscriptionId"
     | "stripeSubscriptionStatus"
+    | "stripeBillingCycle"
     | "stripeCurrentPeriodEnd"
     | "saasBillingStartsAt"
   >,
+  firstPaidAt?: Date | null,
 ): string | null {
   if (!dealShouldKeepStripeSaasSubscription(row)) return null;
   const status = String(row.stripeSubscriptionStatus ?? "none").toLowerCase();
@@ -781,10 +831,12 @@ function nextBillingDateForList(
     dealIsActivelyBilled(row) ||
     PAID_ACCESS_STATUSES.has(status) ||
     ACTIVE_SUB_STATUSES.has(status);
-  // Hardcoded platform date is only the first due date. After the lead
-  // sponsor is on a Stripe subscription, show the real current-period end.
+  // After payment, the next date is that payment plus the billing cycle.
   if (activelyBilled) {
-    return periodEndIso(row);
+    const fromPayment = firstPaidAt
+      ? nextBillingDateFromPayment(firstPaidAt, row.stripeBillingCycle)
+      : null;
+    return fromPayment?.toISOString() ?? periodEndIso(row);
   }
   if (!saasBillingHasStarted(row)) {
     return billingStartsAtDate(row).toISOString();
@@ -792,6 +844,23 @@ function nextBillingDateForList(
   // Unpaid after the SaaS start date: due now. Do not surface a leftover
   // Stripe current_period_end as if payment is still in the complimentary window.
   return billingStartsAtDate(row).toISOString();
+}
+
+export async function resolveNextBillingDate(
+  row: Pick<
+    AddDealFormRow,
+    | "archived"
+    | "dealStage"
+    | "pendingDealStage"
+    | "stripeSubscriptionId"
+    | "stripeSubscriptionStatus"
+    | "stripeBillingCycle"
+    | "stripeCurrentPeriodEnd"
+    | "saasBillingStartsAt"
+  >,
+): Promise<string | null> {
+  const payment = await subscriptionPayment(row.stripeSubscriptionId);
+  return nextBillingDateForList(row, payment?.firstPaidAt ?? null);
 }
 
 export async function dealSaasBillingListFields(
@@ -812,27 +881,41 @@ export async function dealSaasBillingListFields(
     ? await suggestedPlanIdForDeal(String(row.id), options?.raiseAmount)
     : null;
   const billed = dealIsActivelyBilled(row);
-  const needsPlanUpgrade = dealShouldAlertPlanUpgrade(row, suggestedPlanId);
+  const payment = billed
+    ? await subscriptionPayment(row.stripeSubscriptionId)
+    : null;
+  let needsPlanUpgrade = dealShouldAlertPlanUpgrade(row, suggestedPlanId);
   let needsCoGpUpgrade = false;
   let owesPriceGap = false;
   if (billed && saasBillingHasStarted(row) && suggestedPlanId) {
     const snapshot = await getDealCompanyUserSnapshot(String(row.id));
-    needsCoGpUpgrade = coGpSeatBandNeedsUpgrade(
-      snapshot?.seatBand,
-      snapshot?.coGpCount ?? 0,
-      suggestedPlanId,
-    );
-    owesPriceGap = await unpaidPackagePriceGap({
-      row,
-      suggestedPlanId,
-      seatBand: snapshot?.seatBand,
-      coGpCount: snapshot?.coGpCount ?? 0,
+    const coGpCount = snapshot?.coGpCount ?? 0;
+    const covered = paymentCoversRequiredPackage({
+      paidCents: payment?.totalPaidCents,
+      cycle: row.stripeBillingCycle,
+      planId: suggestedPlanId,
+      seatBand: suggestedSeatBandForDeal(suggestedPlanId, coGpCount),
     });
+    if (!covered) {
+      needsCoGpUpgrade = coGpSeatBandNeedsUpgrade(
+        snapshot?.seatBand,
+        coGpCount,
+        suggestedPlanId,
+      );
+      owesPriceGap = await unpaidPackagePriceGap({
+        row,
+        suggestedPlanId,
+        seatBand: snapshot?.seatBand,
+        coGpCount,
+      });
+    } else {
+      needsPlanUpgrade = false;
+    }
   }
   const upgradeDue = needsPlanUpgrade || needsCoGpUpgrade || owesPriceGap;
   return {
     viewerIsLeadSponsor: true,
-    nextBillingDate: nextBillingDateForList(row),
+    nextBillingDate: nextBillingDateForList(row, payment?.firstPaidAt ?? null),
     saasBillingStartsAt: billingStartsAtDate(row).toISOString(),
     billingSubscriptionStatus: row.stripeSubscriptionStatus || "none",
     billingPlanId: row.stripePlanId ?? null,
@@ -2856,13 +2939,26 @@ async function mapDealBillingQueryRows(
     const onTargetPackage =
       normalizeBillingPlanId(row.stripePlanId) === suggestedPlanId &&
       currentSeatBand === suggestedSeatBand;
+    const payment = paidBySubscription.get(subscriptionId) ?? null;
+    const collectedCents =
+      payment != null && payment.totalPaidCents > 0
+        ? payment.totalPaidCents
+        : null;
+    const covered = paymentCoversRequiredPackage({
+      paidCents: collectedCents,
+      cycle: row.stripeBillingCycle,
+      planId: suggestedPlanId ?? row.stripePlanId,
+      seatBand: suggestedSeatBand,
+    });
     const amountPaidCents =
-      couponRedeemed && onTargetPackage
+      collectedCents ??
+      (couponRedeemed && onTargetPackage
         ? subscribedCatalog ?? nextPackageCents
-        : paidByPriceId.get(priceId) ??
-          paidBySubscription.get(subscriptionId) ??
-          null;
-    const owesPriceGap = priceGapCents(amountPaidCents, nextPackageCents) > 0;
+        : paidByPriceId.get(priceId) ?? null);
+    const owesPriceGap =
+      covered || (couponRedeemed && onTargetPackage)
+        ? false
+        : priceGapCents(amountPaidCents, nextPackageCents) > 0;
     list.push({
       id: String(row.id),
       companyId: String(row.organizationId ?? "").trim().toLowerCase(),
@@ -2877,18 +2973,24 @@ async function mapDealBillingQueryRows(
           : null,
       suggestedPlanId,
       needsPlanUpgrade:
-        dealShouldAlertPlanUpgrade(dated, suggestedPlanId) || owesPriceGap,
+        !covered &&
+        (dealShouldAlertPlanUpgrade(dated, suggestedPlanId) || owesPriceGap),
       suggestedSeatBand,
-      needsCoGpUpgrade: coGpSeatBandNeedsUpgrade(
-        currentSeatBand,
-        companyUsers?.coGpCount ?? 0,
-        suggestedPlanId,
-      ),
+      needsCoGpUpgrade:
+        !covered &&
+        coGpSeatBandNeedsUpgrade(
+          currentSeatBand,
+          companyUsers?.coGpCount ?? 0,
+          suggestedPlanId,
+        ),
       billingCycle: payable ? row.stripeBillingCycle ?? null : null,
       subscriptionStatus: payable
         ? row.stripeSubscriptionStatus || "none"
         : "canceled",
-      nextBillingDate: nextBillingDateForList(dated),
+      nextBillingDate: nextBillingDateForList(
+        dated,
+        payment?.firstPaidAt ?? null,
+      ),
       saasBillingStartsAt: saasBillingStartsAt
         ? saasBillingStartsAt.toISOString()
         : null,

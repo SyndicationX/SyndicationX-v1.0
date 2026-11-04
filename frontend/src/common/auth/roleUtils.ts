@@ -169,13 +169,53 @@ export function isDealParticipantUser(): boolean {
   return String(u.role ?? "").trim().toLowerCase() === DEAL_PARTICIPANT;
 }
 
+function membershipRoleIsCompanyStaff(role: unknown): boolean {
+  const r = String(role ?? "").trim().toLowerCase();
+  return (
+    r === COMPANY_ADMIN ||
+    r === COMPANY_USER ||
+    r === "company admin" ||
+    r === "company member"
+  );
+}
+
+/**
+ * Syndicating workspace: company staff portal roles, or an investor account that
+ * was added to a company (membership row; portal role may still be `investor`).
+ */
+function hasSyndicatingWorkspaceAccess(): boolean {
+  const role = getStoredUserRole();
+  if (
+    role === PLATFORM_ADMIN ||
+    role === COMPANY_ADMIN ||
+    role === COMPANY_USER ||
+    role === PLATFORM_USER
+  ) {
+    return true;
+  }
+  const u = getStoredSessionUserRecord();
+  const raw = u?.memberships;
+  if (!Array.isArray(raw)) return false;
+  return raw.some((item) => {
+    if (item == null || typeof item !== "object" || Array.isArray(item)) {
+      return false;
+    }
+    return membershipRoleIsCompanyStaff(
+      (item as Record<string, unknown>).role,
+    );
+  });
+}
+
 /**
  * Investing-only shell when session has `lp_investor_nav` (LP-only users).
+ * Company members and other syndicating-workspace users keep mode switching
+ * even when they are also listed as an LP investor.
  * A self-serve `investor` who is later added as Lead / Admin / Co-sponsor
  * keeps that portal role, but `is_deal_sponsor` opens the syndicating workspace.
  */
 export function isLpInvestorSessionUser(): boolean {
   if (isDealSponsorSessionUser()) return false;
+  if (hasSyndicatingWorkspaceAccess()) return false;
   if (getStoredUserRole() === INVESTOR) return true;
   const u = getStoredSessionUserRecord();
   if (!u) return false;

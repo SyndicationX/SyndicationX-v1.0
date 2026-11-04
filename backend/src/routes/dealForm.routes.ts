@@ -118,6 +118,10 @@ import {
 } from "../controllers/deal/dealInvestorCommunicationMail.controller.js";
 import multer from "multer";
 import { blockCrossOrgColleagueDealMutations } from "../middleware/crossOrgDealManage.middleware.js";
+import {
+  getInvestorSponsorOptions,
+  patchInvestorSponsor,
+} from "../controllers/deal/dealInvestorSponsor.controller.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -140,6 +144,14 @@ router.delete(
   deleteDealInvestorClass,
 );
 router.get("/deals/:dealId/investors", getDealInvestors);
+router.get(
+  "/deals/:dealId/investors/:investorRowId/sponsor-options",
+  getInvestorSponsorOptions,
+);
+router.patch(
+  "/deals/:dealId/investors/:investorRowId/sponsor",
+  patchInvestorSponsor,
+);
 router.get(
   "/deals/:dealId/commitment-amount",
   getDealCommitmentAmountByContact,

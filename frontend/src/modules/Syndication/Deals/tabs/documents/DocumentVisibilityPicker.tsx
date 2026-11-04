@@ -52,14 +52,16 @@ export function DocumentVisibilityPicker({
     const spaceBelow = vh - r.bottom - margin
     const spaceAbove = r.top - margin
     const maxPanel = 16 * 16
-    const openDown = spaceBelow >= Math.min(180, spaceAbove)
+    const naturalHeight = menuRef.current?.scrollHeight ?? 168
+    const openDown = spaceBelow >= Math.min(naturalHeight + gap, spaceAbove)
     const maxHeight = Math.max(
-      140,
+      120,
       Math.min(maxPanel, (openDown ? spaceBelow : spaceAbove) - gap),
     )
+    const usedHeight = Math.min(naturalHeight, maxHeight)
     const top = openDown
       ? r.bottom + gap
-      : Math.max(margin, r.top - maxHeight - gap)
+      : Math.max(margin, r.top - usedHeight - gap)
     setMenuBox((prev) => {
       if (
         prev &&
@@ -80,6 +82,8 @@ export function DocumentVisibilityPicker({
       return
     }
     updateMenuBox()
+    // Second pass once the menu is in the DOM so an upward open uses its real height.
+    const frame = window.requestAnimationFrame(() => updateMenuBox())
     function onResize() {
       updateMenuBox()
     }
@@ -91,6 +95,7 @@ export function DocumentVisibilityPicker({
     window.addEventListener("resize", onResize)
     document.addEventListener("scroll", onScroll, true)
     return () => {
+      window.cancelAnimationFrame(frame)
       window.removeEventListener("resize", onResize)
       document.removeEventListener("scroll", onScroll, true)
     }

@@ -16,7 +16,10 @@ import {
   invalidateContactDirectoryCache,
   invalidateDealsListCache,
 } from "../cache/listReadCache.js";
-import { ensureReferredInvestorContact } from "../contact/investorInviteLink.service.js";
+import {
+  ensureReferredInvestorContact,
+  organizationForSponsorInviteContacts,
+} from "../contact/investorInviteLink.service.js";
 import { resolveOrganizationIdForUserId } from "../org/orgResolution.service.js";
 import {
   isUserAssignedToDeal,
@@ -102,7 +105,12 @@ async function resolveOfferingPreviewSignupSponsor(params: {
   const dealOrg = String(deal.organizationId ?? "").trim() || null;
   return {
     sponsorUserId,
-    organizationId: dealOrg ?? sponsorOrg,
+    organizationId: await organizationForSponsorInviteContacts({
+      dealId,
+      sponsorUserId,
+      dealOrganizationId: dealOrg,
+      sponsorOrganizationId: sponsorOrg,
+    }),
     dealId,
   };
 }

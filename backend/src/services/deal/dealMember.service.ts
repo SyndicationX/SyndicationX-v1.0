@@ -1,5 +1,5 @@
-import { and, desc, eq, ne, or, sql, type AnyColumn } from "drizzle-orm";
-import { db } from "../../database/db.js";
+import { and, desc, eq, isNull, ne, or, sql, type AnyColumn } from "drizzle-orm";
+import { db, pool } from "../../database/db.js";
 import { addDealForm } from "../../schema/deal.schema/add-deal-form.schema.js";
 import {
   dealMember,
@@ -229,6 +229,7 @@ function syntheticInvestmentFromDealMember(m: DealMemberRow): DealInvestmentRow 
     fundApproved: false,
     fundApprovedBy: null,
     fundApprovedAt: null,
+    fundApprovedAtHistory: [],
     fundApprovedCommitmentSnapshot: "",
     status: "",
     investorClass: "",
@@ -285,6 +286,7 @@ function syntheticInvestmentFromGpLpRoster(
     fundApproved: false,
     fundApprovedBy: null,
     fundApprovedAt: null,
+    fundApprovedAtHistory: [],
     fundApprovedCommitmentSnapshot: "",
     status: "",
     investorClass: m.investorClass,
@@ -1037,6 +1039,152 @@ export async function syncOutsideSponsorsIntoOrganizationContacts(
   });
   if (created > 0 || removed > 0) invalidateContactDirectoryCache();
   return created;
+}
+
+/**
+ * An investor added on a deal becomes a normal CRM contact of the company that
+ * added them (or that owns the deal). Offering visibility and the other
+ * contact actions apply to that company row, not to the platform signup row.
+ */
+async function copyInvestorIntoOrganization(
+  tx: DealWriteTx,
+  dealId: string,
+  rosterId: string,
+  addedByUserId: string,
+  organizationId: string,
+): Promise<boolean> {
+  if (!ROSTER_CONTACT_UUID_RE.test(organizationId)) return false;
+  const person = await resolveDealRosterPerson(tx, rosterId);
+  if (!person) return false;
+  if (sameOrganization(person.homeOrganizationId, organizationId)) return false;
+
+  const [existing] = await tx
+    .select({ id: contact.id })
+    .from(contact)
+    .where(
+      and(
+        eq(contact.organizationId, organizationId),
+        sql`lower(trim(${contact.email})) = ${person.email}`,
+      ),
+    )
+    .limit(1);
+  if (existing) return false;
+
+  const createdBy = await resolveContactCreatorInOrganization(
+    tx,
+    organizationId,
+    addedByUserId,
+  );
+  if (!createdBy) return false;
+
+  const firstName = contactNameOrDash(person.firstName);
+  const lastName = contactNameOrDash(person.lastName);
+  await tx.insert(contact).values({
+    firstName,
+    lastName,
+    fullName: [firstName, lastName].filter((part) => part !== "—").join(" "),
+    email: person.email,
+    phone: person.phone,
+    note: "",
+    tags: [],
+    lists: [],
+    owners: [],
+    status: "active",
+    createdBy,
+    organizationId,
+    isPortalUser: person.isPortalUser,
+    platformAdminOnly: false,
+    visibleToUsers: false,
+    relationship506b: "NO",
+    referredByDealId: dealId,
+    importSource: "deal_investor",
+  });
+  return true;
+}
+
+export async function syncDealInvestorsIntoOrganizationContacts(
+  organizationId: string,
+  requestedByUserId: string,
+): Promise<number> {
+  const orgId = String(organizationId ?? "").trim();
+  const actorId = String(requestedByUserId ?? "").trim();
+  if (!ROSTER_CONTACT_UUID_RE.test(orgId) || !ROSTER_CONTACT_UUID_RE.test(actorId)) {
+    return 0;
+  }
+
+  const lpRows = await db
+    .select({
+      dealId: dealLpInvestor.dealId,
+      contactMemberId: dealLpInvestor.contactMemberId,
+      addedBy: dealLpInvestor.addedBy,
+    })
+    .from(dealLpInvestor)
+    .innerJoin(addDealForm, eq(addDealForm.id, dealLpInvestor.dealId))
+    .where(
+      and(
+        eq(dealLpInvestor.isDraft, false),
+        isNull(dealLpInvestor.removedAt),
+        sql`(
+          ${addDealForm.organizationId} = ${orgId}::uuid
+          OR EXISTS (
+            SELECT 1 FROM users adder
+            WHERE adder.id = ${dealLpInvestor.addedBy}
+              AND adder.organization_id = ${orgId}::uuid
+          )
+        )`,
+      ),
+    );
+
+  let created = 0;
+  await db.transaction(async (tx) => {
+    for (const row of lpRows) {
+      if (
+        await copyInvestorIntoOrganization(
+          tx,
+          String(row.dealId),
+          String(row.contactMemberId),
+          String(row.addedBy ?? actorId),
+          orgId,
+        )
+      ) {
+        created += 1;
+      }
+    }
+  });
+  if (created > 0) invalidateContactDirectoryCache();
+  return created;
+}
+
+/** Platform Admin All Contacts: copy deal investors into each sponsor company. */
+export async function syncDealInvestorsIntoAllOrganizationContacts(
+  requestedByUserId: string,
+): Promise<void> {
+  const actorId = String(requestedByUserId ?? "").trim();
+  if (!ROSTER_CONTACT_UUID_RE.test(actorId)) return;
+  const res = await pool.query<{ organization_id: string }>(`
+    SELECT DISTINCT organization_id::text AS organization_id
+    FROM (
+      SELECT f.organization_id
+      FROM deal_lp_investor lp
+      INNER JOIN add_deal_form f ON f.id = lp.deal_id
+      WHERE lp.is_draft = false
+        AND lp.removed_at IS NULL
+        AND f.organization_id IS NOT NULL
+      UNION
+      SELECT adder.organization_id
+      FROM deal_lp_investor lp
+      INNER JOIN users adder ON adder.id = lp.added_by
+      WHERE lp.is_draft = false
+        AND lp.removed_at IS NULL
+        AND adder.organization_id IS NOT NULL
+    ) orgs
+  `);
+  const orgIds = res.rows
+    .map((row) => String(row.organization_id ?? "").trim())
+    .filter((id) => ROSTER_CONTACT_UUID_RE.test(id));
+  for (const orgId of orgIds) {
+    await syncDealInvestorsIntoOrganizationContacts(orgId, actorId);
+  }
 }
 
 async function alignDealOrganizationWithLeadSponsor(

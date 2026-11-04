@@ -117,6 +117,9 @@ function InvestmentProgressCell({
 }) {
   const { percent, phaseLabel } = progress
   const stepLabel = phaseLabel.trim() || "In progress"
+  if (percent >= 100) {
+    return <InvestmentsEmptyDash />
+  }
 
   return (
     <div className="investments_table_progress_cell">

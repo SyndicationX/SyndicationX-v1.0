@@ -4,7 +4,10 @@ import { pool } from "../../database/db.js";
 import { listOrganizationIdsForUser } from "../org/orgResolution.service.js";
 import { isPortalUserDealSponsorOnDeal } from "./dealMemberScope.service.js";
 import { resolvePortalUserIdForContactMemberId } from "./offeringPreviewSponsorRef.service.js";
-import { isAddDealFormIncomplete } from "./dealFormCompleteness.service.js";
+import {
+  isAddDealFormIncomplete,
+  isDealFormAutosavePlaceholder,
+} from "./dealFormCompleteness.service.js";
 import {
   isAddDealFormInOrganizationScope,
   listAddDealFormsByIds,
@@ -28,6 +31,59 @@ function isMissingMembershipTableError(err: unknown): boolean {
     cur = e.cause;
   }
   return false;
+}
+
+/** LP row belongs to a user or contact in one of the viewer's companies. */
+function investorInViewerOrgSql(idExpr: string, emailExpr: string): string {
+  const emailMatch =
+    emailExpr === "NULL"
+      ? "FALSE"
+      : `(
+           position('@' in trim(coalesce(${emailExpr}, ''))) > 1
+           AND (
+             lower(trim(${emailExpr})) IN (
+               SELECT email FROM investor_org_users
+               WHERE position('@' in coalesce(email, '')) > 1
+             )
+             OR lower(trim(${emailExpr})) IN (
+               SELECT email FROM investor_org_contacts
+               WHERE position('@' in coalesce(email, '')) > 1
+             )
+           )
+         )`;
+  return `(
+    lower(trim(${idExpr})) IN (SELECT lower(user_id) FROM investor_org_users)
+    OR lower(trim(${idExpr})) IN (SELECT lower(contact_id) FROM investor_org_contacts)
+    OR ${emailMatch}
+    OR EXISTS (
+      SELECT 1
+      FROM contact investor_contact
+      WHERE investor_contact.id::text = trim(both from ${idExpr})
+        AND (
+          (
+            investor_contact.organization_id IS NOT NULL
+            AND lower(trim(investor_contact.organization_id::text)) IN (
+              SELECT org_id FROM viewer_orgs
+            )
+          )
+          OR lower(trim(investor_contact.email)) IN (
+            SELECT email FROM investor_org_users
+            WHERE position('@' in coalesce(email, '')) > 1
+          )
+        )
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM users investor_user
+      INNER JOIN contact investor_contact
+        ON lower(trim(investor_contact.email)) = lower(trim(investor_user.email))
+      WHERE investor_user.id::text = trim(both from ${idExpr})
+        AND investor_contact.organization_id IS NOT NULL
+        AND lower(trim(investor_contact.organization_id::text)) IN (
+          SELECT org_id FROM viewer_orgs
+        )
+    )
+  )`;
 }
 
 function colleagueDealSql(includeMembership: boolean): string {
@@ -63,10 +119,24 @@ function colleagueDealSql(includeMembership: boolean): string {
        ),
        peer_users AS (
          ${peerUsers}
+       ),
+       investor_org_users AS (
+         SELECT user_id, email FROM peer_users
+         UNION
+         SELECT u.id::text AS user_id, lower(trim(u.email)) AS email
+         FROM users u
+         WHERE u.referred_by_company_id IS NOT NULL
+           AND lower(trim(u.referred_by_company_id::text)) IN (SELECT org_id FROM viewer_orgs)
+       ),
+       investor_org_contacts AS (
+         SELECT c.id::text AS contact_id, lower(trim(c.email)) AS email
+         FROM contact c
+         WHERE c.organization_id IS NOT NULL
+           AND lower(trim(c.organization_id::text)) IN (SELECT org_id FROM viewer_orgs)
        )
-       SELECT DISTINCT src.deal_id
+       SELECT DISTINCT src.deal_id, src.kind
        FROM (
-         SELECT dm.deal_id::text AS deal_id
+         SELECT dm.deal_id::text AS deal_id, 'sponsor' AS kind
          FROM deal_member dm
          INNER JOIN add_deal_form f ON f.id = dm.deal_id
          WHERE dm.is_draft = false
@@ -86,7 +156,7 @@ function colleagueDealSql(includeMembership: boolean): string {
              )
            )
          UNION
-         SELECT di.deal_id::text AS deal_id
+         SELECT di.deal_id::text AS deal_id, 'sponsor' AS kind
          FROM deal_investment di
          INNER JOIN add_deal_form f ON f.id = di.deal_id
          WHERE di.is_draft = false
@@ -106,48 +176,123 @@ function colleagueDealSql(includeMembership: boolean): string {
                WHERE sponsor_contact.id::text = trim(both from di.contact_id)
              )
            )
+         UNION
+         SELECT lp.deal_id::text AS deal_id, 'investor' AS kind
+         FROM deal_lp_investor lp
+         INNER JOIN add_deal_form f ON f.id = lp.deal_id
+         WHERE lp.is_draft = false
+           AND lp.removed_at IS NULL
+           AND (
+             f.organization_id IS NULL
+             OR lower(trim(f.organization_id::text)) NOT IN (SELECT org_id FROM viewer_orgs)
+           )
+           AND ${investorInViewerOrgSql("lp.contact_member_id", "lp.email")}
+         UNION
+         SELECT di.deal_id::text AS deal_id, 'investor' AS kind
+         FROM deal_investment di
+         INNER JOIN add_deal_form f ON f.id = di.deal_id
+         WHERE di.is_draft = false
+           AND di.removed_at IS NULL
+           AND trim(di.contact_id) <> '${AUTOSAVE_CONTACT}'
+           AND replace(replace(lower(trim(coalesce(di.investor_role, ''))), '_', ' '), '-', ' ')
+             IN ('lp investor', 'lp investors')
+           AND (
+             f.organization_id IS NULL
+             OR lower(trim(f.organization_id::text)) NOT IN (SELECT org_id FROM viewer_orgs)
+           )
+           AND ${investorInViewerOrgSql("di.contact_id", "NULL")}
+         UNION
+         SELECT dm.deal_id::text AS deal_id, 'investor' AS kind
+         FROM deal_member dm
+         INNER JOIN add_deal_form f ON f.id = dm.deal_id
+         WHERE dm.is_draft = false
+           AND replace(replace(lower(trim(coalesce(dm.deal_member_role, ''))), '_', ' '), '-', ' ')
+             IN ('lp investor', 'lp investors')
+           AND (
+             f.organization_id IS NULL
+             OR lower(trim(f.organization_id::text)) NOT IN (SELECT org_id FROM viewer_orgs)
+           )
+           AND ${investorInViewerOrgSql("dm.contact_member_id", "NULL")}
        ) src
        WHERE nullif(trim(src.deal_id), '') IS NOT NULL`;
 }
 
-/**
- * Deals outside this user's organizations where a peer in those organizations
- * is Lead, Admin, or Co-sponsor. Drafts and unfinished autosaves are omitted.
- */
-export async function listCrossOrgColleagueSponsoredDealIds(
-  userId: string,
-): Promise<string[]> {
-  const uid = String(userId ?? "").trim();
-  if (!uid) return [];
-  const orgIds = await listOrganizationIdsForUser(uid);
-  if (orgIds.length === 0) return [];
+export type CrossOrgColleagueDealAccess = {
+  /** Colleague-sponsored deals and investor-company deals. */
+  dealIds: string[];
+  /**
+   * Deals visible only because an investor from the viewer's company is on
+   * them. Colleague-sponsored deals stay out of this set.
+   */
+  investorCompanyDealIds: string[];
+};
 
-  let rows: { deal_id: string }[];
+/**
+ * Deals outside this user's organizations where someone in those organizations
+ * is Lead, Admin, or Co-sponsor, or an LP investor. Drafts and unfinished
+ * autosaves are omitted. Company admin and company members see the investor
+ * deals on the syndicating list. Own-company deals stay out so company staff
+ * keep their normal access.
+ */
+export async function listCrossOrgColleagueDealAccess(
+  userId: string,
+): Promise<CrossOrgColleagueDealAccess> {
+  const uid = String(userId ?? "").trim();
+  if (!uid) return { dealIds: [], investorCompanyDealIds: [] };
+  const orgIds = await listOrganizationIdsForUser(uid);
+  if (orgIds.length === 0) {
+    return { dealIds: [], investorCompanyDealIds: [] };
+  }
+
+  let rows: { deal_id: string; kind: string }[];
   try {
-    const res = await pool.query<{ deal_id: string }>(colleagueDealSql(true), [
-      uid,
-    ]);
+    const res = await pool.query<{ deal_id: string; kind: string }>(
+      colleagueDealSql(true),
+      [uid],
+    );
     rows = res.rows;
   } catch (err) {
     if (!isMissingMembershipTableError(err)) throw err;
-    const res = await pool.query<{ deal_id: string }>(colleagueDealSql(false), [
-      uid,
-    ]);
+    const res = await pool.query<{ deal_id: string; kind: string }>(
+      colleagueDealSql(false),
+      [uid],
+    );
     rows = res.rows;
   }
 
+  const investorDealIds = new Set(
+    rows
+      .filter((row) => String(row.kind ?? "") === "investor")
+      .map((row) => String(row.deal_id ?? "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const sponsorDealIds = new Set(
+    rows
+      .filter((row) => String(row.kind ?? "") === "sponsor")
+      .map((row) => String(row.deal_id ?? "").trim().toLowerCase())
+      .filter(Boolean),
+  );
   const ids = [
     ...new Set(
       rows.map((row) => String(row.deal_id ?? "").trim()).filter(Boolean),
     ),
   ];
-  if (ids.length === 0) return [];
+  if (ids.length === 0) return { dealIds: [], investorCompanyDealIds: [] };
 
   const deals = await listAddDealFormsByIds(ids);
   const visible: string[] = [];
+  const investorCompanyDealIds: string[] = [];
   for (const deal of deals) {
     if (isDealStageDraft(deal.dealStage)) continue;
-    if (isAddDealFormIncomplete(deal)) continue;
+    const dealKey = String(deal.id ?? "").trim().toLowerCase();
+    const investorLinked = investorDealIds.has(dealKey);
+    const sponsorLinked = sponsorDealIds.has(dealKey);
+    if (investorLinked && !sponsorLinked) {
+      if (isDealFormAutosavePlaceholder(deal.secType)) continue;
+      if (isDealFormAutosavePlaceholder(deal.owningEntityName)) continue;
+    } else if (isAddDealFormIncomplete(deal)) {
+      continue;
+    }
     let inViewerOrg = false;
     for (const orgId of orgIds) {
       if (await isAddDealFormInOrganizationScope(deal, orgId)) {
@@ -156,9 +301,17 @@ export async function listCrossOrgColleagueSponsoredDealIds(
       }
     }
     if (inViewerOrg) continue;
-    visible.push(String(deal.id));
+    const dealId = String(deal.id);
+    visible.push(dealId);
+    if (investorLinked && !sponsorLinked) investorCompanyDealIds.push(dealId);
   }
-  return visible;
+  return { dealIds: visible, investorCompanyDealIds };
+}
+
+export async function listCrossOrgColleagueSponsoredDealIds(
+  userId: string,
+): Promise<string[]> {
+  return (await listCrossOrgColleagueDealAccess(userId)).dealIds;
 }
 
 /**
@@ -490,6 +643,7 @@ export async function resolveDealInviterSponsorUserId(
 }
 
 /**
+ * A lead, admin, or co-sponsor investing their own money is their own sponsor.
  * Org 2 investors are attributed to their organization's sponsor on the deal.
  * Everyone else is attributed to the user who invited them to this deal.
  */
@@ -500,6 +654,12 @@ export async function resolveInvestNowAddedByUserId(params: {
   activeOrganizationId?: string | null;
 }): Promise<string> {
   const investorUserId = String(params.investorUserId ?? "").trim();
+  if (
+    investorUserId &&
+    (await isPortalUserDealSponsorOnDeal(params.dealId, investorUserId))
+  ) {
+    return investorUserId;
+  }
   const outsideSponsor = await resolveOutsideOrganizationSponsorForDeal(
     params.dealId,
     investorUserId,

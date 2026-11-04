@@ -1669,7 +1669,7 @@ select.cp_settings_input_pill.um_field_select {
   border-radius: var(--ui-button-border-radius, 4px);
   background: #e2e8f0;
   color: #64748b;
-  cursor: help;
+  cursor: pointer;
   flex-shrink: 0;
 }
 
@@ -1952,6 +1952,7 @@ select.cp_settings_input_pill.um_field_select {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 0.4em;
   margin: 0;
   padding: 0.5em 0.85em;
   font-family: inherit;
@@ -4885,8 +4886,12 @@ select.cp_settings_input_pill.um_field_select {
   color: var(--portal-text, #0f172a);
   cursor: pointer;
 }
-.cp_billing_start_date_btn:hover {
+.cp_billing_start_date_btn:hover:not(:disabled) {
   background: var(--portal-surface-muted, #f8fafc);
+}
+.cp_billing_start_date_btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .deal_stage_modal_body .cp_billing_start_field {
   margin-top: 0.85rem;

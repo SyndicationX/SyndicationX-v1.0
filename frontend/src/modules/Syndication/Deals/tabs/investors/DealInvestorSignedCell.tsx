@@ -1,4 +1,6 @@
 import { CircleCheck, Clock3, Eye } from "lucide-react"
+import { DealTableHyphen } from "./DealTableHyphen"
+import { FormTooltip } from "../../../../../common/components/form-tooltip/FormTooltip"
 import type { DealInvestorRow } from "../../types/deal-investors.types"
 import {
   investorRowShowsEsignStatusLink,
@@ -21,8 +23,19 @@ function signedTone(display: string): SignedTone | null {
   return "done"
 }
 
+function signedColumnHover(display: string): string | null {
+  const value = display.trim().toLowerCase()
+  if (value === "signed") {
+    return "The investor signed. Waiting for the sponsor to counter-sign."
+  }
+  if (value === "completed") {
+    return "The investor and the sponsor have both signed."
+  }
+  return null
+}
+
 function SignedStatusIcon({ tone }: { tone: SignedTone }) {
-  const props = { size: 14, strokeWidth: 2, "aria-hidden": true as const }
+  const props = { size: 12, strokeWidth: 2, "aria-hidden": true as const }
   if (tone === "sent") return <Clock3 {...props} />
   if (tone === "viewed") return <Eye {...props} />
   return <CircleCheck {...props} />
@@ -50,9 +63,10 @@ export function DealInvestorSignedCell({
 
   const tone = signedTone(display)
   if (!tone) {
-    return <span className="deal_inv_signed_empty">—</span>
+    return <DealTableHyphen />
   }
 
+  const hover = signedColumnHover(display)
   const className = `deal_inv_signed_pill deal_inv_signed_pill--${tone}`
   const label = (
     <>
@@ -63,27 +77,38 @@ export function DealInvestorSignedCell({
     </>
   )
 
-  if (!clickable) {
-    return (
-      <span className={className} title={display}>
-        {label}
-      </span>
-    )
-  }
-
-  return (
-    <button
-      type="button"
+  const pill = (
+    <span
       className={className}
-      title={`eSign status: ${display}. Click for details.`}
-      onClick={(e) => {
-        e.stopPropagation()
-        e.preventDefault()
-        const targetRow = row
-        queueMicrotask(() => onOpenEsignStatus?.(targetRow))
-      }}
+      onClick={
+        clickable
+          ? (e) => {
+              e.stopPropagation()
+              e.preventDefault()
+              const targetRow = row
+              queueMicrotask(() => onOpenEsignStatus?.(targetRow))
+            }
+          : undefined
+      }
     >
       {label}
-    </button>
+    </span>
+  )
+
+  if (!hover) return pill
+
+  return (
+    <FormTooltip
+      triggerMode="inline"
+      nativeButtonTrigger={false}
+      openOnHover
+      placement="top"
+      panelAlign="start"
+      className="deal_inv_signed_hover_root"
+      label={hover}
+      content={<p className="deal_inv_signed_hover">{hover}</p>}
+    >
+      {pill}
+    </FormTooltip>
   )
 }

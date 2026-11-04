@@ -23,6 +23,7 @@ import {
   dealInvestment,
   type DealInvestmentInsert,
   type DealInvestmentRow,
+  type FundApprovedAtHistoryEntry,
 } from "../../schema/deal.schema/deal-investment.schema.js";
 import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema.js";
 import { dealMember } from "../../schema/deal.schema/deal-member.schema.js";
@@ -76,6 +77,20 @@ const LP_INVESTOR_ROLE_MATCH = [
 export function isLpInvestorRole(raw: string | null | undefined): boolean {
   const s = String(raw ?? "").trim().toLowerCase();
   return s === "lp_investors" || s === "lp investors" || s === "lp investor";
+}
+
+/** Sponsor-removed or unlinked investments stay in the table for audit and are not continued. */
+export function isRetiredDealInvestment(row: {
+  removedAt?: Date | string | null;
+  investorUnlinkedAt?: Date | string | null;
+  status?: string | null;
+}): boolean {
+  const status = String(row.status ?? "").trim().toLowerCase();
+  return (
+    Boolean(row.removedAt) ||
+    Boolean(row.investorUnlinkedAt) ||
+    status === "removed"
+  );
 }
 
 /** True when the stored role is General Partner (value or plural label). */
@@ -381,6 +396,11 @@ export type CreateDealInvestmentInput = {
   fundApprovedBy?: string | null;
   /** Last fund-approval timestamp when `fundApproved` is true. */
   fundApprovedAt?: Date | null;
+  /**
+   * Full funded-date trail. Omit on update to leave the stored JSON alone.
+   * The last entry is the date shown in the investors table.
+   */
+  fundApprovedAtHistory?: FundApprovedAtHistoryEntry[];
   status: string;
   investorClass: string;
   docSignedDate: string | null;
@@ -394,6 +414,71 @@ export type CreateDealInvestmentInput = {
    */
   isDraft?: boolean;
 };
+
+function parseFundApprovedAtHistory(raw: unknown): FundApprovedAtHistoryEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const entries: FundApprovedAtHistoryEntry[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const date = String((item as { date?: unknown }).date ?? "").trim();
+    if (!date || Number.isNaN(new Date(date).getTime())) continue;
+    const recordedAtRaw = String(
+      (item as { recordedAt?: unknown }).recordedAt ?? "",
+    ).trim();
+    const source =
+      (item as { source?: unknown }).source === "edited" ? "edited" : "approved";
+    entries.push({
+      date: new Date(date).toISOString(),
+      recordedAt:
+        recordedAtRaw && !Number.isNaN(new Date(recordedAtRaw).getTime())
+          ? new Date(recordedAtRaw).toISOString()
+          : new Date(date).toISOString(),
+      source,
+    });
+  }
+  return entries;
+}
+
+/**
+ * Keeps every earlier funded date and appends `nextDate` as the latest.
+ * An edit also records the previous current date when it is not already stored.
+ */
+export function recordFundApprovedAtHistory(params: {
+  history: unknown;
+  previousDate: Date | null;
+  nextDate: Date;
+  source: "approved" | "edited";
+}): FundApprovedAtHistoryEntry[] {
+  let history = parseFundApprovedAtHistory(params.history);
+  if (params.previousDate) {
+    const prevIso = params.previousDate.toISOString();
+    if (!history.some((entry) => entry.date === prevIso)) {
+      history = [
+        ...history,
+        { date: prevIso, recordedAt: prevIso, source: "approved" },
+      ];
+    }
+  }
+  const nextIso = params.nextDate.toISOString();
+  const last = history[history.length - 1];
+  if (last?.date === nextIso) return history;
+  return [
+    ...history,
+    {
+      date: nextIso,
+      recordedAt: new Date().toISOString(),
+      source: params.source,
+    },
+  ];
+}
+
+/** Date shown in the investors table: the last stored funded date. */
+function latestFundApprovedAtIso(row: DealInvestmentRow): string {
+  const history = parseFundApprovedAtHistory(row.fundApprovedAtHistory);
+  const latest = history[history.length - 1]?.date;
+  if (latest) return latest;
+  return row.fundApprovedAt ? new Date(row.fundApprovedAt).toISOString() : "";
+}
 
 /** Matches PostgreSQL uuid text (any variant) — used for users.id lookups */
 function looksLikeUuid(s: string): boolean {
@@ -729,6 +814,29 @@ function fundApprovedSnapshotStoredFromInput(
   return String(rounded);
 }
 
+function committedFieldsForInvestorApi(
+  row: DealInvestmentRow,
+  keepRemovedCommitment = false,
+): {
+  committed: string;
+  commitmentAmountRaw: string;
+  extraContributionAmounts: string[];
+} {
+  const extras = (row.extraContributionAmounts as string[] | null) ?? [];
+  if (isRetiredDealInvestment(row) && !keepRemovedCommitment) {
+    return {
+      committed: "—",
+      commitmentAmountRaw: "",
+      extraContributionAmounts: [],
+    };
+  }
+  return {
+    committed: formatCommitted(row.commitmentAmount, extras),
+    commitmentAmountRaw: row.commitmentAmount ?? "",
+    extraContributionAmounts: extras,
+  };
+}
+
 function formatCommitted(
   commitmentAmount: string,
   extras: string[] | null | undefined,
@@ -906,15 +1014,61 @@ export async function loadInvitationMailSentFlags(
   });
 }
 
+function investorQuestionnaireWasSaved(raw: string | null | undefined): boolean {
+  const text = String(raw ?? "").trim();
+  if (!text) return false;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return false;
+    }
+    return Object.values(parsed as Record<string, unknown>).some(
+      (value) => String(value ?? "").trim().length > 0,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** W-9 name and address were stored, so Invest Now is past the questionnaire. */
+function investorW9WasSaved(raw: string | null | undefined): boolean {
+  const text = String(raw ?? "").trim();
+  if (!text) return false;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return false;
+    }
+    const o = parsed as Record<string, unknown>;
+    const pick = (...keys: string[]) => {
+      for (const key of keys) {
+        const value = String(o[key] ?? "").trim();
+        if (value) return value;
+      }
+      return "";
+    };
+    const name = pick("name");
+    const line = pick("addressLine", "address_line");
+    const street = pick("street1");
+    const city = pick("city");
+    const state = pick("state");
+    const zip = pick("zip");
+    return Boolean(name && (line || (street && city && state && zip)));
+  } catch {
+    return false;
+  }
+}
+
 export function mapRowToInvestorApi(
   row: DealInvestmentRow,
   resolvedByUserId?: Map<string, ResolvedPortalUser>,
-  opts?: { invitationMailSent?: boolean },
+  opts?: { invitationMailSent?: boolean; keepRemovedCommitment?: boolean },
 ) {
   const invitationMailSent = Boolean(opts?.invitationMailSent);
+  const keepRemovedCommitment = Boolean(opts?.keepRemovedCommitment);
   const cid = row.contactId?.trim() ?? "";
   if (cid === DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER) {
-    const extras = (row.extraContributionAmounts as string[] | null) ?? [];
+    const amount = committedFieldsForInvestorApi(row, keepRemovedCommitment);
     return {
       id: row.id,
       displayName: "Draft",
@@ -928,16 +1082,11 @@ export function mapRowToInvestorApi(
       status: row.status?.trim() || "—",
       fundApproved: Boolean(row.fundApproved),
       fundApprovedByUserId: String(row.fundApprovedBy ?? "").trim(),
-      fundApprovedAtIso: row.fundApprovedAt
-        ? new Date(row.fundApprovedAt).toISOString()
-        : "",
+      fundApprovedAtIso: latestFundApprovedAtIso(row),
       fundApprovedCommitmentSnapshot: String(
         row.fundApprovedCommitmentSnapshot ?? "",
       ).trim(),
-      committed: formatCommitted(
-        row.commitmentAmount,
-        row.extraContributionAmounts as string[] | null,
-      ),
+      committed: amount.committed,
       signedDate: formatSignedDate(
         row.docSignedDate,
         row.esignStatusJson,
@@ -955,8 +1104,8 @@ export function mapRowToInvestorApi(
       profileId: row.profileId ?? "",
       userInvestorProfileId: String(row.userInvestorProfileId ?? "").trim(),
       offeringId: row.offeringId ?? "",
-      commitmentAmountRaw: row.commitmentAmount ?? "",
-      extraContributionAmounts: extras,
+      commitmentAmountRaw: amount.commitmentAmountRaw,
+      extraContributionAmounts: amount.extraContributionAmounts,
       docSignedDateIso: row.docSignedDate?.trim() ?? "",
       amountReceived: String(row.fundedAmount ?? "").trim(),
       accruedAmount: String(row.accruedPreferredReturn ?? "").trim(),
@@ -965,6 +1114,10 @@ export function mapRowToInvestorApi(
       commitmentCompletedAtIso: row.commitmentCompletedAt
         ? new Date(row.commitmentCompletedAt).toISOString()
         : "",
+      investorW9Saved: investorW9WasSaved(row.investorW9FormJson),
+      investorQuestionnaireSaved: investorQuestionnaireWasSaved(
+        row.investorQuestionnaireAnswersJson,
+      ),
     };
   }
   const legacy = userForContact(row.contactId);
@@ -984,7 +1137,7 @@ export function mapRowToInvestorApi(
     userEmail = emailFromContactId;
   }
 
-  const extras = (row.extraContributionAmounts as string[] | null) ?? [];
+  const amount = committedFieldsForInvestorApi(row, keepRemovedCommitment);
   return {
     id: row.id,
     displayName,
@@ -998,16 +1151,11 @@ export function mapRowToInvestorApi(
     status: row.status?.trim() || "—",
     fundApproved: Boolean(row.fundApproved),
     fundApprovedByUserId: String(row.fundApprovedBy ?? "").trim(),
-    fundApprovedAtIso: row.fundApprovedAt
-      ? new Date(row.fundApprovedAt).toISOString()
-      : "",
+    fundApprovedAtIso: latestFundApprovedAtIso(row),
     fundApprovedCommitmentSnapshot: String(
       row.fundApprovedCommitmentSnapshot ?? "",
     ).trim(),
-    committed: formatCommitted(
-      row.commitmentAmount,
-      row.extraContributionAmounts as string[] | null,
-    ),
+    committed: amount.committed,
     signedDate: formatSignedDate(
       row.docSignedDate,
       row.esignStatusJson,
@@ -1026,8 +1174,8 @@ export function mapRowToInvestorApi(
     profileId: row.profileId ?? "",
     userInvestorProfileId: String(row.userInvestorProfileId ?? "").trim(),
     offeringId: row.offeringId ?? "",
-    commitmentAmountRaw: row.commitmentAmount ?? "",
-    extraContributionAmounts: extras,
+    commitmentAmountRaw: amount.commitmentAmountRaw,
+    extraContributionAmounts: amount.extraContributionAmounts,
     docSignedDateIso: row.docSignedDate?.trim() ?? "",
     amountReceived: String(row.fundedAmount ?? "").trim(),
     accruedAmount: String(row.accruedPreferredReturn ?? "").trim(),
@@ -1039,6 +1187,10 @@ export function mapRowToInvestorApi(
     commitmentCompletedAtIso: row.commitmentCompletedAt
       ? new Date(row.commitmentCompletedAt).toISOString()
       : "",
+    investorW9Saved: investorW9WasSaved(row.investorW9FormJson),
+    investorQuestionnaireSaved: investorQuestionnaireWasSaved(
+      row.investorQuestionnaireAnswersJson,
+    ),
   };
 }
 
@@ -1273,7 +1425,9 @@ export async function enrichInvestorRolesForDealRows(
  */
 export async function mapDealInvestmentsToInvestorApi(
   rows: DealInvestmentRow[],
+  options?: { keepRemovedCommitment?: boolean },
 ): Promise<ReturnType<typeof mapRowToInvestorApi>[]> {
+  const keepRemovedCommitment = Boolean(options?.keepRemovedCommitment);
   const dealId = rows[0]?.dealId;
   const enriched =
     dealId && rows.length > 0
@@ -1285,7 +1439,10 @@ export async function mapDealInvestmentsToInvestorApi(
   );
   if (!dealId || enriched.length === 0) {
     return enriched.map((r) =>
-      withUserInvestorProfileName(mapRowToInvestorApi(r, resolved, {}), profileNames),
+      withUserInvestorProfileName(
+        mapRowToInvestorApi(r, resolved, { keepRemovedCommitment }),
+        profileNames,
+      ),
     );
   }
   const emptyLpSet = new Set<string>();
@@ -1302,6 +1459,7 @@ export async function mapDealInvestmentsToInvestorApi(
     const base = withUserInvestorProfileName(
       mapRowToInvestorApi(r, resolved, {
         invitationMailSent: flags[i] === true,
+        keepRemovedCommitment,
       }),
       profileNames,
     );
@@ -1322,6 +1480,8 @@ export type RosterAddedByMaps = {
   byContactKey: Map<string, string>;
   /** `deal_lp_investor.id` → portal `users.id` (Investors tab rows keyed by LP roster id). */
   byLpRowId: Map<string, string>;
+  /** Contact keys whose sponsor comes from `deal_lp_investor.added_by`. */
+  lpContactKeys: Set<string>;
 };
 
 /**
@@ -1349,6 +1509,7 @@ export async function loadRosterAddedByMaps(
   ]);
   const byContactKey = new Map<string, string>();
   const byLpRowId = new Map<string, string>();
+  const lpContactKeys = new Set<string>();
   for (const m of memberRows) {
     const k = rosterContactKey(m.contactMemberId);
     if (!k || !m.addedBy) continue;
@@ -1356,11 +1517,14 @@ export async function loadRosterAddedByMaps(
   }
   for (const m of lpRoster) {
     const k = rosterContactKey(m.contactMemberId);
-    if (k && m.addedBy) byContactKey.set(k, String(m.addedBy));
+    if (k && m.addedBy) {
+      byContactKey.set(k, String(m.addedBy));
+      lpContactKeys.add(k);
+    }
     const rowId = String(m.id ?? "").trim().toLowerCase();
     if (rowId && m.addedBy) byLpRowId.set(rowId, String(m.addedBy));
   }
-  return { byContactKey, byLpRowId };
+  return { byContactKey, byLpRowId, lpContactKeys };
 }
 
 
@@ -1663,6 +1827,9 @@ export async function sumCommittedFromInvestorsAddedByMemberContacts(
          FROM deal_investment di
          WHERE di.deal_id = $1::uuid
            AND di.is_draft = false
+           AND di.removed_at IS NULL
+           AND di.investor_unlinked_at IS NULL
+           AND lower(trim(coalesce(di.status, ''))) <> 'removed'
            AND trim(coalesce(di.contact_id, '')) <> ''
            AND trim(di.contact_id) <> '__portal_investment_autosave__'
          GROUP BY 1
@@ -1828,19 +1995,24 @@ function resolveRosterAddedByUserId(
   contactIdRaw: string | undefined,
   rosterAddedByByContactKey: Map<string, string>,
   rawToCanonical: Map<string, string>,
+  lpContactKeys?: ReadonlySet<string>,
 ): string | undefined {
   const k = rosterContactKey(contactIdRaw);
   if (!k) return undefined;
+  const targetCanon = rawToCanonical.get(k) ?? `id:${k}`;
+  const matches: { key: string; uid: string }[] = [];
   const direct = rosterAddedByByContactKey.get(k);
-  if (direct) return direct;
-  const targetCanon =
-    rawToCanonical.get(k) ?? `id:${k}`;
+  if (direct) matches.push({ key: k, uid: direct });
   for (const [rosterK, uid] of rosterAddedByByContactKey) {
-    const rosterCanon =
-      rawToCanonical.get(rosterK) ?? `id:${rosterK}`;
-    if (rosterCanon === targetCanon) return uid;
+    if (rosterK === k) continue;
+    const rosterCanon = rawToCanonical.get(rosterK) ?? `id:${rosterK}`;
+    if (rosterCanon === targetCanon) matches.push({ key: rosterK, uid });
   }
-  return undefined;
+  if (matches.length === 0) return undefined;
+  const fromLp = lpContactKeys
+    ? matches.find((match) => lpContactKeys.has(match.key))
+    : undefined;
+  return (fromLp ?? matches[0]).uid;
 }
 
 export function resolveInvestorRowAddedByUserId(
@@ -1848,11 +2020,13 @@ export function resolveInvestorRowAddedByUserId(
   rosterAddedByByContactKey: Map<string, string>,
   rosterAddedByLpRowId: Map<string, string>,
   rawToCanonical: Map<string, string>,
+  lpContactKeys?: ReadonlySet<string>,
 ): string | undefined {
   const fromContact = resolveRosterAddedByUserId(
     row.contactId,
     rosterAddedByByContactKey,
     rawToCanonical,
+    lpContactKeys,
   );
   if (fromContact) return fromContact;
   const rowId = String(row.id ?? "").trim().toLowerCase();
@@ -2035,11 +2209,21 @@ export async function redactCoSponsorAddedInvestorEmailsForLeadAdminViewer<
   const coSponsorIdSet = new Set(
     coSponsorIds.map((id) => String(id).trim().toLowerCase()).filter(Boolean),
   );
+  const leadOrAdminAdders = new Set<string>();
+  await Promise.all(
+    [...coSponsorIdSet].map(async (id) => {
+      if (await isPortalUserLeadOrAdminSponsorOnDeal(dealId, id)) {
+        leadOrAdminAdders.add(id);
+      }
+    }),
+  );
+  for (const id of leadOrAdminAdders) coSponsorIdSet.delete(id);
   return withPhone.map((row) => {
     const addedBy = String(row.addedByUserId ?? "").trim().toLowerCase();
     const addedByCoSponsor =
-      row.addedByIsCoSponsorOnDeal === true ||
-      (addedBy.length > 0 && coSponsorIdSet.has(addedBy));
+      (row.addedByIsCoSponsorOnDeal === true ||
+        (addedBy.length > 0 && coSponsorIdSet.has(addedBy))) &&
+      !leadOrAdminAdders.has(addedBy);
     return redactCoSponsorInvestorEmailAndPhone(
       { ...row, addedByIsCoSponsorOnDeal: addedByCoSponsor },
       viewerIdSet,
@@ -2069,7 +2253,8 @@ export async function filterInvestorRowsVisibleToCoSponsor(
       .filter(Boolean),
   );
   if (sponsorSet.size === 0) return [];
-  const { byContactKey, byLpRowId } = await loadRosterAddedByMaps(dealId);
+  const { byContactKey, byLpRowId, lpContactKeys } =
+    await loadRosterAddedByMaps(dealId);
   const contactIds = rows
     .map((r) => String(r.contactId ?? "").trim())
     .filter(Boolean);
@@ -2083,6 +2268,7 @@ export async function filterInvestorRowsVisibleToCoSponsor(
       byContactKey,
       byLpRowId,
       rawToCanonical,
+      lpContactKeys,
     );
     return sponsorUserId
       ? sponsorSet.has(String(sponsorUserId).toLowerCase())
@@ -2451,12 +2637,84 @@ export function companyAdminNamesAlignedToCompanies(
 }
 
 /**
- * Adds Sponsor name fields from the Investor → Sponsor/Co-sponsor relationship
- * (`deal_lp_investor.added_by` wins, then `deal_member.added_by`).
- * Uses LP roster row id when contact ids differ so LP-only rows still resolve.
- *
- * Equivalent portal accounts of co-sponsor sponsors are marked
- * `addedByIsCoSponsorOnDeal` for lead/admin email redaction.
+ * Portal user id for each Lead Sponsor, Admin sponsor, and Co-sponsor on this
+ * deal, keyed by roster contact id and by that user id.
+ */
+async function loadSponsorSelfUserIdByContactKey(
+  dealId: string,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const d = String(dealId ?? "").trim();
+  if (!d) return map;
+  const res = await pool.query<{ member_key: string; user_id: string }>(
+    `WITH sponsors AS (
+       SELECT DISTINCT trim(both from dm.contact_member_id) AS member_key
+       FROM deal_member dm
+       WHERE dm.deal_id = $1::uuid
+         AND dm.is_draft = false
+         AND replace(replace(lower(trim(dm.deal_member_role)), '_', ' '), '-', ' ')
+             IN ('lead sponsor', 'admin sponsor', 'co sponsor')
+         AND trim(coalesce(dm.contact_member_id, '')) <> ''
+       UNION
+       SELECT DISTINCT trim(both from di.contact_id) AS member_key
+       FROM deal_investment di
+       WHERE di.deal_id = $1::uuid
+         AND di.is_draft = false
+         AND replace(replace(lower(trim(di.investor_role)), '_', ' '), '-', ' ')
+             IN ('lead sponsor', 'admin sponsor', 'co sponsor')
+         AND trim(di.contact_id) <> $2
+         AND trim(coalesce(di.contact_id, '')) <> ''
+     ),
+     by_user_id AS (
+       SELECT sponsors.member_key, u.id::text AS user_id
+       FROM sponsors
+       INNER JOIN users u ON u.id::text = sponsors.member_key
+     ),
+     by_contact_email AS (
+       SELECT sponsors.member_key, u.id::text AS user_id
+       FROM sponsors
+       INNER JOIN contact c ON c.id::text = sponsors.member_key
+       INNER JOIN users u
+         ON lower(trim(u.email)) = lower(trim(c.email))
+       WHERE trim(coalesce(c.email, '')) <> ''
+         AND position('@' in trim(c.email)) > 1
+     )
+     SELECT member_key, user_id FROM by_user_id
+     UNION
+     SELECT member_key, user_id FROM by_contact_email`,
+    [d, DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER],
+  );
+  for (const row of res.rows) {
+    const userId = String(row.user_id ?? "").trim();
+    const memberKey = rosterContactKey(row.member_key);
+    if (!userId) continue;
+    map.set(userId.toLowerCase(), userId);
+    if (memberKey) map.set(memberKey, userId);
+  }
+  return map;
+}
+
+/** A lead, admin, or co-sponsor's own investor row is sponsored by that person. */
+function sponsorSelfUserIdForInvestorRow(
+  row: { contactId?: string },
+  sponsorSelfByContactKey: Map<string, string>,
+  rawToCanonical: Map<string, string>,
+): string | undefined {
+  const key = rosterContactKey(row.contactId);
+  if (!key) return undefined;
+  const direct = sponsorSelfByContactKey.get(key);
+  if (direct) return direct;
+  const target = rawToCanonical.get(key) ?? `id:${key}`;
+  for (const [rosterKey, userId] of sponsorSelfByContactKey) {
+    const rosterCanon = rawToCanonical.get(rosterKey) ?? `id:${rosterKey}`;
+    if (rosterCanon === target) return userId;
+  }
+  return undefined;
+}
+
+/**
+ * A stored sponsor is left as the lead chose it. Opening the investor list
+ * does not rewrite `added_by`.
  */
 export async function enrichInvestorApiRowsWithAddedBy<
   T extends { id?: string; contactId?: string; addedByDisplayName?: string },
@@ -2487,11 +2745,19 @@ export async function enrichInvestorApiRowsWithAddedBy<
         addedByCoSponsorEmailIntercept?: string;
       }
     >;
-  const { byContactKey: rosterAddedByByContactKey, byLpRowId } =
-    await loadRosterAddedByMaps(dealId);
+  const [
+    { byContactKey: rosterAddedByByContactKey, byLpRowId, lpContactKeys },
+    sponsorSelfByContactKey,
+  ] = await Promise.all([
+    loadRosterAddedByMaps(dealId),
+    loadSponsorSelfUserIdByContactKey(dealId),
+  ]);
   const idSet = new Set<string>();
   for (const rk of rosterAddedByByContactKey.keys()) {
     if (rk) idSet.add(rk);
+  }
+  for (const sponsorKey of sponsorSelfByContactKey.keys()) {
+    if (sponsorKey) idSet.add(sponsorKey);
   }
   for (const row of rows) {
     const c = String(row.contactId ?? "").trim();
@@ -2500,15 +2766,23 @@ export async function enrichInvestorApiRowsWithAddedBy<
   const rawToCanonical = await mapContactIdsToCanonicalCommitmentKeys([
     ...idSet,
   ]);
-  const uidsNeeded = new Set<string>();
-  const uniqueAdderIds = new Map<string, string>();
-  for (const row of rows) {
-    const uid = resolveInvestorRowAddedByUserId(
+  const addedByForRow = (row: { id?: string; contactId?: string }) =>
+    resolveInvestorRowAddedByUserId(
       row,
       rosterAddedByByContactKey,
       byLpRowId,
       rawToCanonical,
+      lpContactKeys,
+    ) ??
+    sponsorSelfUserIdForInvestorRow(
+      row,
+      sponsorSelfByContactKey,
+      rawToCanonical,
     );
+  const uidsNeeded = new Set<string>();
+  const uniqueAdderIds = new Map<string, string>();
+  for (const row of rows) {
+    const uid = addedByForRow(row);
     if (uid) {
       const low = String(uid).toLowerCase();
       uidsNeeded.add(low);
@@ -2533,11 +2807,18 @@ export async function enrichInvestorApiRowsWithAddedBy<
   await Promise.all(
     [...uniqueAdderIds.values()].map(async (id) => {
       const low = String(id).toLowerCase();
-      const [isS, isCo] = await Promise.all([
+      const [isS, isCo, isLeadOrAdmin] = await Promise.all([
         isPortalUserSponsorOnDeal(dealId, id),
         isPortalUserCoSponsorOnDeal(dealId, id),
+        isPortalUserLeadOrAdminSponsorOnDeal(dealId, id),
       ]);
       sponsorByAdderLower.set(low, isS);
+      // A lead or admin sponsor stays a lead or admin even if a co-sponsor row
+      // also exists. Their investors' emails stay visible to the other sponsors.
+      if (isLeadOrAdmin) {
+        coSponsorByAdderLower.set(low, false);
+        return;
+      }
       // Adder may be a scrubbed duplicate of the roster co-sponsor — treat as co-sponsor
       // when any equivalent account is co-sponsor on this deal.
       let isCoEffective = isCo;
@@ -2563,15 +2844,7 @@ export async function enrichInvestorApiRowsWithAddedBy<
     }),
   );
 
-  const needsLeadFallback = rows.some((row) => {
-    const uid = resolveInvestorRowAddedByUserId(
-      row,
-      rosterAddedByByContactKey,
-      byLpRowId,
-      rawToCanonical,
-    );
-    return !uid;
-  });
+  const needsLeadFallback = rows.some((row) => !addedByForRow(row));
   const leadFallback = needsLeadFallback
     ? await resolveDealLeadSponsorFallback(dealId)
     : {};
@@ -2587,12 +2860,7 @@ export async function enrichInvestorApiRowsWithAddedBy<
   }
 
   return rows.map((row) => {
-    const uid = resolveInvestorRowAddedByUserId(
-      row,
-      rosterAddedByByContactKey,
-      byLpRowId,
-      rawToCanonical,
-    );
+    const uid = addedByForRow(row);
     const nk = uid ? String(uid).toLowerCase() : "";
     const rawName = nk && names.has(nk) ? names.get(nk)! : undefined;
     let display =
@@ -2691,6 +2959,8 @@ export async function listDealInvestmentsByDealId(
     includeDrafts?: boolean;
     includeInvestorArchived?: boolean;
     includeRemoved?: boolean;
+    /** Keep sponsor-removed investments visible. Unlinked investors stay hidden. */
+    includeStatusRemoved?: boolean;
   },
 ): Promise<DealInvestmentRow[]> {
   const draftExpr =
@@ -2704,10 +2974,12 @@ export async function listDealInvestmentsByDealId(
   const removedExpr =
     options?.includeRemoved === true
       ? undefined
-      : and(
-          isNull(dealInvestment.removedAt),
-          isNull(dealInvestment.investorUnlinkedAt),
-        );
+      : options?.includeStatusRemoved === true
+        ? isNull(dealInvestment.investorUnlinkedAt)
+        : and(
+            isNull(dealInvestment.removedAt),
+            isNull(dealInvestment.investorUnlinkedAt),
+          );
   const whereExpr =
     options?.lpInvestorsOnly === true
       ? and(
@@ -2873,6 +3145,16 @@ export async function insertDealInvestment(params: {
     fundApprovedAt: params.input.fundApproved
       ? params.input.fundApprovedAt ?? null
       : null,
+    fundApprovedAtHistory: params.input.fundApprovedAtHistory
+      ? params.input.fundApprovedAtHistory
+      : params.input.fundApproved && params.input.fundApprovedAt
+        ? recordFundApprovedAtHistory({
+            history: [],
+            previousDate: null,
+            nextDate: params.input.fundApprovedAt,
+            source: "approved",
+          })
+        : [],
     fundApprovedCommitmentSnapshot: params.input.fundApproved
       ? fundApprovedSnapshotStoredFromInput(params.input)
       : "",
@@ -2958,6 +3240,9 @@ export async function updateDealInvestment(params: {
       fundApprovedAt: params.input.fundApproved
         ? params.input.fundApprovedAt ?? null
         : null,
+      ...(params.input.fundApprovedAtHistory === undefined
+        ? {}
+        : { fundApprovedAtHistory: params.input.fundApprovedAtHistory }),
       ...(params.input.fundApproved
         ? {
             fundApprovedCommitmentSnapshot:

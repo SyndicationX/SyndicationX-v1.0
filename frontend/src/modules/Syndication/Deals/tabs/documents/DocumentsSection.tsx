@@ -2833,13 +2833,14 @@ export function DocumentsSection({
                                   label="Visibility"
                                   hint={
                                     <p className="deals_table_header_tooltip_p">
-                                      <strong>Hidden by default</strong>: sponsor
-                                      workspace only — not on the offering link, preview,
-                                      or LP portal. Check <strong>Offering
+                                      <strong>Hidden by default</strong>: off the public
+                                      offering link and preview. People chosen in Shared
+                                      With still see the file in Investing. Check <strong>Offering
                                       link</strong>, <strong>LP portal</strong>, or both.
-                                      Offering link shows the file on Preview offering and the
-                                      no-login shared investor link. LP portal shows it to
-                                      signed-in investors. Both together do both. Selecting
+                                      Offering link shows the file on Preview offering, the
+                                      no-login shared investor link, and a signed-in
+                                      investor’s deal preview. LP portal shows it on that
+                                      signed-in deal preview only. Both together do both. Selecting
                                       an investor in Shared With turns LP portal off.
                                       Selecting a sponsor leaves LP portal checked or
                                       unchecked, whichever it already is.

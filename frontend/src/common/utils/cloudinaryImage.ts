@@ -1,17 +1,21 @@
 import { Cloudinary } from "@cloudinary/url-gen"
 
-/** Public cloud name; override with VITE_CLOUDINARY_CLOUD_NAME in your env. */
-const DEFAULT_CLOUDINARY_NAME = "dzlkuqizv"
+function cloudinaryCloudName(): string {
+  const cloudName = String(import.meta.env.VITE_CLOUDINARY_CLOUD_NAME ?? "").trim()
+  if (!cloudName) {
+    throw new Error(
+      "VITE_CLOUDINARY_CLOUD_NAME is not set. Add it to frontend/.env.local.",
+    )
+  }
+  return cloudName
+}
 
 let cldSingleton: Cloudinary | null = null
 
 export function getCloudinaryInstance(): Cloudinary {
   if (!cldSingleton) {
-    const cloudName = (
-      import.meta.env.VITE_CLOUDINARY_CLOUD_NAME ?? DEFAULT_CLOUDINARY_NAME
-    ).toString()
     cldSingleton = new Cloudinary({
-      cloud: { cloudName: cloudName.trim() || DEFAULT_CLOUDINARY_NAME },
+      cloud: { cloudName: cloudinaryCloudName() },
     })
   }
   return cldSingleton

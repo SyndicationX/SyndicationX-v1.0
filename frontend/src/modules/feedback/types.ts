@@ -99,6 +99,8 @@ export type FeedbackItem = {
   username: string
   userEmail: string
   userRole: string | null
+  /** Company the submitter belongs to. Empty when they have none. */
+  companyName: string | null
   pageKey: string
   pageLabel: string
   subPageKey: string

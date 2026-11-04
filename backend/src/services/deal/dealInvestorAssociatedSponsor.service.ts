@@ -40,6 +40,7 @@ export async function resolveDealInvestorAssociatedSponsor(params: {
     rosterMaps.byContactKey,
     rosterMaps.byLpRowId,
     canonicalKeys,
+    rosterMaps.lpContactKeys,
   );
 
   let userId = associatedUserId?.trim() ?? "";

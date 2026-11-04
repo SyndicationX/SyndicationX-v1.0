@@ -2,6 +2,53 @@
   min-width: 0;
 }
 
+/*
+ * Rows follow the page size, so the page is the vertical scroller.
+ * One horizontal bar lives on the table region. The wrap must not scroll too,
+ * or a second bar appears beside it.
+ */
+.feedback_page .feedback_table_host {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.feedback_page .feedback_table_host > .um_table_wrap:not(.data_table_shell):has(.um_table.deal_inv_table) {
+  overflow: visible;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.feedback_page .feedback_table_host .data_table_scroll_region {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.feedback_page .um_table_wrap:not(.data_table_shell) .um_table.deal_inv_table {
+  table-layout: auto;
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  --data-table-sticky-col-0-width: 3.75rem;
+}
+
+.feedback_page .um_table.deal_inv_table th,
+.feedback_page .um_table.deal_inv_table td {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.feedback_page .um_table.deal_inv_table td.feedback_desc_cell {
+  white-space: normal;
+  width: 18rem;
+  min-width: 14rem;
+  max-width: 22rem;
+}
+
 .feedback_header_actions {
   display: flex;
   flex-wrap: wrap;
@@ -253,6 +300,7 @@
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  width: 18rem;
   max-width: 22rem;
   white-space: pre-wrap;
   line-height: 1.4;

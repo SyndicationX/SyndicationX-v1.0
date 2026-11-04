@@ -9,9 +9,11 @@ import {
   fetchDealInvestors,
   fetchDealMembers,
 } from "@/modules/Syndication/Deals/api/dealsApi"
-import type {
-  DealInvestorRow,
-  DealInvestorsPayload,
+import {
+  emptyDealMembersPayload,
+  type DealInvestorRow,
+  type DealInvestorsPayload,
+  type DealMembersPayload,
 } from "@/modules/Syndication/Deals/types/deal-investors.types"
 import type { DealListRow } from "@/modules/Syndication/Deals/types/deals.types"
 import { isDealListRowIncomplete } from "@/modules/Syndication/Deals/api/dealsApi"
@@ -66,6 +68,12 @@ export function committedAmountMatchingInvestorsTable(
   for (const inv of payload.investors) {
     if (!investorRowMatchesViewerEmail(inv, viewerEmailNorm)) continue
     if (inv.investorArchived) continue
+    if (
+      inv.sponsorRemoved ||
+      String(inv.status ?? "").trim().toLowerCase() === "removed"
+    ) {
+      continue
+    }
     sum += investorRowCommittedAmountNumeric(inv)
   }
   return sum
@@ -137,6 +145,19 @@ export function dealIsInViewerInvestingScope(
  * Investments list tabs: onboarded LP (committed and/or eSign started) or invited
  * LP who has not started Invest Now. Excludes sponsor-only deal visibility.
  */
+function viewerHasSponsorRemovedInvestment(
+  payload: DealInvestorsPayload,
+  viewerEmailNorm: string,
+): boolean {
+  if (!viewerEmailNorm) return false
+  return payload.investors.some(
+    (inv) =>
+      investorRowMatchesViewerEmail(inv, viewerEmailNorm) &&
+      (inv.sponsorRemoved === true ||
+        String(inv.status ?? "").trim().toLowerCase() === "removed"),
+  )
+}
+
 export function dealIsInViewerInvestmentsListScope(
   payload: DealInvestorsPayload,
   viewerEmailNorm: string,
@@ -144,7 +165,8 @@ export function dealIsInViewerInvestmentsListScope(
   if (!viewerEmailNorm) return false
   return (
     viewerDealHasStartedInvestment(payload, viewerEmailNorm) ||
-    viewerDealNeedsOnboarding(payload, viewerEmailNorm)
+    viewerDealNeedsOnboarding(payload, viewerEmailNorm) ||
+    viewerHasSponsorRemovedInvestment(payload, viewerEmailNorm)
   )
 }
 
@@ -305,11 +327,16 @@ export function dealRowSupportsRosterApiPrefetch(row: DealListRow): boolean {
 async function loadDealRosterForInvestingScope(row: DealListRow): Promise<{
   payload: DealInvestorsPayload
   members: DealInvestorRow[]
+  membersPayload: DealMembersPayload
   leadSponsorDisplayName?: string
   leadSponsorCompanyName?: string
 }> {
   if (!dealRowSupportsRosterApiPrefetch(row)) {
-    return { payload: emptyDealInvestorsPayload(), members: [] }
+    return {
+      payload: emptyDealInvestorsPayload(),
+      members: [],
+      membersPayload: emptyDealMembersPayload(),
+    }
   }
   const [payload, membersResult] = await Promise.all([
     fetchDealInvestors(row.id, { lpInvestorsOnly: false }),
@@ -318,6 +345,7 @@ async function loadDealRosterForInvestingScope(row: DealListRow): Promise<{
   return {
     payload,
     members: membersResult.members,
+    membersPayload: membersResult,
     leadSponsorDisplayName: membersResult.leadSponsorDisplayName,
     leadSponsorCompanyName: membersResult.leadSponsorCompanyName,
   }
@@ -422,6 +450,7 @@ export type InvestingDealsPageScopeEntry = {
   row: DealListRow
   payload: DealInvestorsPayload
   members: DealInvestorRow[]
+  membersPayload: DealMembersPayload
   leadSponsorDisplayName?: string
   leadSponsorCompanyName?: string
 }
@@ -435,9 +464,21 @@ export async function mapInvestingDealsPageScope(
   const investorVisible = filterDealListRowsVisibleToInvestors(rows)
   const withPayload = await Promise.all(
     investorVisible.map(async (row) => {
-      const { payload, members, leadSponsorDisplayName, leadSponsorCompanyName } =
-        await loadDealRosterForInvestingScope(row)
-      return { row, payload, members, leadSponsorDisplayName, leadSponsorCompanyName }
+      const {
+        payload,
+        members,
+        membersPayload,
+        leadSponsorDisplayName,
+        leadSponsorCompanyName,
+      } = await loadDealRosterForInvestingScope(row)
+      return {
+        row,
+        payload,
+        members,
+        membersPayload,
+        leadSponsorDisplayName,
+        leadSponsorCompanyName,
+      }
     }),
   )
   return withPayload.filter(({ row, payload, members }) =>
@@ -458,9 +499,21 @@ export async function mapInvestingInvestmentsPageScope(
   const investorVisible = filterDealListRowsVisibleToInvestors(rows)
   const withPayload = await Promise.all(
     investorVisible.map(async (row) => {
-      const { payload, members, leadSponsorDisplayName, leadSponsorCompanyName } =
-        await loadDealRosterForInvestingScope(row)
-      return { row, payload, members, leadSponsorDisplayName, leadSponsorCompanyName }
+      const {
+        payload,
+        members,
+        membersPayload,
+        leadSponsorDisplayName,
+        leadSponsorCompanyName,
+      } = await loadDealRosterForInvestingScope(row)
+      return {
+        row,
+        payload,
+        members,
+        membersPayload,
+        leadSponsorDisplayName,
+        leadSponsorCompanyName,
+      }
     }),
   )
   return withPayload.filter(({ payload }) =>

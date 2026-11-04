@@ -32,8 +32,16 @@ export const dealInvestment = pgTable("deal_investment", {
   fundApproved: boolean("fund_approved").notNull().default(false),
   /** Portal user/contact id who last approved funding for this investment row. */
   fundApprovedBy: text("fund_approved_by"),
-  /** Timestamp when funding was last approved for this investment row. */
+  /** Timestamp when funding was last approved or the funded date was last edited. */
   fundApprovedAt: timestamp("fund_approved_at", { withTimezone: true }),
+  /**
+   * Prior and current funded dates, oldest first.
+   * The table shows `fund_approved_at` (the latest entry).
+   */
+  fundApprovedAtHistory: jsonb("fund_approved_at_history")
+    .$type<FundApprovedAtHistoryEntry[]>()
+    .notNull()
+    .default([]),
   /** Committed total (numeric string) when fund was last approved; used for split UI after LP adds more. */
   fundApprovedCommitmentSnapshot: text("fund_approved_commitment_snapshot")
     .notNull()
@@ -114,6 +122,13 @@ export const dealInvestment = pgTable("deal_investment", {
     .defaultNow()
     .notNull(),
 });
+
+/** One stored funded date. `date` is the value shown when it was current. */
+export type FundApprovedAtHistoryEntry = {
+  date: string;
+  recordedAt: string;
+  source: "approved" | "edited";
+};
 
 export type DealInvestmentRow = typeof dealInvestment.$inferSelect;
 export type DealInvestmentInsert = typeof dealInvestment.$inferInsert;

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import emailConfig, {
   outgoingMailCcBcc,
   smtpEnvelopeForSendMail,
@@ -12,6 +12,7 @@ import {
 import { db } from "../../database/db.js";
 import { users } from "../../schema/auth.schema/signin.js";
 import { dealInvestment } from "../../schema/deal.schema/deal-investment.schema.js";
+import { dealMemberRemovalLogs } from "../../schema/deal.schema/deal-member-removal-log.schema.js";
 import { investorDealParticipation } from "../../schema/deal.schema/investor-deal-participation.schema.js";
 import { investmentSignatures } from "../../schema/deal.schema/investment-signatures.schema.js";
 import { investorCheckoutPayments, investorDistributionPayouts } from "../../schema/stripeInvestorPayments.schema.js";
@@ -174,6 +175,73 @@ async function ownedRows(
   return owned;
 }
 
+function commitmentFromRemovalSnapshot(
+  snapshot: unknown,
+  investmentId: string,
+): { commitmentAmount: string; extraContributionAmounts: string[] } | null {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const investments = (snapshot as { investments?: unknown }).investments;
+  if (!Array.isArray(investments)) return null;
+  const id = investmentId.trim().toLowerCase();
+  for (const item of investments) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    if (String(row.id ?? "").trim().toLowerCase() !== id) continue;
+    const commitmentAmount = String(
+      row.commitmentAmount ?? row.commitment_amount ?? "",
+    ).trim();
+    const extrasRaw = row.extraContributionAmounts ?? row.extra_contribution_amounts;
+    const extraContributionAmounts = Array.isArray(extrasRaw)
+      ? extrasRaw.map((value) => String(value ?? ""))
+      : [];
+    if (!commitmentAmount && extraContributionAmounts.length === 0) return null;
+    return { commitmentAmount, extraContributionAmounts };
+  }
+  return null;
+}
+
+/** Rows already removed had their amounts cleared. Put the logged amounts back for Archives. */
+async function restoreArchivedCommitmentAmounts(
+  rows: DealInvestmentRow[],
+): Promise<DealInvestmentRow[]> {
+  const missing = rows.filter((row) => {
+    const amount = String(row.commitmentAmount ?? "").trim();
+    const extras = row.extraContributionAmounts ?? [];
+    return !amount && extras.length === 0;
+  });
+  if (missing.length === 0) return rows;
+  const wanted = new Set(missing.map((row) => row.id.toLowerCase()));
+  const dealIds = [...new Set(missing.map((row) => row.dealId))];
+  const logs = await db
+    .select({
+      removedSnapshot: dealMemberRemovalLogs.removedSnapshot,
+    })
+    .from(dealMemberRemovalLogs)
+    .where(
+      and(
+        inArray(dealMemberRemovalLogs.dealId, dealIds),
+        eq(dealMemberRemovalLogs.action, "remove_investment"),
+      ),
+    )
+    .orderBy(desc(dealMemberRemovalLogs.createdAt));
+  const restored = new Map<
+    string,
+    { commitmentAmount: string; extraContributionAmounts: string[] }
+  >();
+  for (const log of logs) {
+    for (const id of wanted) {
+      if (restored.has(id)) continue;
+      const found = commitmentFromRemovalSnapshot(log.removedSnapshot, id);
+      if (found) restored.set(id, found);
+    }
+  }
+  return rows.map((row) => {
+    const found = restored.get(row.id.toLowerCase());
+    if (!found) return row;
+    return { ...row, ...found };
+  });
+}
+
 /**
  * Investments a sponsor or platform admin removed. Only the owning investor
  * receives these, so they can see the commitment in Archives. They cannot restore it.
@@ -216,7 +284,7 @@ export async function listSponsorRemovedInvestmentsForViewer(
     const email = await resolveEmailForContactMemberId(row.contactId);
     if (email && email === viewerEmail) owned.push(row);
   }
-  return owned;
+  return restoreArchivedCommitmentAmounts(owned);
 }
 
 /** Sponsor lists omit an archived commitment. The investor who archived it can still see it. */

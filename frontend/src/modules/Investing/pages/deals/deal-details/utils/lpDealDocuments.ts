@@ -22,7 +22,7 @@ export interface LpDealDocumentRow {
 
 /**
  * Resolves document rows for LP portal: nested sections + legacy flat list.
- * Logged-in LPs see both Offering page and LP-only scoped sections.
+ * Logged-in investors see Offering link files and LP-portal-only files.
  */
 export function listDocumentsForLpDealPage(dealId: string): LpDealDocumentRow[] {
   const id = dealId.trim()

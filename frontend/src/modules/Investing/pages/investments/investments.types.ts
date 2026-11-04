@@ -66,7 +66,7 @@ export type InvestmentListRow = {
   secType?: string
   propertyName?: string
   owningEntityName?: string
-  /** Lead sponsor person name for this deal — same as Invest now “Sponsor”. */
+  /** Company of this investor's sponsor — same as Invest now “Sponsor”. */
   dealSponsorName?: string
   startDateDisplay?: string
   viewerRolesLabel?: string

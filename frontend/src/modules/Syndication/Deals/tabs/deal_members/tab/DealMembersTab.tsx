@@ -84,6 +84,7 @@ import {
 } from "../../../utils/offeringMoneyFormat"
 import { TableCompactAmountCell } from "../../../../../../common/components/card-compact-amount/CardCompactAmount"
 import { DealInvestorCommittedAmountCell } from "../../investors/DealInvestorCommittedAmountCell"
+import { DealTableHyphen, isTableHyphen } from "../../investors/DealTableHyphen"
 import { InviteMailStatusBadge } from "../../investors/InviteMailStatusBadge"
 import { DealInvestorRoleCell } from "../../investors/DealInvestorRoleBadge"
 import { InvestorClassPillsDisplay } from "../../investors/InvestorClassPillsDisplay"
@@ -264,7 +265,8 @@ const ROSTER_COPY: Record<
 
 function GpVerifiedAccBadge({ label }: { label: string }) {
   const t = String(label ?? "").trim() || "—"
-  const hint = t !== "—" ? t : undefined
+  if (isTableHyphen(t)) return <DealTableHyphen />
+  const hint = t
   return (
     <span
       className="deal_inv_verified_badge deal_inv_verified_badge_ellipsis"
@@ -293,30 +295,7 @@ function GpVerifiedAccBadge({ label }: { label: string }) {
 // }
 
 function GpEmptyDash() {
-  return (
-    <span className="deal_gp_empty_dash" aria-hidden>
-      <span>-</span>
-    </span>
-  )
-}
-
-function GpEllipsisText({
-  text,
-  alignEnd = false,
-}: {
-  text: string
-  alignEnd?: boolean
-}) {
-  const display = String(text ?? "").trim() || "—"
-  if (display === "—") return <GpEmptyDash />
-  return (
-    <span
-      className={`deal_inv_ellipsis_text${alignEnd ? " deal_inv_ellipsis_text_end" : ""}`}
-      title={display}
-    >
-      {display}
-    </span>
-  )
+  return <DealTableHyphen />
 }
 
 interface DealMembersTabProps {
@@ -357,6 +336,8 @@ interface DealMembersTabProps {
   invitationMailBlocked?: boolean
   /** Another organization's deal: roster is readable, management is hidden. */
   viewOnly?: boolean
+  /** Investor-company viewers see only the lead sponsor under General Partners. */
+  leadSponsorOnly?: boolean
 }
 
 export function DealMembersTab({
@@ -377,6 +358,7 @@ export function DealMembersTab({
   invitationMailSendingByRowId,
   invitationMailBlocked = false,
   viewOnly = false,
+  leadSponsorOnly = false,
 }: DealMembersTabProps) {
   const navigate = useNavigate()
   const [rows, setRows] = useState<DealInvestorRow[]>([])
@@ -395,6 +377,9 @@ export function DealMembersTab({
   const [addMemberDraftTick, setAddMemberDraftTick] = useState(0)
   const [query, setQuery] = useState("")
   const [rosterKind, setRosterKind] = useState<DealRosterKind>("deal_members")
+  const activeRosterKind: DealRosterKind = leadSponsorOnly
+    ? "deal_members"
+    : rosterKind
   const pageSize =
     rosterKind === "general_partners"
       ? generalPartnersPageSize
@@ -492,19 +477,23 @@ export function DealMembersTab({
   }, [dealId, investorClasses, addMemberDraftTick])
 
   const displayRows = useMemo(() => {
+    const sourceRows = leadSponsorOnly
+      ? rows.filter((row) => isLeadSponsorRole(row.investorRole))
+      : rows
     const filtered =
-      rosterKind === "general_partners"
+      activeRosterKind === "general_partners"
         ? dedupeRosterRowsByInvestmentId(
-            rows.filter((r) =>
-              includeInDealRosterTable(r, rosterKind, investorClasses),
+            sourceRows.filter((r) =>
+              includeInDealRosterTable(r, activeRosterKind, investorClasses),
             ),
           )
-        : dedupeRosterRowsByPerson(rows).filter((r) =>
-            includeInDealRosterTable(r, rosterKind, investorClasses),
+        : dedupeRosterRowsByPerson(sourceRows).filter((r) =>
+            includeInDealRosterTable(r, activeRosterKind, investorClasses),
           )
     const draft =
+      !leadSponsorOnly &&
       sessionDraftRow &&
-      includeInDealRosterTable(sessionDraftRow, rosterKind, investorClasses)
+      includeInDealRosterTable(sessionDraftRow, activeRosterKind, investorClasses)
         ? sessionDraftRow
         : null
     const hideSessionDraftRow =
@@ -525,6 +514,8 @@ export function DealMembersTab({
     dealId,
     addMemberDraftTick,
     rosterKind,
+    activeRosterKind,
+    leadSponsorOnly,
     investorClasses,
   ])
 
@@ -922,8 +913,7 @@ export function DealMembersTab({
             )
             const dealLine = gpClassNamesLine.trim()
             const pillSource = assignedRaw || dealLine
-            if (!pillSource.trim())
-              return <span className="deal_inv_class_pill_muted">—</span>
+            if (!pillSource.trim()) return <DealTableHyphen />
             const titleForTooltip =
               assignedRaw && dealLine && assignedRaw !== dealLine
                 ? `${assignedRaw} · Deal: ${dealLine}`
@@ -971,7 +961,11 @@ export function DealMembersTab({
           sortValue: (row) => dealInvestorStatusDisplayLabel(row).toLowerCase(),
           tdClassName: "deal_inv_td_ellipsis deal_gp_td_status",
           cell: (row) => (
-            <GpEllipsisText text={dealInvestorStatusDisplayLabel(row)} />
+            <span className="deal_inv_status_badge" title={dealInvestorStatusDisplayLabel(row)}>
+              <span className="deal_inv_status_badge_label">
+                {dealInvestorStatusDisplayLabel(row)}
+              </span>
+            </span>
           ),
         },
         // {
@@ -1031,10 +1025,10 @@ export function DealMembersTab({
             parseMoneyDigits(displayAddedInvestorsCommittedAmount(row)),
           tdClassName: "deal_inv_td_ellipsis deal_inv_td_committed um_td_numeric",
           cell: (row) => {
-            if (row.id === ADD_MEMBER_DRAFT_ROW_ID) return "—"
+            if (row.id === ADD_MEMBER_DRAFT_ROW_ID) return <DealTableHyphen />
             const text = displayAddedInvestorsCommittedAmount(row)
             const display = String(text ?? "").trim()
-            if (!display || display === "—") return "—"
+            if (!display || isTableHyphen(display)) return <DealTableHyphen />
             return (
               <span className="deal_inv_ellipsis_text deal_inv_ellipsis_text_end">
                 <TableCompactAmountCell amount={display} />
@@ -1109,9 +1103,10 @@ export function DealMembersTab({
       {
         id: "user",
         header: "User",
+        thClassName: "deal_gp_th_user",
         sortValue: (r) =>
           `${formatMemberUsername(r.userDisplayName)} ${String(r.userEmail ?? "")} ${String(r.displayName ?? "")}`.toLowerCase(),
-        tdClassName: "um_td_user deal_inv_td_user_cell",
+        tdClassName: "um_td_user deal_inv_td_user_cell deal_gp_td_user",
         cell: (r) => (
           <DealMemberUserCell
             row={r}
@@ -1140,7 +1135,6 @@ export function DealMembersTab({
       {
         id: "role",
         header: "Deal role",
-        colWidth: "11.5rem",
         thClassName: "deal_inv_th_role deal_gp_th_role",
         sortValue: (r) =>
           String(investorRoleLabel(r.investorRole ?? "")).toLowerCase(),
@@ -1171,11 +1165,11 @@ export function DealMembersTab({
             />
           </span>
         ),
-        thClassName: "deals_th_align_right",
+        thClassName: "deals_th_align_right deal_gp_th_amount",
         sortValue: (r) =>
           parseMoneyDigits(displayInvestorCommittedAmount(r)),
         tdClassName:
-          "deal_inv_td_ellipsis deal_inv_td_committed um_td_numeric",
+          "deal_inv_td_ellipsis deal_inv_td_committed um_td_numeric deal_gp_td_amount",
         cell: (r) => <DealInvestorCommittedAmountCell row={r} />,
       },
       {
@@ -1201,16 +1195,16 @@ export function DealMembersTab({
             />
           </span>
         ),
-        thClassName: "deals_th_align_right",
+        thClassName: "deals_th_align_right deal_gp_th_amount",
         sortValue: (r) =>
           parseMoneyDigits(displayAddedInvestorsCommittedAmount(r)),
         tdClassName:
-          "deal_inv_td_ellipsis deal_inv_td_committed um_td_numeric",
+          "deal_inv_td_ellipsis deal_inv_td_committed um_td_numeric deal_gp_td_amount",
         cell: (r) => {
-          if (r.id === ADD_MEMBER_DRAFT_ROW_ID) return "—"
+          if (r.id === ADD_MEMBER_DRAFT_ROW_ID) return <DealTableHyphen />
           const text = displayAddedInvestorsCommittedAmount(r)
           const display = String(text ?? "").trim()
-          if (!display || display === "—") return "—"
+          if (!display || isTableHyphen(display)) return <DealTableHyphen />
           return (
             <span className="deal_inv_ellipsis_text deal_inv_ellipsis_text_end">
               <TableCompactAmountCell amount={display} />
@@ -1221,25 +1215,29 @@ export function DealMembersTab({
       {
         id: "status",
         header: "Status",
-        colWidth: "6.5rem",
         thClassName: "deal_gp_th_status",
         sortValue: (r) =>
           dealInvestorStatusDisplayLabel(r).toLowerCase(),
         tdClassName: "deal_inv_td_ellipsis deal_gp_td_status",
         cell: (r) => (
-          <GpEllipsisText text={dealInvestorStatusDisplayLabel(r)} />
+          <span className="deal_inv_status_badge" title={dealInvestorStatusDisplayLabel(r)}>
+            <span className="deal_inv_status_badge_label">
+              {dealInvestorStatusDisplayLabel(r)}
+            </span>
+          </span>
         ),
       },
       {
         id: "mailStatus",
         header: "Email status",
+        thClassName: "deal_gp_th_mail",
         sortValue: (r) =>
           r.id === ADD_MEMBER_DRAFT_ROW_ID
             ? -1
             : r.invitationMailSent === true
               ? 1
               : 0,
-        tdClassName: "deal_inv_td_mail_status",
+        tdClassName: "deal_inv_td_mail_status deal_gp_td_mail",
         cell: (r) => (
           <InviteMailStatusBadge
             row={r}
@@ -1379,6 +1377,7 @@ export function DealMembersTab({
                 General Partners
               </span>
             </button>
+            {leadSponsorOnly ? null : (
             <button
               type="button"
               id="deal-roster-subtab-gps"
@@ -1399,6 +1398,7 @@ export function DealMembersTab({
                 Team Members
               </span>
             </button>
+            )}
           </div>
         </TabsScrollStrip>
       </div>

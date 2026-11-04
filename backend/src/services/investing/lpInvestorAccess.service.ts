@@ -8,10 +8,14 @@ import {
 } from "../../constants/deal-lifecycle/deal-status-rules.js";
 import { addDealForm } from "../../schema/deal.schema/add-deal-form.schema.js";
 import {
+  COMPANY_USER,
+  LEGACY_USER,
+  PLATFORM_USER,
   isCompanyAdminRole,
   isInvestorPortalRole,
   isPlatformAdminRole,
 } from "../../constants/roles.js";
+import { listUserCompanyMemberships } from "../auth/userCompanyMembership.service.js";
 import { db, pool } from "../../database/db.js";
 import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema.js";
 import { contact } from "../../schema/schema.js";
@@ -30,7 +34,11 @@ import {
   listContactOrganizationInvestingDealIds,
   listDealIdsSponsoredByCompanyColleague,
 } from "../contact/contactOfferingVisibility.service.js";
-import { listCrossOrgColleagueSponsoredDealIds } from "../deal/crossOrgColleagueDeal.service.js";
+import { listCrossOrgColleagueDealAccess } from "../deal/crossOrgColleagueDeal.service.js";
+import {
+  dealInvestmentRowMatchesLoginEmailSql,
+  lpInvestorRowMatchesLoginEmailSql,
+} from "./sameEmailInvestorMatch.js";
 
 /** Stored `deal_lp_investor.role` values treated as LP Investor for nav + deal scope. */
 export function isLpInvestorRoleInLpTable(role: string | null | undefined): boolean {
@@ -69,24 +77,7 @@ async function listDealIdsFromLpInvestorTableForEmail(
        (
          $1::text <> ''
          AND position('@' in $1) > 1
-         AND (
-           (
-             nullif(trim(dli.email), '') IS NOT NULL
-             AND lower(trim(dli.email)) = $1
-           )
-           OR EXISTS (
-             SELECT 1 FROM contact c
-             WHERE c.id::text = trim(both from dli.contact_member_id)
-               AND nullif(trim(c.email), '') IS NOT NULL
-               AND lower(trim(c.email)) = $1
-           )
-           OR EXISTS (
-             SELECT 1 FROM users u
-             WHERE u.id::text = trim(both from dli.contact_member_id)
-               AND nullif(trim(u.email), '') IS NOT NULL
-               AND lower(trim(u.email)) = $1
-           )
-         )
+         AND ${lpInvestorRowMatchesLoginEmailSql("dli")}
        )
        OR (
          cardinality($2::text[]) > 0
@@ -171,12 +162,7 @@ async function listDealIdsFromDealInvestmentForEmail(
        AND di.is_draft = false
        AND (
          trim(both from di.contact_id) = viewer_u.id::text
-         OR EXISTS (
-           SELECT 1 FROM contact c
-           WHERE c.id::text = trim(both from di.contact_id)
-             AND nullif(trim(c.email), '') IS NOT NULL
-             AND lower(trim(c.email)) = $1
-         )
+         OR ${dealInvestmentRowMatchesLoginEmailSql("di")}
        )`,
     [e],
   );
@@ -282,15 +268,7 @@ async function listSponsorUserIdsForInvestorEmail(
        AND lp.is_draft = false
        AND (
          lower(trim(lp.contact_member_id)) = lower(viewer_u.id::text)
-         OR (
-           nullif(trim(lp.email), '') IS NOT NULL
-           AND lower(trim(lp.email)) = $1
-         )
-         OR EXISTS (
-           SELECT 1 FROM contact c2
-           WHERE c2.id::text = trim(both from lp.contact_member_id)
-             AND lower(trim(c2.email)) = $1
-         )
+         OR ${lpInvestorRowMatchesLoginEmailSql("lp")}
        )
 
      UNION
@@ -614,8 +592,9 @@ export async function isDealInInvestingParticipantListForUser(
  * Investing dashboard + `/investing/deals`.
  * Offerings from companies where this email is a contact, deals they were
  * added to directly, every deal where a sponsor who invited them is a
- * sponsor, and every other-company deal where any user from this contact's
- * company is a sponsor.
+ * sponsor, and every other-company deal where a company user is a sponsor.
+ * Deals visible only because another investor in the viewer's company is on
+ * the roster stay on the syndicating list, not here.
  */
 export async function listInvestingParticipantDealIdsForUser(params: {
   userId: string;
@@ -649,7 +628,16 @@ export async function listInvestingParticipantDealIdsForUser(params: {
           filterDealIdsVisibleToInvestors([...ids]),
         )
       : Promise.resolve([] as string[]),
-    listCrossOrgColleagueSponsoredDealIds(userId),
+    listCrossOrgColleagueDealAccess(userId).then((access) => {
+      const investorOnly = new Set(
+        access.investorCompanyDealIds.map((id) =>
+          String(id ?? "").trim().toLowerCase(),
+        ),
+      );
+      return access.dealIds.filter(
+        (id) => !investorOnly.has(String(id ?? "").trim().toLowerCase()),
+      );
+    }),
   ]);
 
   return [
@@ -754,13 +742,27 @@ async function leadSponsorCompaniesForUser(userId: string): Promise<string[]> {
   ];
 }
 
+/** Portal roles that always open the syndicating workspace (and can switch to Investing). */
+function isSyndicationStaffPortalRole(role: string | null | undefined): boolean {
+  const r = String(role ?? "").trim();
+  return (
+    isPlatformAdminRole(r) ||
+    isCompanyAdminRole(r) ||
+    r === COMPANY_USER ||
+    r === PLATFORM_USER ||
+    r === LEGACY_USER
+  );
+}
+
 /**
  * Single writer for `is_lp_investor`, `lp_investor_nav`, and `lp_investor_deal_ids` on sign-in / account.
- * Platform/company admins and anyone on a deal as Lead / Admin / Co-sponsor keep the
- * syndication shell (`lp_investor_nav` false) even when also listed as an LP investor —
- * so dual investor + co-sponsor users can switch modes.
+ * Platform/company admins, company members, and anyone on a deal as Lead / Admin / Co-sponsor
+ * keep the syndication shell (`lp_investor_nav` false) even when also listed as an LP investor —
+ * so they can switch between Syndicating and Investing.
+ * An investor account that was added to a company (membership only; portal role still `investor`)
+ * is treated the same way.
  *
- * When a co-sponsor (or other syndication shell user) has LP rows / an investor profile,
+ * When a syndication-shell user has LP rows / an investor profile,
  * `lp_investor_deal_ids` is still populated so Investing mode can list their deals.
  */
 export async function mergeLpInvestorFlagsIntoUserPayload(
@@ -789,13 +791,15 @@ export async function mergeLpInvestorFlagsIntoUserPayload(
   }
 
   const sponsorOnRoster = await hasSponsorDealMemberRoleForEmail(emailNorm);
+  const memberships = userId ? await listUserCompanyMemberships(userId) : [];
+  const hasCompanyStaffMembership = memberships.length > 0;
   const syndicationShell =
-    isPlatformAdminRole(portalRole) ||
-    isCompanyAdminRole(portalRole) ||
+    isSyndicationStaffPortalRole(portalRole) ||
+    hasCompanyStaffMembership ||
     sponsorOnRoster;
 
-  /** Pure investor portal role with no sponsor roster seat — investing-only. */
-  if (isInvestorPortalRole(portalRole) && !sponsorOnRoster) {
+  /** Pure investor with no company seat and no sponsor roster seat — investing-only. */
+  if (isInvestorPortalRole(portalRole) && !sponsorOnRoster && !hasCompanyStaffMembership) {
     const lp = await resolveLpInvestorSessionFlags(emailNorm);
     const dealIds =
       userId && lp.lp_investor_deal_ids.length === 0

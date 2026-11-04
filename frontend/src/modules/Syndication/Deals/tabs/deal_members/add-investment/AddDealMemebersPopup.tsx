@@ -366,7 +366,9 @@ export function AddInvestmentModal({
   const ignoreScrollSpyUntilRef = useRef(0)
   const companyCheckSeqRef = useRef(0)
   const [submitting, setSubmitting] = useState(false)
-  const [noCompanyAddNotice, setNoCompanyAddNotice] = useState<string | null>(
+  const [noCompanyAddNotice, setNoCompanyAddNotice] = useState<{
+    name: string
+  } | null>(
     null,
   )
   const [selectedPersonOwnsCompany, setSelectedPersonOwnsCompany] =
@@ -564,9 +566,7 @@ export function AddInvestmentModal({
           setNoCompanyAddNotice(null)
           return
         }
-        setNoCompanyAddNotice(
-          `${who} has no company. You can still add them. They cannot open this deal until they create a company.`,
-        )
+        setNoCompanyAddNotice({ name: who })
       })
     },
     [isInvestorEntry, isGpEntry, dealId],
@@ -2597,7 +2597,11 @@ export function AddInvestmentModal({
             </button>
           </div>
           <p className="um_modal_desc deals_add_inv_no_company_message">
-            {noCompanyAddNotice}
+            <strong className="deals_add_inv_no_company_name">
+              {noCompanyAddNotice.name}
+            </strong>{" "}
+            has no company. You can still add them. They cannot open this deal
+            until they add a company.
           </p>
           <div className="um_modal_actions">
             <button
@@ -2605,6 +2609,7 @@ export function AddInvestmentModal({
               className="um_btn_primary"
               onClick={() => setNoCompanyAddNotice(null)}
             >
+              <Plus size={16} strokeWidth={2} aria-hidden />
               Add anyway
             </button>
           </div>

@@ -9,7 +9,7 @@ import {
   parseInvestorW9FormJson,
   type InvestorW9FormData,
 } from "./investorW9Form.service.js";
-import { isLpInvestorRole } from "./dealInvestment.service.js";
+import { isLpInvestorRole, isRetiredDealInvestment } from "./dealInvestment.service.js";
 import { resolveInvestNowViewerContactOnDeal } from "./dealInvestNowViewerContact.service.js";
 import {
   isDocSignedEsignCompleted,
@@ -110,21 +110,23 @@ export async function readMyInvestNowCommitment(
     return Boolean(viewerContactKey && cid === viewerContactKey);
   };
 
+  const isOpenOwnedLp = (r: (typeof rows)[number]): boolean =>
+    !isRetiredDealInvestment(r) &&
+    isLpInvestorRole(r.investor_role) &&
+    rowOwnedByViewer(r);
+
   let match: (typeof rows)[number] | undefined;
 
   if (investmentId) {
     match = rows.find(
       (r) =>
-        !r.removedAt &&
-        String(r.id).toLowerCase() === investmentId.toLowerCase() &&
-        isLpInvestorRole(r.investor_role) &&
-        rowOwnedByViewer(r),
+        isOpenOwnedLp(r) &&
+        String(r.id).toLowerCase() === investmentId.toLowerCase(),
     );
-  } else {
+  }
+  if (!match) {
     for (const r of rows) {
-      if (r.removedAt) continue;
-      if (!isLpInvestorRole(r.investor_role)) continue;
-      if (!rowOwnedByViewer(r)) continue;
+      if (!isOpenOwnedLp(r)) continue;
       if (uip) {
         const rowUip = String(r.userInvestorProfileId ?? "").trim().toLowerCase();
         if (rowUip !== uip.toLowerCase()) continue;

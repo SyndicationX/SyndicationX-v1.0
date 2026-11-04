@@ -2023,6 +2023,49 @@
   overflow-x: auto;
 }
 
+/*
+ * Customers → All Contacts is paginated, so the page is the vertical scroller.
+ * overflow-y: clip keeps a horizontal bar without trapping the wheel: hidden
+ * and auto both swallow vertical scrolling while the pointer is on the table.
+ */
+.company_page .contacts_page_embedded.um_page,
+.company_page .contacts_page_embedded .contacts_main_tab_panel_wrap,
+.company_page .contacts_page_embedded .contacts_main_tab_panel_wrap > .um_members_tab_content,
+#cp-company-panel-contacts .contacts_table_panel.um_panel,
+#cp-company-panel-contacts .contacts_table_panel .um_table_wrap,
+#cp-company-panel-contacts .contacts_table_panel .um_table_wrap.data_table_shell {
+  flex: none;
+  height: auto;
+  min-height: auto;
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
+}
+
+#cp-company-panel-contacts
+  .contacts_table_panel
+  .um_table_wrap.data_table_shell
+  .data_table_scroll_region,
+#cp-company-panel-contacts
+  .contacts_table_panel
+  .um_table_wrap.data_table_shell
+  .data_table_scroll_region:not(.data_table_scroll_region--empty),
+#cp-company-panel-contacts
+  .contacts_table_panel
+  .um_table_wrap.data_table_shell
+  .data_table_scroll_region.data_table_scroll_region--overflow-x:not(
+    .data_table_scroll_region--empty
+  ) {
+  flex: none;
+  height: auto;
+  min-height: auto;
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: clip;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
+}
+
 .contacts_page .contacts_table_panel .um_table,
 .email_templates_page .contacts_table_panel .um_table {
   border-collapse: separate;
@@ -3413,11 +3456,26 @@
 
 .contacts_th_show_offerings,
 .contacts_td_show_offerings {
-  width: 8.25rem;
-  min-width: 7.75rem;
-  max-width: 8.75rem;
+  width: 15rem;
+  min-width: 14.5rem;
+  max-width: 16.5rem;
   vertical-align: middle;
   box-sizing: border-box;
+}
+
+.contacts_th_added_from,
+.contacts_td_added_from {
+  width: 9.5rem;
+  min-width: 8.5rem;
+  max-width: 11rem;
+  vertical-align: middle;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.contacts_added_from {
+  font-weight: 600;
+  color: var(--portal-text, #0f172a);
 }
 
 .contacts_th_platform_visible,
@@ -3569,6 +3627,13 @@
   max-width: 8rem;
 }
 
+.contacts_td_show_offerings .contacts_show_offerings_dd,
+.contacts_td_show_offerings .contacts_show_offerings_dropdown.portal_dropdown_select,
+.contacts_td_show_offerings .contacts_show_offerings_dropdown {
+  width: 100%;
+  max-width: none;
+}
+
 .contacts_show_offerings_dropdown.portal_dropdown_select,
 .contacts_show_offerings_dropdown {
   width: 100%;
@@ -3615,6 +3680,16 @@
 .contacts_toolbar_filter_dropdown {
   width: 12rem;
   max-width: 14rem;
+}
+
+.contacts_toolbar_filter_dropdown.contacts_visibility_filter_dropdown {
+  width: 16.25rem;
+  max-width: 18rem;
+}
+
+.contacts_toolbar_filter_dropdown.contacts_added_from_filter_dropdown {
+  width: 13.5rem;
+  max-width: 16rem;
 }
 
 .contacts_toolbar_filter_dropdown_trigger.portal_dropdown_select_trigger,
@@ -3720,8 +3795,136 @@
 
 .contacts_th_organization,
 .contacts_td_organization {
-  min-width: 8.5rem;
-  max-width: 14rem;
+  min-width: 10rem;
+  max-width: 16rem;
+}
+
+.contacts_org_cell {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.contacts_org_cell_button {
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  flex-wrap: wrap;
+}
+
+.contacts_org_cell_button:focus-visible,
+.contacts_org_more:focus-visible {
+  outline: 2px solid var(--portal-focus, #2563eb);
+  outline-offset: 2px;
+}
+
+.contacts_org_more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 1.85rem;
+  height: 1.5rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.contacts_org_more:hover {
+  background: #e0e7ff;
+}
+
+.contacts_org_modal.deals_add_inv_modal_panel.um_modal.um_modal_view {
+  max-width: min(42rem, 100%);
+}
+
+.contacts_org_intro {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.65rem;
+  margin-bottom: 0.85em;
+}
+
+.contacts_org_intro_name {
+  font-weight: 600;
+  color: var(--portal-text, #0f172a);
+  overflow-wrap: anywhere;
+}
+
+.contacts_org_intro_meta {
+  font-variant-numeric: tabular-nums;
+}
+
+.contacts_org_panel_body {
+  padding-bottom: 0.15rem;
+}
+
+.contacts_org_table_wrap {
+  border: 1px solid var(--portal-table-border, #e2e8f0);
+  border-radius: var(--ui-button-border-radius, 4px);
+  overflow: auto;
+}
+
+.contacts_org_table.um_table {
+  min-width: 28rem;
+  font-size: 0.8125rem;
+}
+
+.contacts_org_table.um_table th,
+.contacts_org_table.um_table td {
+  padding: 0.55rem 0.7rem;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+
+.contacts_org_table.um_table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  white-space: nowrap;
+}
+
+.contacts_org_table.um_table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.contacts_org_table_company {
+  font-weight: 600;
+  width: 34%;
+}
+
+.contacts_org_table_muted {
+  color: var(--portal-text-muted, #64748b);
+}
+
+:root[data-theme="dark"] .contacts_org_more {
+  background: color-mix(in srgb, #818cf8 16%, transparent);
+  border-color: color-mix(in srgb, #818cf8 40%, transparent);
+  color: #e0e7ff;
+}
+
+:root[data-theme="dark"] .contacts_org_intro_name {
+  color: var(--portal-text, #f1f5f9);
+}
+
+:root[data-theme="dark"] .contacts_org_table_wrap {
+  border-color: var(--portal-border, rgba(255, 255, 255, 0.14));
 }
 
 .contacts_organization {

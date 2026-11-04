@@ -346,3 +346,83 @@
 :root[data-theme="dark"] .deal_saas_paywall_error {
   color: #fca5a5;
 }
+
+.deal_stage_modal--form {
+  max-height: min(90vh, 36rem);
+}
+
+@keyframes deal_stage_modal_spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.deal_stage_modal_spin {
+  animation: deal_stage_modal_spin 0.85s linear infinite;
+}
+
+.deal_stage_modal_form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.deal_stage_modal_status {
+  margin: 1rem 0 0;
+}
+
+.deal_stage_modal--form .deal_stage_modal_icon_wrap {
+  color: var(--um-focus-ring, #1d4ed8);
+  background: color-mix(in srgb, var(--um-focus-ring, #2563eb) 12%, transparent);
+  border-color: color-mix(in srgb, var(--um-focus-ring, #2563eb) 28%, transparent);
+}
+
+.deal_stage_modal--form .deal_stage_modal_btn--confirm {
+  background: var(--main-auth-button-color, #2563eb);
+  color: #fff;
+}
+
+.deal_stage_modal--form .deal_stage_modal_btn--confirm:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--main-auth-button-color, #2563eb) 88%, #000);
+}
+
+.deal_stage_modal_field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  margin-top: 0.85rem;
+}
+
+.deal_stage_modal_field > span {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--portal-text, #0f172a);
+}
+
+.deal_stage_modal_field select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--um-toolbar-control-height, 2.25rem);
+  padding: 0.5em 0.75em;
+  border: 1px solid var(--portal-border, #e2e8f0);
+  border-radius: var(--portal-pill-radius, 4px);
+  background: var(--portal-surface, #fff);
+  color: var(--portal-text, #0f172a);
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.deal_stage_modal_field select:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.deal_stage_modal_field select:focus-visible {
+  outline: none;
+  border-color: var(--portal-text-muted, #64748b);
+  box-shadow: var(--portal-field-focus-shadow, 0 0 0 2px rgb(17 24 39 / 8%));
+}

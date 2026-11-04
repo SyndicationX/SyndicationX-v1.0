@@ -26,7 +26,11 @@ import {
   viewerIsLeadOrAdminSponsorOnAnyDeal,
   viewerShouldSeeOnlySelfCreatedContacts,
 } from "../deal/dealMemberScope.service.js";
-import { syncOutsideSponsorsIntoOrganizationContacts } from "../deal/dealMember.service.js";
+import {
+  syncDealInvestorsIntoAllOrganizationContacts,
+  syncDealInvestorsIntoOrganizationContacts,
+  syncOutsideSponsorsIntoOrganizationContacts,
+} from "../deal/dealMember.service.js";
 import { listAddDealFormsForViewer } from "../deal/dealForm.service.js";
 import {
   visibleDealIdsCache,
@@ -565,7 +569,14 @@ export async function listPlatformVisibleContacts(
   if (orgId) {
     parts.push(await platformContactsForOrganizationWhere(orgId));
   }
-  parts.push(excludeCompanyStaffFromContactsWhere(orgId));
+  /**
+   * Platform admins see every self-signup, including a person who later
+   * became a company admin. Other users still hide company staff unless
+   * that person answered Yes.
+   */
+  if (!isPlatformAdminRole(role)) {
+    parts.push(excludeCompanyStaffUnlessOptedInWhere(orgId));
+  }
   return db
     .select()
     .from(contact)
@@ -809,14 +820,19 @@ export async function setSelfRegisteredContactVisibleToUsers(params: {
       phone: params.phone,
     }));
   if (!contactId) return;
-  const [updated] = await db
+  const email = normalizeContactEmailForScope(params.emailNorm);
+  const updated = await db
     .update(contact)
     .set({ visibleToUsers: params.visibleToUsers })
-    .where(eq(contact.id, contactId))
+    .where(
+      email.includes("@")
+        ? sql`lower(trim(${contact.email})) = ${email}`
+        : eq(contact.id, contactId),
+    )
     .returning();
-  if (updated) {
+  if (updated.length > 0) {
     invalidateContactDirectoryCache();
-    queueGhlContactRowSync(updated);
+    for (const row of updated) queueGhlContactRowSync(row);
   }
 }
 
@@ -1521,12 +1537,13 @@ function contactsCreatedByOrganizationMembersWhere(orgId: string): SQL {
 }
 
 /**
- * Contacts created or invited by a Co-sponsor who does not belong to the
- * company being listed. That other company does not see the rows.
- * The co-sponsor's own company still sees them, including its company admin
- * and lead sponsors. `exemptUserIds` keeps the co-sponsor's own rows visible
- * when he is the viewer. The co-sponsor's own contact card stays on the list.
- * Pass null to apply this on the platform-wide list, matching each contact's company.
+ * Contacts created or invited by an Admin sponsor or Co-sponsor who does not
+ * belong to the company being listed. That company's contacts do not include
+ * the rows. The sponsor's own company still sees them. `exemptUserIds` keeps
+ * the sponsor's own rows visible when that sponsor is the viewer. The
+ * sponsor's own contact card stays on the list. A Lead Sponsor of this
+ * company is not hidden. Pass null to apply this on the platform-wide list,
+ * matching each contact's company.
  */
 function excludeOutsideCoSponsorContactsWhere(
   orgId: string | null,
@@ -1573,7 +1590,7 @@ function excludeOutsideCoSponsorContactsWhere(
       FROM deal_member dm
       WHERE dm.deal_id = f.id
         AND dm.is_draft = false
-        AND replace(lower(trim(dm.deal_member_role)), '_', ' ') IN ('co-sponsor', 'co sponsor')
+        AND replace(lower(trim(dm.deal_member_role)), '_', ' ') IN ('co-sponsor', 'co sponsor', 'admin sponsor')
         AND (
           lower(trim(dm.contact_member_id)) = lower(sponsor.id::text)
           OR EXISTS (
@@ -1590,7 +1607,7 @@ function excludeOutsideCoSponsorContactsWhere(
       WHERE di.deal_id = f.id
         AND di.is_draft = false
         AND trim(di.contact_id) <> '__portal_investment_autosave__'
-        AND replace(lower(trim(di.investor_role)), '_', ' ') IN ('co-sponsor', 'co sponsor')
+        AND replace(lower(trim(di.investor_role)), '_', ' ') IN ('co-sponsor', 'co sponsor', 'admin sponsor')
         AND (
           lower(trim(di.contact_id)) = lower(sponsor.id::text)
           OR EXISTS (
@@ -1610,7 +1627,7 @@ function excludeOutsideCoSponsorContactsWhere(
         AND lead_dm.is_draft = false
         AND (
           lower(trim(lead_dm.deal_member_role)) IN (
-            'lead sponsor', 'lead_sponsor', 'admin sponsor', 'admin_sponsor'
+            'lead sponsor', 'lead_sponsor'
           )
           OR (
             position('lead' in lower(trim(lead_dm.deal_member_role))) > 0
@@ -1635,7 +1652,7 @@ function excludeOutsideCoSponsorContactsWhere(
         AND trim(lead_di.contact_id) <> '__portal_investment_autosave__'
         AND (
           lower(trim(lead_di.investor_role)) IN (
-            'lead sponsor', 'lead_sponsor', 'admin sponsor', 'admin_sponsor'
+            'lead sponsor', 'lead_sponsor'
           )
           OR (
             position('lead' in lower(trim(lead_di.investor_role))) > 0
@@ -1725,7 +1742,7 @@ function excludeCompanyStaffFromContactsWhere(orgId: string | null): SQL {
     : sql`(
         ${staffRole}
         AND NOT (
-          ${contact.importSource} in ('deal_sponsor', 'deal_org_move')
+          ${contact.importSource} in ('deal_sponsor', 'deal_org_move', 'deal_investor')
           AND ${contact.organizationId} IS NOT NULL
           AND u.organization_id IS DISTINCT FROM ${contact.organizationId}
           AND NOT EXISTS (
@@ -1746,6 +1763,17 @@ function excludeCompanyStaffFromContactsWhere(orgId: string | null): SQL {
   )`;
 }
 
+/**
+ * Platform Contacts keeps someone who answered Yes, including a company
+ * admin or company member. All Contacts still hides company staff.
+ */
+function excludeCompanyStaffUnlessOptedInWhere(orgId: string | null): SQL {
+  return or(
+    eq(contact.visibleToUsers, true),
+    excludeCompanyStaffFromContactsWhere(orgId),
+  )!;
+}
+
 async function ensureOutsideSponsorsAreOrganizationContacts(
   organizationId: string | null,
   requestedByUserId: string,
@@ -1753,6 +1781,45 @@ async function ensureOutsideSponsorsAreOrganizationContacts(
   const orgId = normalizeOrganizationUuid(organizationId);
   if (!orgId) return;
   await syncOutsideSponsorsIntoOrganizationContacts(orgId, requestedByUserId);
+  await syncDealInvestorsIntoOrganizationContacts(orgId, requestedByUserId);
+}
+
+/**
+ * Once this company has its own contact for an email, hide the other company's
+ * or platform signup row. Offering visibility is edited on the company contact.
+ */
+/**
+ * Platform Admin All Contacts shows the company CRM copy. The original
+ * self-signup row stays on Platform Contacts.
+ */
+function excludePlatformSignupWhenCompanyCopyExistsWhere(): SQL {
+  return sql`NOT (
+    ${contact.platformAdminOnly} = true
+    AND EXISTS (
+      SELECT 1
+      FROM contact owned
+      WHERE owned.platform_admin_only = false
+        AND owned.organization_id IS NOT NULL
+        AND owned.id <> ${contact.id}
+        AND lower(trim(owned.email)) = lower(trim(${contact.email}))
+        AND position('@' in trim(coalesce(owned.email, ''))) > 1
+    )
+  )`;
+}
+
+function excludeForeignContactShadowedByOrganizationWhere(orgId: string): SQL {
+  return sql`NOT (
+    ${contact.organizationId} IS DISTINCT FROM ${orgId}::uuid
+    AND EXISTS (
+      SELECT 1
+      FROM contact owned
+      WHERE owned.organization_id = ${orgId}::uuid
+        AND owned.platform_admin_only = false
+        AND owned.id <> ${contact.id}
+        AND lower(trim(owned.email)) = lower(trim(${contact.email}))
+        AND position('@' in trim(coalesce(owned.email, ''))) > 1
+    )
+  )`;
 }
 
 /**
@@ -1769,11 +1836,12 @@ async function ensureOutsideSponsorsAreOrganizationContacts(
  *
  * **Lead / Admin** (and company admin / company member): CRM rows for investors whose
  * Investors-tab **Sponsor name** (`added_by`) is this viewer, or (same selected
- * company) belongs to that company. Contacts a co-sponsor added stay on that
- * co-sponsor's list only. Co-sponsors see only investors whose Sponsor name is
- * them, plus contacts they created — not the rest of the org CRM and not
- * another co-sponsor's contacts. Lead or admin status is judged on deals of
- * the selected company, not the viewer's primary company.
+ * company) belongs to that company. Contacts an outside co-sponsor or outside
+ * admin sponsor added stay on that sponsor's own company list. Co-sponsors see
+ * only investors whose Sponsor name is them, plus contacts they created — not
+ * the rest of the org CRM and not another sponsor's contacts. Lead or admin
+ * status is judged on deals of the selected company, not the viewer's primary
+ * company.
  *
  * Other roles see external CRM rows only, plus investors they personally added.
  */
@@ -1840,10 +1908,12 @@ async function buildContactsScopeWhere(
     // All Contacts is every company. A company id is only applied when a
     // caller asks for one company, such as Customers → Contacts.
     if (!requestedOrg) {
+      await syncDealInvestorsIntoAllOrganizationContacts(viewerUserId);
       return and(
         fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm),
         excludeCompanyStaffFromContactsWhere(null),
         excludeOutsideCoSponsorContactsWhere(null, referrerIds),
+        excludePlatformSignupWhenCompanyCopyExistsWhere(),
       )!;
     }
     if (!orgId) {
@@ -1870,6 +1940,7 @@ async function buildContactsScopeWhere(
       or(orgList, contactsReferredByOrganizationMembersWhere(orgId))!,
       excludeCompanyStaffFromContactsWhere(orgId),
       excludeOutsideCoSponsorContactsWhere(orgId, referrerIds),
+      excludeForeignContactShadowedByOrganizationWhere(orgId),
     )!;
   }
 
@@ -1910,6 +1981,7 @@ async function buildContactsScopeWhere(
     notPlatformAdminOnlyOrAssociated,
     excludeCompanyStaffFromContactsWhere(orgId),
     excludeOutsideCoSponsorContactsWhere(orgId, referrerIds),
+    excludeForeignContactShadowedByOrganizationWhere(orgId),
   ];
   if (coSponsorNarrow) {
     // Same gate as getContact: created by this co-sponsor, or an investor
@@ -1975,7 +2047,7 @@ export async function listInviteeContactsForOrganization(
                  FROM deal_member dm
                  WHERE dm.deal_id = f.id
                    AND dm.is_draft = false
-                   AND replace(lower(trim(dm.deal_member_role)), '_', ' ') IN ('co-sponsor', 'co sponsor')
+                   AND replace(lower(trim(dm.deal_member_role)), '_', ' ') IN ('co-sponsor', 'co sponsor', 'admin sponsor')
                    AND (
                      lower(trim(dm.contact_member_id)) = lower(sponsor.id::text)
                      OR EXISTS (
@@ -1992,7 +2064,7 @@ export async function listInviteeContactsForOrganization(
                  WHERE di.deal_id = f.id
                    AND di.is_draft = false
                    AND trim(di.contact_id) <> '__portal_investment_autosave__'
-                   AND replace(lower(trim(di.investor_role)), '_', ' ') IN ('co-sponsor', 'co sponsor')
+                   AND replace(lower(trim(di.investor_role)), '_', ' ') IN ('co-sponsor', 'co sponsor', 'admin sponsor')
                    AND (
                      lower(trim(di.contact_id)) = lower(sponsor.id::text)
                      OR EXISTS (
@@ -2461,6 +2533,191 @@ export async function countDealInvestmentsByContactIdForViewer(params: {
     GROUP BY links.contact_key
   `);
   fillDealCountMapFromExecute(result, executed);
+  return result;
+}
+
+/** A deal the contact is on, grouped under the company that owns that deal. */
+export type ContactOrganizationDeal = {
+  dealId: string;
+  dealName: string;
+  contactRole: string;
+};
+
+/** Company this investor belongs to, with the deals they are on there. */
+export type ContactOrganizationSummary = {
+  companyId: string;
+  companyName: string;
+  deals: ContactOrganizationDeal[];
+};
+
+/**
+ * Companies an investor is part of, from every non-draft deal linked to the contact.
+ * Platform admins see every company and its deals. Other sponsors see only the
+ * active organization and the deals that belong to it. Keyed by lowercased contact id.
+ */
+export async function listContactOrganizationsByContactIdForViewer(params: {
+  viewerUserId: string;
+  jwtUserRole: string | undefined;
+  contactIds: string[];
+  requestedOrganizationId?: string | null;
+}): Promise<Map<string, ContactOrganizationSummary[]>> {
+  const result = new Map<string, ContactOrganizationSummary[]>();
+  const keys = [
+    ...new Set(
+      params.contactIds.map((id) => id.trim().toLowerCase()).filter(Boolean),
+    ),
+  ];
+  if (keys.length === 0) return result;
+
+  const scope = await resolveDealViewerScope(
+    params.viewerUserId,
+    params.jwtUserRole,
+    params.requestedOrganizationId,
+  );
+  const viewerOrganizationId = String(scope.organizationId ?? "")
+    .trim()
+    .toLowerCase();
+  if (!scope.isPlatformAdmin && !viewerOrganizationId) return result;
+  const organizationFilter = scope.isPlatformAdmin
+    ? sql``
+    : sql`AND lower(co.id::text) = ${viewerOrganizationId}`;
+
+  const idParams = sql.join(keys.map((k) => sql`${k}`), sql`, `);
+
+  const executed = await db.execute(sql`
+    WITH contact_keys AS (
+      SELECT
+        lower(trim(c.id::text)) AS contact_key,
+        lower(trim(c.email)) AS email_norm
+      FROM contact c
+      WHERE lower(trim(c.id::text)) IN (${idParams})
+    ),
+    roster_ids AS (
+      SELECT contact_key, contact_key AS roster_id
+      FROM contact_keys
+      UNION
+      SELECT ck.contact_key, lower(trim(other.id::text))
+      FROM contact_keys ck
+      INNER JOIN contact other
+        ON lower(trim(other.email)) = ck.email_norm
+      WHERE ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+      UNION
+      SELECT ck.contact_key, lower(trim(u.id::text))
+      FROM contact_keys ck
+      INNER JOIN users u
+        ON lower(trim(u.email)) = ck.email_norm
+      WHERE ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+    ),
+    links AS (
+      SELECT r.contact_key, di.deal_id::text AS deal_id,
+             NULLIF(trim(di.investor_role), '') AS role,
+             3 AS priority
+      FROM deal_investment di
+      INNER JOIN roster_ids r
+        ON lower(trim(di.contact_id)) = r.roster_id
+      WHERE di.is_draft = false
+      UNION ALL
+      SELECT r.contact_key, dm.deal_id::text,
+             NULLIF(trim(dm.deal_member_role), ''),
+             1
+      FROM deal_member dm
+      INNER JOIN roster_ids r
+        ON lower(trim(dm.contact_member_id)) = r.roster_id
+      WHERE dm.is_draft = false
+      UNION ALL
+      SELECT r.contact_key, lp.deal_id::text,
+             NULLIF(trim(lp.role), ''),
+             2
+      FROM deal_lp_investor lp
+      INNER JOIN roster_ids r
+        ON lower(trim(lp.contact_member_id)) = r.roster_id
+      WHERE lp.is_draft = false
+      UNION ALL
+      SELECT ck.contact_key, lp.deal_id::text,
+             NULLIF(trim(lp.role), ''),
+             2
+      FROM deal_lp_investor lp
+      INNER JOIN contact_keys ck
+        ON lower(trim(lp.email)) = ck.email_norm
+      WHERE lp.is_draft = false
+        AND ck.email_norm <> ''
+        AND position('@' in ck.email_norm) > 1
+      UNION ALL
+      SELECT r.contact_key, a.deal_id::text,
+             'Investor',
+             4
+      FROM assigning_deal_user a
+      INNER JOIN roster_ids r
+        ON lower(trim(a.user_id::text)) = r.roster_id
+    ),
+    ranked AS (
+      SELECT
+        contact_key,
+        deal_id,
+        (ARRAY_AGG(role ORDER BY priority ASC)
+          FILTER (WHERE role IS NOT NULL))[1] AS contact_role
+      FROM links
+      GROUP BY contact_key, deal_id
+    )
+    SELECT
+      ranked.contact_key AS contact_key,
+      d.id::text AS deal_id,
+      d.deal_name AS deal_name,
+      COALESCE(ranked.contact_role, '') AS contact_role,
+      COALESCE(co.id::text, '') AS company_id,
+      COALESCE(co.name, '') AS company_name
+    FROM ranked
+    INNER JOIN add_deal_form d ON d.id::text = ranked.deal_id
+    LEFT JOIN companies co ON co.id = d.organization_id
+    WHERE TRUE
+      ${organizationFilter}
+  `);
+
+  const raw = executed as unknown as { rows?: unknown[] } | unknown[];
+  const list = Array.isArray(raw) ? raw : (raw.rows ?? []);
+  const grouped = new Map<string, Map<string, ContactOrganizationSummary>>();
+  for (const row of list) {
+    if (row == null || typeof row !== "object") continue;
+    const record = row as Record<string, unknown>;
+    const contactKey = String(record.contact_key ?? "").trim().toLowerCase();
+    const companyName = String(record.company_name ?? "").trim();
+    const dealId = String(record.deal_id ?? "").trim();
+    if (!contactKey || !companyName || !dealId) continue;
+    const companyId = String(record.company_id ?? "").trim();
+    const companyKey = companyId.toLowerCase() || `name:${companyName.toLowerCase()}`;
+    let companies = grouped.get(contactKey);
+    if (!companies) {
+      companies = new Map();
+      grouped.set(contactKey, companies);
+    }
+    let company = companies.get(companyKey);
+    if (!company) {
+      company = { companyId, companyName, deals: [] };
+      companies.set(companyKey, company);
+    }
+    if (!company.deals.some((deal) => deal.dealId === dealId)) {
+      company.deals.push({
+        dealId,
+        dealName: String(record.deal_name ?? "").trim() || "Deal",
+        contactRole: String(record.contact_role ?? "").trim(),
+      });
+    }
+  }
+  for (const [contactKey, companies] of grouped) {
+    const sorted = [...companies.values()]
+      .map((company) => ({
+        ...company,
+        deals: [...company.deals].sort((a, b) =>
+          a.dealName.localeCompare(b.dealName, undefined, { sensitivity: "base" }),
+        ),
+      }))
+      .sort((a, b) =>
+        a.companyName.localeCompare(b.companyName, undefined, { sensitivity: "base" }),
+      );
+    result.set(contactKey, sorted);
+  }
   return result;
 }
 

@@ -181,6 +181,9 @@ async function sumLpCommitmentsByAdderUserIdForDeals(
       const ab = m.addedBy ? String(m.addedBy) : "";
       if (!rk || !ab) continue;
       const ck = rawToCanonical.get(rk) ?? `id:${rk}`;
+      // LP roster added_by is the Investors tab sponsor. A deal-member row must
+      // not put the commitment back on the previous sponsor.
+      if (lpRosterCanonicalKeys.has(ck)) continue;
       adderByCanonical.set(ck, ab);
     }
 

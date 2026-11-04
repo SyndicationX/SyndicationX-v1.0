@@ -3,7 +3,6 @@ import {
   AlignLeft,
   Archive,
   Ban,
-  Building2,
   Check,
   CheckCircle2,
   ClipboardList,
@@ -72,6 +71,7 @@ import { isPlatformAdmin } from "../../../common/auth/roleUtils"
 import { PORTAL_ACTIVE_COMPANY_CHANGED_EVENT } from "../../../common/auth/setActiveCompany"
 import { getSessionOrganizationCompanyId } from "../../../common/auth/sessionOrganization"
 import "../usermanagement/user_management.css"
+import { ContactOrganizationsCell } from "./components/ContactOrganizationsCell"
 import {
   createContact,
   fetchContactOwnerSponsors,
@@ -123,6 +123,7 @@ import type {
 import {
   CONTACT_OFFERING_VISIBILITY_OPTIONS,
   CONTACT_RELATIONSHIP_506B_OPTIONS,
+  contactAddedFromLabel,
   isPlatformDirectoryContact,
 } from "./types/contact.types"
 import {
@@ -151,6 +152,18 @@ const OFFERING_VISIBILITY_FILTER_OPTIONS: DropdownSelectOption[] = [
     label: o.label,
   })),
   { value: "unset", label: "Unset" },
+]
+
+const ADDED_FROM_FILTER_OPTIONS: DropdownSelectOption[] = [
+  { value: "all", label: "All sources" },
+  { value: "Import", label: "Import" },
+  { value: "Invitation email", label: "Invitation email" },
+  { value: "Deal link", label: "Deal link" },
+  { value: "Contact link", label: "Contact link" },
+  { value: "Deal", label: "Deal" },
+  { value: "Portal signup", label: "Portal signup" },
+  { value: "Manual", label: "Manual" },
+  // { value: "GoHighLevel", label: "GoHighLevel" },
 ]
 
 const RELATIONSHIP_506B_CELL_OPTIONS: DropdownSelectOption[] = [
@@ -248,6 +261,28 @@ function toContactUpdatePayload(
   }
 }
 
+function contactOrganizationEntries(row: ContactRow): { key: string; name: string }[] {
+  const fromOrgs = (row.organizations ?? [])
+    .map((company) => {
+      const name = company.companyName.trim()
+      if (!name) return null
+      const id = company.companyId.trim()
+      return { key: id || `company:${name.toLowerCase()}`, name }
+    })
+    .filter((entry): entry is { key: string; name: string } => entry != null)
+  if (fromOrgs.length > 0) return fromOrgs
+  const organizationId = row.organizationId?.trim() ?? ""
+  const name =
+    row.organizationName?.trim() || row.addedByCompanyName?.trim() || ""
+  if (!organizationId && !name) return []
+  return [
+    {
+      key: organizationId || `company:${name.toLowerCase()}`,
+      name: name || "Untitled organization",
+    },
+  ]
+}
+
 function contactRowMatchesSearch(row: ContactRow, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true
@@ -266,7 +301,12 @@ function contactRowMatchesSearch(row: ContactRow, query: string): boolean {
     row.invitedByDisplayName ?? "",
     row.addedByCompanyName ?? "",
     row.organizationName ?? "",
+    ...(row.organizations ?? []).flatMap((company) => [
+      company.companyName,
+      ...company.deals.map((deal) => deal.dealName),
+    ]),
     row.signupRole ?? "",
+    contactAddedFromLabel(row),
     row.visibleToUsers === true ? "yes" : "no",
     String(row.dealCount ?? 0),
     relationship506bLabel(row.relationship506b ?? null),
@@ -291,6 +331,19 @@ function initialsFromContact(row: ContactRow): string {
 function contactDisplayName(row: ContactRow): string {
   const n = [row.firstName, row.lastName].filter(Boolean).join(" ").trim()
   return n || "—"
+}
+
+function addedFromColumn(): DataTableColumn<ContactRow> {
+  return {
+    id: "addedFrom",
+    header: "Added from",
+    sortValue: (row) => contactAddedFromLabel(row).toLowerCase(),
+    thClassName: "contacts_th_added_from",
+    tdClassName: "contacts_td_added_from",
+    cell: (row) => (
+      <span className="contacts_added_from">{contactAddedFromLabel(row)}</span>
+    ),
+  }
 }
 
 function platformVisibleBadge(visible: boolean) {
@@ -380,6 +433,9 @@ function ContactsPage({
   const [dealCountById, setDealCountById] = useState<Map<string, number>>(
     () => new Map(),
   )
+  const [dealStatsReadyIds, setDealStatsReadyIds] = useState<Set<string>>(
+    () => new Set(),
+  )
   const [orgScopeKey, setOrgScopeKey] = useState(
     () => getSessionOrganizationCompanyId() ?? "",
   )
@@ -436,6 +492,8 @@ function ContactsPage({
   >("all")
   const [offeringVisibilityFilter, setOfferingVisibilityFilter] =
     useState<OfferingVisibilityFilter>("all")
+  const [addedFromFilter, setAddedFromFilter] = useState("all")
+  const [platformAddedFromFilter, setPlatformAddedFromFilter] = useState("all")
   const [ownerFilter, setOwnerFilter] = useState("all")
   const [ownerSponsorOptions, setOwnerSponsorOptions] = useState<
     DropdownSelectOption[]
@@ -607,6 +665,10 @@ function ContactsPage({
           const vis = r.showOfferingsVisibility ?? null
           if (offeringVisibilityFilter === "unset") return vis == null
           return vis === offeringVisibilityFilter
+        })
+        .filter((r) => {
+          if (!platformAdmin || addedFromFilter === "all") return true
+          return contactAddedFromLabel(r) === addedFromFilter
         }),
     [
       tabRows,
@@ -614,6 +676,8 @@ function ContactsPage({
       tagFilter,
       accreditationFilter,
       offeringVisibilityFilter,
+      addedFromFilter,
+      platformAdmin,
     ],
   )
 
@@ -622,25 +686,15 @@ function ContactsPage({
     const byOrg = new Map<string, { name: string; count: number }>()
     let unnamed = 0
     for (const row of rowsBeforeOwnerFilter) {
-      const addedByCompany = row.addedByCompanyName?.trim() ?? ""
-      const organizationId = row.organizationId?.trim() ?? ""
-      const organizationName = row.organizationName?.trim() ?? ""
-      const name = addedByCompany || organizationName
-      if (!organizationId && !name) {
+      const entries = contactOrganizationEntries(row)
+      if (entries.length === 0) {
         unnamed += 1
         continue
       }
-      const key = addedByCompany
-        ? `company:${addedByCompany.toLowerCase()}`
-        : organizationId || name.toLowerCase()
-      const existing = byOrg.get(key)
-      if (existing) {
-        existing.count += 1
-      } else {
-        byOrg.set(key, {
-          name: name || "Untitled organization",
-          count: 1,
-        })
+      for (const entry of entries) {
+        const existing = byOrg.get(entry.key)
+        if (existing) existing.count += 1
+        else byOrg.set(entry.key, { name: entry.name, count: 1 })
       }
     }
     const options: DropdownSelectOption[] = [
@@ -669,21 +723,9 @@ function ContactsPage({
         if (ownerFilter === "all") return true
         if (platformAdminCompanyFilter) {
           if (ownerFilter === "__none__") {
-            return (
-              !r.addedByCompanyName?.trim() &&
-              !r.organizationId?.trim() &&
-              !r.organizationName?.trim()
-            )
+            return contactOrganizationEntries(r).length === 0
           }
-          if (ownerFilter.startsWith("company:")) {
-            return (
-              (r.addedByCompanyName?.trim().toLowerCase() ?? "") ===
-              ownerFilter.slice("company:".length)
-            )
-          }
-          const organizationId = r.organizationId?.trim() ?? ""
-          if (organizationId) return organizationId === ownerFilter
-          return (r.organizationName?.trim().toLowerCase() ?? "") === ownerFilter
+          return contactOrganizationEntries(r).some((entry) => entry.key === ownerFilter)
         }
         const want = ownerFilter.trim().toLowerCase()
         return r.owners.some((o) => o.trim().toLowerCase() === want)
@@ -707,6 +749,7 @@ function ContactsPage({
       return {
         ...row,
         dealCount: next.dealCount,
+        organizations: next.organizations ?? row.organizations,
         owners: next.owners.length > 0 ? next.owners : row.owners,
         createdByDisplayName:
           next.createdByDisplayName ?? row.createdByDisplayName,
@@ -721,17 +764,86 @@ function ContactsPage({
     [rows],
   )
 
+  const visibleDirectoryIdsKey = useMemo(() => {
+    const start = (page - 1) * pageSize
+    return filteredRows
+      .slice(start, start + pageSize)
+      .map((row) => row.id)
+      .filter(Boolean)
+      .join(",")
+  }, [filteredRows, page, pageSize])
+
+  const dealStatsLoadedIdsRef = useRef(new Set<string>())
+  const dealStatsFlightRef = useRef(new Map<string, symbol>())
+
+  const claimDealStatIds = useCallback((ids: string[], token: symbol) => {
+    const pending: string[] = []
+    for (const id of ids) {
+      if (!id) continue
+      if (dealStatsLoadedIdsRef.current.has(id)) continue
+      if (dealStatsFlightRef.current.has(id)) continue
+      dealStatsFlightRef.current.set(id, token)
+      pending.push(id)
+    }
+    return pending
+  }, [])
+
+  const settleDealStatIds = useCallback(
+    (ids: string[], token: symbol, stats?: Map<string, ContactRow>) => {
+      const ready: string[] = []
+      for (const id of ids) {
+        if (dealStatsFlightRef.current.get(id) !== token) continue
+        dealStatsFlightRef.current.delete(id)
+        if (stats?.has(id)) {
+          dealStatsLoadedIdsRef.current.add(id)
+          ready.push(id)
+        }
+      }
+      if (ready.length === 0) return
+      setDealStatsReadyIds((prev) => {
+        const next = new Set(prev)
+        for (const id of ready) next.add(id)
+        return next
+      })
+    },
+    [],
+  )
+
   useEffect(() => {
-    const ids = directoryContactIdsKey.split(",").filter(Boolean)
-    if (ids.length === 0) return
+    dealStatsLoadedIdsRef.current = new Set()
+    dealStatsFlightRef.current = new Map()
+    setDealStatsReadyIds(new Set())
+  }, [directoryContactIdsKey, dealStatsOptions, tableResetKey])
+
+  useEffect(() => {
+    const token = Symbol()
+    const pending = claimDealStatIds(
+      visibleDirectoryIdsKey.split(",").filter(Boolean),
+      token,
+    )
+    if (pending.length === 0) return
     let cancelled = false
-    void hydrateContactDealStatsInChunks(ids, dealStatsOptions).then((stats) => {
-      if (!cancelled) applyContactDealStats(stats)
+    void fetchContactDealStats(pending, dealStatsOptions).then((stats) => {
+      if (cancelled) {
+        settleDealStatIds(pending, token)
+        return
+      }
+      settleDealStatIds(pending, token, stats)
+      applyContactDealStats(stats)
     })
     return () => {
       cancelled = true
+      settleDealStatIds(pending, token)
     }
-  }, [directoryContactIdsKey, applyContactDealStats, dealStatsOptions])
+  }, [
+    visibleDirectoryIdsKey,
+    directoryContactIdsKey,
+    dealStatsOptions,
+    applyContactDealStats,
+    claimDealStatIds,
+    settleDealStatIds,
+    tableResetKey,
+  ])
 
   const openContactsForTag = useCallback((tagName: string) => {
     const name = tagName.trim()
@@ -1526,10 +1638,12 @@ function ContactsPage({
 
   const filteredPlatformRows = useMemo(
     () =>
-      platformRows.filter((r) =>
-        contactRowMatchesSearch(r, platformSearchQuery),
-      ),
-    [platformRows, platformSearchQuery],
+      platformRows.filter((r) => {
+        if (!contactRowMatchesSearch(r, platformSearchQuery)) return false
+        if (!platformAdmin || platformAddedFromFilter === "all") return true
+        return contactAddedFromLabel(r) === platformAddedFromFilter
+      }),
+    [platformRows, platformSearchQuery, platformAdmin, platformAddedFromFilter],
   )
 
   const visiblePlatformIdsKey = useMemo(() => {
@@ -1542,16 +1656,35 @@ function ContactsPage({
 
   useEffect(() => {
     if (mainTab !== "platform") return
-    const ids = visiblePlatformIdsKey.split(",").filter(Boolean)
-    if (ids.length === 0) return
+    const token = Symbol()
+    const pending = claimDealStatIds(
+      visiblePlatformIdsKey.split(",").filter(Boolean),
+      token,
+    )
+    if (pending.length === 0) return
     let cancelled = false
-    void fetchContactDealStats(ids, dealStatsOptions).then((stats) => {
-      if (!cancelled) applyContactDealStats(stats)
+    void fetchContactDealStats(pending, dealStatsOptions).then((stats) => {
+      if (cancelled) {
+        settleDealStatIds(pending, token)
+        return
+      }
+      settleDealStatIds(pending, token, stats)
+      applyContactDealStats(stats)
     })
     return () => {
       cancelled = true
+      settleDealStatIds(pending, token)
     }
-  }, [mainTab, visiblePlatformIdsKey, applyContactDealStats, dealStatsOptions])
+  }, [
+    mainTab,
+    visiblePlatformIdsKey,
+    dealStatsOptions,
+    applyContactDealStats,
+    claimDealStatIds,
+    settleDealStatIds,
+    directoryContactIdsKey,
+    tableResetKey,
+  ])
 
   useEffect(() => {
     if (!exportModalOpen) return
@@ -1581,7 +1714,7 @@ function ContactsPage({
 
   useEffect(() => {
     setPlatformPage(1)
-  }, [platformSearchQuery])
+  }, [platformSearchQuery, platformAddedFromFilter])
 
   useEffect(() => {
     const total = Math.max(
@@ -1858,6 +1991,7 @@ function ContactsPage({
       */
       ...(platformAdmin
         ? ([
+            addedFromColumn(),
             {
               id: "visibleToUsers",
               header: "Visible on platform",
@@ -2097,6 +2231,9 @@ function ContactsPage({
         sortValue: (row) =>
           dealCountById.get(row.id.trim().toLowerCase()) ?? row.dealCount ?? 0,
         cell: (row) => {
+          if (!dealStatsReadyIds.has(row.id)) {
+            return <span className="um_status_muted">…</span>
+          }
           const n =
             dealCountById.get(row.id.trim().toLowerCase()) ?? row.dealCount ?? 0
           if (n <= 0) {
@@ -2260,25 +2397,21 @@ function ContactsPage({
         id: "organization",
         header: "Organization/Owners",
         sortValue: (row) =>
-          row.addedByCompanyName?.trim() || row.organizationName || "",
+          (row.organizations ?? [])
+            .map((company) => company.companyName)
+            .filter(Boolean)
+            .join(" ") ||
+          row.organizationName ||
+          row.addedByCompanyName ||
+          "",
         thClassName: "contacts_th_organization",
         tdClassName: "contacts_td_organization",
-        cell: (row) => {
-          const name =
-            row.addedByCompanyName?.trim() || row.organizationName?.trim()
-          if (!name) return <span className="um_status_muted">—</span>
-          return (
-            <span className="um_org_badge" title={name}>
-              <Building2
-                className="um_org_badge_icon"
-                size={15}
-                strokeWidth={2}
-                aria-hidden
-              />
-              <span className="um_org_badge_label">{name}</span>
-            </span>
-          )
-        },
+        cell: (row) =>
+          dealStatsReadyIds.has(row.id) ? (
+            <ContactOrganizationsCell row={row} />
+          ) : (
+            <span className="um_status_muted">…</span>
+          ),
       },
       /* Hidden: Invited by column (restore by uncommenting)
       {
@@ -2301,6 +2434,7 @@ function ContactsPage({
       */
       ...(platformAdmin
         ? ([
+            addedFromColumn(),
             {
               id: "visibleToUsers",
               header: "Visible on platform",
@@ -2369,6 +2503,7 @@ function ContactsPage({
     ],
     [
       dealCountById,
+      dealStatsReadyIds,
       allContactsInFilterSelected,
       contactsListTab,
       exportContactRow,
@@ -2399,6 +2534,7 @@ function ContactsPage({
     tagFilter,
     accreditationFilter,
     offeringVisibilityFilter,
+    addedFromFilter,
     ownerFilter,
   ])
 
@@ -2782,10 +2918,30 @@ function ContactsPage({
                     </div>
 
                     <div className="contacts_directory_toolbar_end">
+                      {platformAdmin ? (
+                        <div className="contacts_toolbar_filter">
+                          <DropdownSelect
+                            id="contacts-filter-added-from"
+                            className="contacts_toolbar_filter_dropdown contacts_added_from_filter_dropdown"
+                            triggerClassName="contacts_toolbar_filter_dropdown_trigger"
+                            panelClassName="contacts_toolbar_filter_dropdown_panel"
+                            value={addedFromFilter}
+                            options={ADDED_FROM_FILTER_OPTIONS}
+                            disabled={loading}
+                            ariaLabel="Filter by where the contact was added from"
+                            placeholder="Added from"
+                            useFixedPanel
+                            onChange={(v) => {
+                              setAddedFromFilter(v)
+                              setToolbarNotice("")
+                            }}
+                          />
+                        </div>
+                      ) : null}
                       <div className="contacts_toolbar_filter">
                         <DropdownSelect
                           id="contacts-filter-offering-visibility"
-                          className="contacts_toolbar_filter_dropdown"
+                          className="contacts_toolbar_filter_dropdown contacts_visibility_filter_dropdown"
                           triggerClassName="contacts_toolbar_filter_dropdown_trigger"
                           panelClassName="contacts_toolbar_filter_dropdown_panel"
                           value={offeringVisibilityFilter}
@@ -2963,7 +3119,9 @@ function ContactsPage({
                           : "No active contacts."
                         : tagFilter
                           ? `No contacts with tag “${tagFilter}”.`
-                          : offeringVisibilityFilter !== "all"
+                          : addedFromFilter !== "all"
+                            ? "No contacts match this added-from filter."
+                            : offeringVisibilityFilter !== "all"
                             ? "No contacts match this offering visibility filter."
                             : accreditationFilter !== "all"
                               ? "No contacts match this accreditation filter."
@@ -2999,6 +3157,23 @@ function ContactsPage({
               </div>
 
               <div className="contacts_directory_toolbar_end">
+                {platformAdmin ? (
+                  <div className="contacts_toolbar_filter">
+                    <DropdownSelect
+                      id="platform-contacts-filter-added-from"
+                      className="contacts_toolbar_filter_dropdown contacts_added_from_filter_dropdown"
+                      triggerClassName="contacts_toolbar_filter_dropdown_trigger"
+                      panelClassName="contacts_toolbar_filter_dropdown_panel"
+                      value={platformAddedFromFilter}
+                      options={ADDED_FROM_FILTER_OPTIONS}
+                      disabled={platformLoading}
+                      ariaLabel="Filter by where the contact was added from"
+                      placeholder="Added from"
+                      useFixedPanel
+                      onChange={setPlatformAddedFromFilter}
+                    />
+                  </div>
+                ) : null}
                 <div className="um_search_wrap contacts_directory_search">
                   <Search className="um_search_icon" size={16} aria-hidden />
                   <input
@@ -3052,7 +3227,9 @@ function ContactsPage({
               emptyLabel={
                 platformRows.length === 0
                   ? "No self-signup investors yet."
-                  : "No platform contacts match your search."
+                  : platformAddedFromFilter !== "all"
+                    ? "No platform contacts match this added-from filter."
+                    : "No platform contacts match your search."
               }
               pagination={
                 !platformLoading && filteredPlatformRows.length > 0

@@ -10,6 +10,8 @@ import {
   ContactInvalidPhoneError,
   ContactScopeConflictError,
   countDealInvestmentsByContactIdForViewer,
+  listContactOrganizationsByContactIdForViewer,
+  type ContactOrganizationSummary,
   getContactForViewer,
   listDealsForContactForViewer,
   getUserDisplayNameById,
@@ -38,6 +40,7 @@ import {
   type ContactOfferingVisibility,
 } from "../services/contact/contact.service.js";
 import { normalizeContactOfferingVisibility } from "../services/contact/contactOfferingVisibility.service.js";
+import { resolveDealViewerScope } from "../services/deal/dealAccess.service.js";
 import {
   deleteContactEmailTemplateForViewer,
   insertContactEmailTemplate,
@@ -322,6 +325,8 @@ function mapContactToJson(row: ContactRow) {
     relationship_506b: relationship506b,
     importSource: row.importSource ?? "manual",
     import_source: row.importSource ?? "manual",
+    referredByDealId: row.referredByDealId ?? null,
+    referred_by_deal_id: row.referredByDealId ?? null,
     visibleToUsers: Boolean(row.visibleToUsers),
     visible_to_users: Boolean(row.visibleToUsers),
     platformAdminOnly: Boolean(row.platformAdminOnly),
@@ -444,13 +449,64 @@ async function loadAddedByCompanyNameByUserId(
   return out;
 }
 
+/**
+ * `null` means the viewer is a platform admin and may see every company.
+ * A string limits the home company to that organization.
+ */
+async function organizationColumnLimitForViewer(
+  userId: string,
+  jwtUserRole: string | undefined,
+  requestedOrganizationId?: string | null,
+): Promise<string | null> {
+  const scope = await resolveDealViewerScope(
+    userId,
+    jwtUserRole,
+    requestedOrganizationId,
+  );
+  if (scope.isPlatformAdmin) return null;
+  return String(scope.organizationId ?? "").trim().toLowerCase();
+}
+
+function withHomeOrganization(
+  companies: ContactOrganizationSummary[],
+  organizationId: string | null | undefined,
+  organizationName: string | undefined,
+  limitToOrganizationId?: string | null,
+): ContactOrganizationSummary[] {
+  const name = String(organizationName ?? "").trim();
+  const id = String(organizationId ?? "").trim();
+  if (limitToOrganizationId != null) {
+    const homeId = id.toLowerCase();
+    if (!homeId || homeId !== limitToOrganizationId) return companies;
+  }
+  if (!name && !id) return companies;
+  const exists = companies.some(
+    (company) =>
+      (id && company.companyId.toLowerCase() === id.toLowerCase()) ||
+      (name && company.companyName.toLowerCase() === name.toLowerCase()),
+  );
+  if (exists) return companies;
+  return [
+    { companyId: id, companyName: name || "Organization", deals: [] },
+    ...companies,
+  ];
+}
+
 async function mapContactsToJsonWithNames(
   rows: ContactRow[],
   dealCounts?: Map<string, number>,
   dealAdderNames?: Map<string, string>,
   organizationId?: string | null,
   _viewerUserId?: string | null,
+  organizationsByContactId?: Map<string, ContactOrganizationSummary[]>,
 ) {
+  const organizationColumnLimit = _viewerUserId
+    ? await organizationColumnLimitForViewer(
+        _viewerUserId,
+        undefined,
+        organizationId,
+      )
+    : null;
   const orgNameByIdPromise = loadOrganizationNamesById(
     rows.map((row) => row.organizationId),
   );
@@ -506,6 +562,12 @@ async function mapContactsToJsonWithNames(
       dealAdderNames?.get(idKey),
     );
     const dealCount = dealCounts?.get(idKey) ?? 0;
+    const organizations = withHomeOrganization(
+      organizationsByContactId?.get(idKey) ?? [],
+      row.organizationId,
+      organizationName,
+      organizationColumnLimit,
+    );
     const invitedBy = orgId
       ? orgInviterByContactId?.get(idKey)
       : invitedByNameByContactId.get(idKey);
@@ -525,6 +587,7 @@ async function mapContactsToJsonWithNames(
       invitedByDisplayName: invitedBy?.displayName?.trim() || undefined,
       invited_by_display_name: invitedBy?.displayName?.trim() || undefined,
       dealCount,
+      organizations,
     };
   });
   return mapped;
@@ -986,27 +1049,41 @@ export async function getContactDealStats(
       contactIds: ids,
     });
     const contactIds = matched.map((r) => String(r.id));
-    const [dealCounts, dealAdderNames] = await Promise.all([
-      countDealInvestmentsByContactIdForViewer({
-        viewerUserId: user.id,
-        jwtUserRole: user.userRole,
-        contactIds,
-        requestedOrganizationId: requestedOrg,
-      }),
-      resolveDealAdderNamesByContactIdForViewer({
-        viewerUserId: user.id,
-        jwtUserRole: user.userRole,
-        contactIds,
-        requestedOrganizationId: requestedOrg,
-      }),
-    ]);
-    const contacts = await mapContactsToJsonWithNames(
-      matched,
-      dealCounts,
-      dealAdderNames,
-      organizationIdFromRequestQuery(req),
-      user.id,
-    );
+    const viewerParams = {
+      viewerUserId: user.id,
+      jwtUserRole: user.userRole,
+      contactIds,
+      requestedOrganizationId: requestedOrg,
+    };
+    const [dealCounts, organizationsByContactId, orgNameById, organizationColumnLimit] =
+      await Promise.all([
+        countDealInvestmentsByContactIdForViewer(viewerParams),
+        listContactOrganizationsByContactIdForViewer(viewerParams),
+        loadOrganizationNamesById(matched.map((row) => row.organizationId)),
+        organizationColumnLimitForViewer(
+          user.id,
+          user.userRole,
+          requestedOrg,
+        ),
+      ]);
+    const contacts = matched.map((row) => {
+      const idKey = String(row.id).trim().toLowerCase();
+      const organizationName =
+        orgNameById.get(String(row.organizationId ?? "").trim().toLowerCase()) ||
+        undefined;
+      return {
+        id: row.id,
+        dealCount: dealCounts.get(idKey) ?? 0,
+        organizationName,
+        organization_name: organizationName,
+        organizations: withHomeOrganization(
+          organizationsByContactId.get(idKey) ?? [],
+          row.organizationId,
+          organizationName,
+          organizationColumnLimit,
+        ),
+      };
+    });
     res.status(200).json({ contacts });
   } catch (err) {
     console.error("getContactDealStats:", err);

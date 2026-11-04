@@ -102,7 +102,7 @@ export function InvestorRemovalConfirmModal({
                 type="button"
                 className="um_btn_danger"
                 disabled={!canSubmit}
-                title="Remove this investment and only its sponsor soft commitments"
+                title="Remove only this investment. The investor stays on the deal."
                 onClick={() => submit("remove_investment")}
               >
                 <Landmark size={16} strokeWidth={2} aria-hidden />

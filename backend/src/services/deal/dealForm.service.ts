@@ -477,10 +477,16 @@ export type DealViewerScope = {
   enforceContactOfferingVisibility: boolean;
   /**
    * Offerings in another company where someone who shares an organization with
-   * this viewer is Lead, Admin, or Co-sponsor. Org 1 investors see them in
-   * Investing. Org 1 syndicators also see them on the syndication list, view only.
+   * this viewer is Lead, Admin, Co-sponsor, or an LP investor. Company admin
+   * and company members see them on the syndication list, view only.
    */
   crossOrgColleagueSponsoredDealIds: string[];
+  /**
+   * Other-company deals this viewer's company can open only because one of
+   * their investors is on the roster. Offering details and the lead sponsor
+   * are the only syndication surfaces.
+   */
+  investorCompanySyndicationDealIds: string[];
 };
 
 export async function listAddDealFormsForViewer(

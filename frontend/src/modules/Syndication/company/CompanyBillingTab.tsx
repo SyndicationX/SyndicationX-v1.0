@@ -1828,6 +1828,14 @@ function dealBillingStatusClassName(row: CompanyDealBillingRow): string {
   return invoiceStatusClassName("void");
 }
 
+/** Paid deals with an upgrade difference can still move the start date to reopen access. */
+function dealBillingStartDateLocked(row: CompanyDealBillingRow): boolean {
+  if (dealBillingStatusLabel(row) !== "Paid") return false;
+  if (row.needsPlanUpgrade === true) return false;
+  const upgrade = upgradeDifferenceDollars(row);
+  return !(upgrade && upgrade.due > 0);
+}
+
 function dealBillingSettingsLocked(
   row: CompanyDealBillingRow,
   nowMs = Date.now(),
@@ -3946,6 +3954,14 @@ function BillingDealDetailsPanel({
 
   const handleBillingStartDateSave = useCallback(
     async (row: CompanyDealBillingRow, ymd: string) => {
+      if (dealBillingStartDateLocked(row)) {
+        toast.error(
+          "Could not update billing start date",
+          "This deal is already paid. The next billing date comes from the paid period.",
+        );
+        setStartDateRow(null);
+        return;
+      }
       if (isBillingStartDateInThePast(ymd)) {
         toast.error(
           "Could not update billing start date",
@@ -4249,20 +4265,36 @@ function BillingDealDetailsPanel({
               align: "center" as const,
               thClassName: "deals_th_align_center um_th_actions",
               tdClassName: "um_td_actions",
-              cell: (row: CompanyDealBillingRow) => (
-                <button
-                  type="button"
-                  className="cp_billing_start_date_btn"
-                  aria-label={`Set billing start date for ${row.dealName.trim() || "this deal"}`}
-                  title="Set billing start date"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setStartDateRow(row);
-                  }}
-                >
-                  <Calendar size={16} strokeWidth={2} aria-hidden />
-                </button>
-              ),
+              cell: (row: CompanyDealBillingRow) => {
+                const locked = dealBillingStartDateLocked(row);
+                const dealName = row.dealName.trim() || "this deal";
+                return (
+                  <button
+                    type="button"
+                    className="cp_billing_start_date_btn"
+                    disabled={locked}
+                    aria-label={
+                      locked
+                        ? `Billing date is locked for ${dealName} because this deal is already paid`
+                        : `Set billing start date for ${dealName}`
+                    }
+                    title={
+                      locked
+                        ? "This deal is already paid. The next billing date comes from the paid period and cannot be changed here."
+                        : row.needsPlanUpgrade
+                          ? "Set a future billing start date to open this deal until that date."
+                          : "Set billing start date"
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (locked) return;
+                      setStartDateRow(row);
+                    }}
+                  >
+                    <Calendar size={16} strokeWidth={2} aria-hidden />
+                  </button>
+                );
+              },
             },
           ] satisfies DataTableColumn<CompanyDealBillingRow>[])
         : []),

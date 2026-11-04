@@ -122,6 +122,12 @@ async function resolveInvestorEmailForTarget(
   return null;
 }
 
+/** Open “anyone can sign” mail goes to deal sponsors who can see every investor’s e-sign. */
+function isLeadOrAdminSponsorRole(role: string): boolean {
+  const normalized = role.trim().toLowerCase().replace(/[_-]+/g, " ");
+  return normalized === "lead sponsor" || normalized === "admin sponsor";
+}
+
 function sponsorDealDocumentsUrl(dealId: string): string {
   const origin = (
     process.env.FRONTEND_URL?.trim() ||
@@ -194,6 +200,7 @@ export async function notifySponsorsOfInvestorEsignSigned(params: {
     if (audience.openToAnySponsor) {
       const sponsors = await listDealSponsorSignerOptions(dealId);
       for (const sponsor of sponsors) {
+        if (!isLeadOrAdminSponsorRole(sponsor.role)) continue;
         notify.set(sponsor.email, sponsor.name);
       }
     }

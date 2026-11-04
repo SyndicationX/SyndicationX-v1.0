@@ -1,4 +1,4 @@
-import { FileSignature, Loader2, X } from "lucide-react"
+import { FileSignature, Loader2, RefreshCw, X } from "lucide-react"
 import {
   useCallback,
   useEffect,
@@ -316,6 +316,7 @@ export function SponsorEsignSignModal({
                 className="um_btn_primary"
                 onClick={() => void loadSession(selectedSignerRowId || undefined)}
               >
+                <RefreshCw size={16} strokeWidth={2} aria-hidden />
                 Try again
               </button>
             </div>

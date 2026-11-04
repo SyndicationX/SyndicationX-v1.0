@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "../../database/db.js";
 import { addDealForm, companyBillingInvoices, contact, dealInvestorClass, dealInvestment, dealLpInvestor, dealMember, users } from "../../schema/schema.js";
@@ -81,6 +81,62 @@ export function catalogPackagePriceCents(
   const table = annual ? CATALOG_ANNUAL : CATALOG_MONTHLY;
   const index = seat === "10plus" ? 11 : seat === "10" ? 9 : 4;
   return table[plan][index] * 100;
+}
+
+/** True when money already collected pays for this plan, cycle, and co-sponsor package. */
+export function paymentCoversRequiredPackage(params: {
+  paidCents: number | null | undefined;
+  cycle: string | null | undefined;
+  planId: string | null | undefined;
+  seatBand: string | null | undefined;
+}): boolean {
+  const paid = Math.round(Number(params.paidCents) || 0);
+  if (paid <= 0) return false;
+  const cycle = String(params.cycle ?? "").trim().toLowerCase();
+  const normalized =
+    cycle === "annual" || cycle === "annually" || cycle === "yearly"
+      ? "annual"
+      : cycle === "monthly"
+        ? "monthly"
+        : null;
+  if (!normalized) return false;
+  const price = catalogPackagePriceCents(
+    params.planId,
+    normalized,
+    params.seatBand,
+  );
+  return price != null && paid >= price;
+}
+
+/**
+ * Next billing date is the payment date plus the cycle.
+ * A monthly payment renews one month later. An annual payment renews one year later.
+ * Dates already in the past roll forward by the same cycle.
+ */
+export function nextBillingDateFromPayment(
+  paidAt: Date,
+  cycle: string | null | undefined,
+  now = new Date(),
+): Date | null {
+  const start = new Date(paidAt.getTime());
+  if (!Number.isFinite(start.getTime())) return null;
+  const normalized = String(cycle ?? "").trim().toLowerCase();
+  const annual =
+    normalized === "annual" ||
+    normalized === "annually" ||
+    normalized === "yearly";
+  const monthly = normalized === "monthly";
+  if (!annual && !monthly) return null;
+  const next = new Date(start.getTime());
+  const step = () => {
+    if (annual) next.setUTCFullYear(next.getUTCFullYear() + 1);
+    else next.setUTCMonth(next.getUTCMonth() + 1);
+  };
+  step();
+  for (let hop = 0; hop < 240 && next.getTime() <= now.getTime(); hop += 1) {
+    step();
+  }
+  return next;
 }
 
 /** New package price minus the amount already paid. $149 after a $49 payment is $100. */
@@ -723,22 +779,23 @@ export async function contactIsDealCompanyUser(
   return rows.some((row) => isDealCompanyUserStoredRole(row.dealMemberRole));
 }
 
-async function latestPaidInvoiceCents(
+/** Largest paid invoice on the subscription. A 10+ payment stays 10+ after a later smaller charge. */
+async function maxPaidInvoiceCents(
   subscriptionId: string | null | undefined,
 ): Promise<number | null> {
   const id = String(subscriptionId ?? "").trim();
   if (!id) return null;
   const [row] = await db
-    .select({ amountPaidCents: companyBillingInvoices.amountPaidCents })
+    .select({
+      amountPaidCents: sql<number>`coalesce(max(${companyBillingInvoices.amountPaidCents}), 0)::int`,
+    })
     .from(companyBillingInvoices)
     .where(
       and(
         eq(companyBillingInvoices.stripeSubscriptionId, id),
         eq(companyBillingInvoices.status, "paid"),
       ),
-    )
-    .orderBy(desc(companyBillingInvoices.paidAt))
-    .limit(1);
+    );
   const amount = Number(row?.amountPaidCents ?? 0);
   return amount > 0 ? amount : null;
 }
@@ -800,7 +857,7 @@ export async function getDealCompanyUserSnapshot(
   const subscribedSeat =
     normalizeBillingSeatBand(deal.stripeSeatBand) ??
     planAndCycleFromPriceId(deal.stripePriceId).seatBand;
-  const paidPackageCents = await latestPaidInvoiceCents(
+  const paidPackageCents = await maxPaidInvoiceCents(
     deal.stripeSubscriptionId,
   );
   const paidCoversAllCoSponsors = paidAmountIncludesAllCoSponsors(paidPackageCents);

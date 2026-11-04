@@ -133,7 +133,7 @@
   justify-content: center;
   line-height: 1;
   color: var(--portal-text-muted);
-  cursor: help;
+  cursor: pointer;
   flex-shrink: 0;
 }
 

@@ -254,7 +254,7 @@
   display: inline-flex;
   align-items: center;
   color: var(--portal-text-muted, #64748b);
-  cursor: help;
+  cursor: pointer;
 }
 
 .portal_dropdown_select_option {

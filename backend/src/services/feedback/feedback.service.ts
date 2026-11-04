@@ -31,6 +31,8 @@ import {
   type UserFeedbackRow,
 } from "../../schema/feedback.schema.js";
 import { users } from "../../schema/auth.schema/signin.js";
+import { companies } from "../../schema/company.schema/company.js";
+import { userCompanyMembership } from "../../schema/company.schema/userCompanyMembership.schema.js";
 
 export type FeedbackPageCatalogItem = {
   pageKey: string;
@@ -46,6 +48,8 @@ export type FeedbackPublicRow = {
   username: string;
   userEmail: string;
   userRole: string | null;
+  /** Company the submitter belongs to. Empty when they have none. */
+  companyName: string | null;
   pageKey: string;
   pageLabel: string;
   subPageKey: string;
@@ -97,9 +101,11 @@ function normalizeStatus(raw: string | null | undefined): FeedbackStatus {
 function toPublic(
   row: UserFeedbackRow,
   userRole?: string | null,
+  companyName?: string | null,
 ): FeedbackPublicRow {
   const response = String(row.adminResponse ?? "").trim();
   const role = String(userRole ?? "").trim();
+  const company = String(companyName ?? "").trim();
   return {
     id: row.id,
     feedbackNo: Number(row.feedbackNo) || 0,
@@ -107,6 +113,7 @@ function toPublic(
     username: row.username,
     userEmail: row.userEmail,
     userRole: role || null,
+    companyName: company || null,
     pageKey: row.pageKey,
     pageLabel: row.pageLabel,
     subPageKey: row.subPageKey,
@@ -138,11 +145,69 @@ async function rolesByUserIds(
   );
 }
 
+function rememberCompanyName(
+  byUser: Map<string, string[]>,
+  userId: string,
+  rawName: string | null | undefined,
+) {
+  const name = String(rawName ?? "").trim();
+  if (!userId || !name) return;
+  const list = byUser.get(userId) ?? [];
+  if (!list.includes(name)) list.push(name);
+  byUser.set(userId, list);
+}
+
+/** Home company first, then any other company membership. */
+async function companyNamesByUserIds(
+  userIds: string[],
+): Promise<Map<string, string>> {
+  const unique = [
+    ...new Set(userIds.map((id) => String(id ?? "").trim()).filter(Boolean)),
+  ];
+  if (unique.length === 0) return new Map();
+
+  const byUser = new Map<string, string[]>();
+  const homeRows = await db
+    .select({ userId: users.id, companyName: companies.name })
+    .from(users)
+    .leftJoin(companies, eq(companies.id, users.organizationId))
+    .where(inArray(users.id, unique));
+  for (const row of homeRows) {
+    rememberCompanyName(byUser, row.userId, row.companyName);
+  }
+
+  const memberships = await db
+    .select({
+      userId: userCompanyMembership.userId,
+      companyName: companies.name,
+    })
+    .from(userCompanyMembership)
+    .innerJoin(companies, eq(companies.id, userCompanyMembership.companyId))
+    .where(inArray(userCompanyMembership.userId, unique));
+  for (const row of memberships) {
+    rememberCompanyName(byUser, row.userId, row.companyName);
+  }
+
+  return new Map(
+    [...byUser.entries()].map(([userId, names]) => [userId, names.join(", ")]),
+  );
+}
+
 async function toPublicRows(
   rows: UserFeedbackRow[],
 ): Promise<FeedbackPublicRow[]> {
-  const roles = await rolesByUserIds(rows.map((r) => r.userId));
-  return rows.map((row) => toPublic(row, roles.get(row.userId) ?? null));
+  const userIds = rows.map((r) => r.userId);
+  const [roles, companiesByUser] = await Promise.all([
+    rolesByUserIds(userIds),
+    companyNamesByUserIds(userIds),
+  ]);
+  return rows.map((row) =>
+    toPublic(
+      row,
+      roles.get(row.userId) ?? null,
+      companiesByUser.get(row.userId) ?? null,
+    ),
+  );
 }
 
 async function toPublicOne(row: UserFeedbackRow): Promise<FeedbackPublicRow> {

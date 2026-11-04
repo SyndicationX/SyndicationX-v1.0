@@ -221,7 +221,7 @@ export async function patchDealLpInvestorMyInvestNowAddon(
       dealId: dealId.trim(),
       viewerEmailNorm: emailNorm,
       viewerUserId: user.id,
-      investmentId: investmentIdRaw || undefined,
+      investmentId: result.investmentId || investmentIdRaw || undefined,
       userInvestorProfileId: hasUserInvestorProfileIdKey
         ? userInvestorProfileRaw
         : undefined,

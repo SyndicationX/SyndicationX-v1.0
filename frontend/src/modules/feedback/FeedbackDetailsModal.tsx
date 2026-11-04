@@ -2,6 +2,7 @@ import { ViewReadonlyField } from "@/common/components/ViewReadonlyField"
 import { displayEmail } from "@/common/utils/displayEmail"
 import { formatDateDdMmmYyyy } from "@/common/utils/formatDateDisplay"
 import {
+  Building2,
   CalendarClock,
   CheckCircle2,
   ClipboardList,
@@ -179,6 +180,11 @@ export function FeedbackDetailsModal({
                 Icon={Shield}
                 label="Role"
                 value={feedbackUserRoleLabel(item.userRole)}
+              />
+              <ViewReadonlyField
+                Icon={Building2}
+                label="Company"
+                value={item.companyName?.trim() || "—"}
               />
               <ViewReadonlyField
                 Icon={LayoutGrid}

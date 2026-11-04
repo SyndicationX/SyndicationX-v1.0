@@ -23,6 +23,7 @@ export interface InvestorDistHistoryRow {
   distributionName: string
   date: string
   achStatus: string
+  bankAccountSetup: "set_up" | "not_set_up"
   type: string
   paymentDate: string
   payment: number
@@ -283,6 +284,7 @@ export function buildInvestorDistributionHistory(params: {
       distributionName: named || memo,
       date: formatPaymentDateLabel(prior.date || prior.paymentDate || window.end),
       achStatus: "not sent",
+      bankAccountSetup: "not_set_up",
       type: typeDisplayLabel(prior),
       paymentDate: formatPaymentDateLabel(
         prior.paymentDate || prior.date || window.end,

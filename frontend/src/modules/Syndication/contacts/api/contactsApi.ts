@@ -7,6 +7,7 @@ import { getApiV1Base } from "@/common/utils/apiBaseUrl"
 import type {
   ContactDealRow,
   ContactOfferingVisibility,
+  ContactOrganizationSummary,
   ContactOwnerSponsorOption,
   ContactRelationship506b,
   ContactRow,
@@ -108,6 +109,41 @@ function parseContactFlag(raw: unknown): boolean {
   return s === "true" || s === "yes" || s === "1"
 }
 
+function parseContactOrganizations(
+  raw: unknown,
+): ContactOrganizationSummary[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const companies: ContactOrganizationSummary[] = []
+  for (const item of raw) {
+    if (item == null || typeof item !== "object") continue
+    const record = item as Record<string, unknown>
+    const companyName = String(record.companyName ?? record.company_name ?? "").trim()
+    if (!companyName) continue
+    const deals: ContactOrganizationSummary["deals"] = []
+    const dealsRaw = record.deals
+    if (Array.isArray(dealsRaw)) {
+      for (const deal of dealsRaw) {
+        if (deal == null || typeof deal !== "object") continue
+        const row = deal as Record<string, unknown>
+        const dealName = String(row.dealName ?? row.deal_name ?? "").trim()
+        const dealId = String(row.dealId ?? row.deal_id ?? "").trim()
+        if (!dealName && !dealId) continue
+        deals.push({
+          dealId,
+          dealName: dealName || "Deal",
+          contactRole: String(row.contactRole ?? row.contact_role ?? "").trim(),
+        })
+      }
+    }
+    companies.push({
+      companyId: String(record.companyId ?? record.company_id ?? "").trim(),
+      companyName,
+      deals,
+    })
+  }
+  return companies
+}
+
 function normalizeContact(raw: Record<string, unknown>): ContactRow {
   const tags = raw.tags
   const lists = raw.lists
@@ -180,6 +216,7 @@ function normalizeContact(raw: Record<string, unknown>): ContactRow {
         ? String(raw.addedByCompanyName ?? raw.added_by_company_name).trim() ||
           undefined
         : undefined,
+    organizations: parseContactOrganizations(raw.organizations),
     createdAt:
       raw.createdAt != null || raw.created_at != null
         ? String(raw.createdAt ?? raw.created_at).trim() || undefined
@@ -203,6 +240,11 @@ function normalizeContact(raw: Record<string, unknown>): ContactRow {
     importSource:
       raw.importSource != null || raw.import_source != null
         ? (String(raw.importSource ?? raw.import_source).trim() as ContactRow["importSource"])
+        : undefined,
+    referredByDealId:
+      raw.referredByDealId != null || raw.referred_by_deal_id != null
+        ? String(raw.referredByDealId ?? raw.referred_by_deal_id).trim() ||
+          undefined
         : undefined,
     canSendInvitationEmail:
       raw.canSendInvitationEmail != null ||
@@ -558,12 +600,29 @@ export async function fetchContactDealStats(
 export async function hydrateContactDealStatsInChunks(
   ids: string[],
   options?: { organizationId?: string; allOrganizations?: boolean },
+  onChunk?: (stats: Map<string, ContactRow>) => void,
 ): Promise<Map<string, ContactRow>> {
   const byId = new Map<string, ContactRow>()
   const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+  const chunks: string[][] = []
   for (let i = 0; i < unique.length; i += 100) {
-    const chunk = await fetchContactDealStats(unique.slice(i, i + 100), options)
-    for (const [id, row] of chunk) byId.set(id, row)
+    chunks.push(unique.slice(i, i + 100))
+  }
+  let cursor = 0
+  const workers = Math.min(3, chunks.length)
+  async function worker() {
+    while (cursor < chunks.length) {
+      const index = cursor
+      cursor += 1
+      const chunk = chunks[index]
+      if (!chunk) continue
+      const stats = await fetchContactDealStats(chunk, options)
+      for (const [id, row] of stats) byId.set(id, row)
+      if (stats.size > 0) onChunk?.(stats)
+    }
+  }
+  if (workers > 0) {
+    await Promise.all(Array.from({ length: workers }, () => worker()))
   }
   return byId
 }

@@ -93,6 +93,8 @@ export type ViewerDealMemberRoleKind =
  * - other rows with the same email
  * - same org + same first/last name when at least one email looks scrubbed
  *   (`redacted…` / missing `@`) — covers duplicate import accounts
+ * - a scrubbed account in another company when a contact with this login
+ *   email has that account's name, or the name on its investor row
  */
 export async function listEquivalentPortalUserIdsForUser(
   userId: string,
@@ -131,6 +133,54 @@ export async function listEquivalentPortalUserIdsForUser(
             OR position('@' in lower(trim(coalesce(u.email, '')))) < 1
             OR me.email_norm LIKE 'redacted%'
             OR position('@' in me.email_norm) < 1
+          )
+        )
+        OR (
+          -- Same displayed email: a redacted duplicate and the login that
+          -- owns that address are one person, even in different companies.
+          position('@' in me.email_norm) > 1
+          AND me.email_norm NOT LIKE 'redacted%'
+          AND (
+            lower(trim(coalesce(u.email, ''))) LIKE 'redacted%'
+            OR position('@' in lower(trim(coalesce(u.email, '')))) < 1
+          )
+          AND (
+            EXISTS (
+              SELECT 1 FROM contact c
+              WHERE lower(trim(c.email)) = me.email_norm
+                AND nullif(trim(concat_ws(' ', u.first_name, u.last_name)), '') IS NOT NULL
+                AND (
+                  lower(trim(c.full_name)) = lower(trim(concat_ws(' ', u.first_name, u.last_name)))
+                  OR lower(trim(concat_ws(' ', c.first_name, c.last_name))) = lower(trim(concat_ws(' ', u.first_name, u.last_name)))
+                )
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM deal_lp_investor dli
+              INNER JOIN contact c ON lower(trim(c.email)) = me.email_norm
+              WHERE trim(both from dli.contact_member_id) = u.id::text
+                AND nullif(trim(dli.investor_name), '') IS NOT NULL
+                AND (
+                  lower(trim(c.full_name)) = lower(trim(dli.investor_name))
+                  OR lower(trim(concat_ws(' ', c.first_name, c.last_name))) = lower(trim(dli.investor_name))
+                )
+                AND (
+                  nullif(trim(dli.email), '') IS NULL
+                  OR lower(trim(dli.email)) LIKE 'redacted%'
+                  OR position('@' in lower(trim(coalesce(dli.email, '')))) < 1
+                )
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM deal_investment di
+              INNER JOIN contact c ON lower(trim(c.email)) = me.email_norm
+              WHERE trim(both from di.contact_id) = u.id::text
+                AND nullif(trim(di.contact_display_name), '') IS NOT NULL
+                AND (
+                  lower(trim(c.full_name)) = lower(trim(di.contact_display_name))
+                  OR lower(trim(concat_ws(' ', c.first_name, c.last_name))) = lower(trim(di.contact_display_name))
+                )
+            )
           )
         )`,
     [uid],
@@ -299,7 +349,7 @@ export async function resolveViewerDealMemberRoleOnDeal(
 
 /** Returned when an admin sponsor or co-sponsor without a company tries to open a deal. */
 export const CO_SPONSOR_COMPANY_REQUIRED_MESSAGE =
-  "Create a company to open this deal.";
+  "Add a company to open this deal.";
 
 /**
  * True when this user or contact belongs to a company of their own.

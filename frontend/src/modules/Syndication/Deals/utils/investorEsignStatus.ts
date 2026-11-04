@@ -1,4 +1,5 @@
 import { getSessionUserId } from "../../../../common/auth/sessionUserId"
+import { investorParticipationKind } from "../../../Investing/utils/investorParticipationKind"
 import {
   dealAssetRelativePathToUploadsUrl,
   getUploadsPublicOrigin,
@@ -868,13 +869,21 @@ export function investorEsignIsFullyCompletedForRow(
   return String(row.signedDate ?? "").trim().toLowerCase() === "completed"
 }
 
+function investorCommitmentFinishRecorded(row: DealInvestorRow): boolean {
+  const raw = String(row.commitmentCompletedAtIso ?? "").trim()
+  return Boolean(raw && raw !== "—" && raw !== "-")
+}
+
 /**
- * True when Invest Now is done for this profile (e-sign complete, or ETL
- * rows that already have a calendar signed date and a commitment).
+ * True when Invest Now is done for this profile (Finish was recorded,
+ * e-sign is complete, or ETL rows already have a calendar signed date
+ * and a commitment).
  */
 export function investorInvestmentProfileIsComplete(
   row: DealInvestorRow,
 ): boolean {
+  if (investorParticipationKind(row) === "invested") return true
+  if (investorCommitmentFinishRecorded(row)) return true
   if (investorEsignIsFullyCompletedForRow(row)) return true
   const doc = String(row.docSignedDateIso ?? row.signedDate ?? "").trim()
   if (!doc) return false

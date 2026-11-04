@@ -92,6 +92,17 @@ export function investNowDraftProgressFromInvestorRow(
     phaseId = "questionnaire"
   }
 
+  // Saved answers mean the questionnaire step is already done. A later W-9
+  // means Invest Now has moved on to signing.
+  if (row.investorQuestionnaireSaved) {
+    completedPhases = 3
+    phaseId = "w9"
+  }
+  if (row.investorW9Saved) {
+    completedPhases = 4
+    phaseId = "esignatures"
+  }
+
   if (investorEsignWasSent(row)) {
     completedPhases = 4
     phaseId = "esignatures"

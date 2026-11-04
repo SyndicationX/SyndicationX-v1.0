@@ -45,6 +45,7 @@ import {
 } from "../deal_members/add-investment/addMemberFormDraftStorage";
 import { notifyDealInvestorsExportAudit } from "../../api/dealInvestorsExportNotifyApi";
 import { InviteMailStatusBadge } from "./InviteMailStatusBadge";
+import { DealTableHyphen, isTableHyphen } from "./DealTableHyphen";
 import {
   DealInvestorCompanyGroups,
   groupInvestorsByCompany,
@@ -61,6 +62,8 @@ import {
   resolveInvestorRowEsignStatus,
 } from "../../utils/investorEsignStatus";
 import { InvestorEsignStatusModal } from "./InvestorEsignStatusModal";
+import { EditFundedDateModal } from "./EditFundedDateModal";
+import { UpdateInvestorSponsorModal } from "./UpdateInvestorSponsorModal";
 import { SendEsignDocumentsModal } from "./SendEsignDocumentsModal";
 import { InvestorClassPillsDisplay } from "./InvestorClassPillsDisplay";
 import { DealMemberRowActions } from "../deal_members/components/DealMemberRowActions";
@@ -137,7 +140,9 @@ import { buildTableExportFilename } from "@/common/utils/tableExportFilename";
 import { formatCount } from "@/common/utils/formatCount";
 import {
   dealInvestorStatusDisplayLabel,
+  formatStoredInvestmentStatus,
   investorFundedColumnLabel,
+  investorFundedDateLabel,
   investorRowIsFundApproved,
 } from "../../utils/dealInvestorTableDisplay";
 import type {
@@ -387,9 +392,20 @@ function resolveInvestorClassLabelForRow(
   return formatInvestorClassTableLabel(formValue, classes)
 }
 
+function DealInvestorStatusBadge({ label }: { label: string }) {
+  const text = label.trim() || "—";
+  if (isTableHyphen(text)) return <DealTableHyphen />;
+  return (
+    <span className="deal_inv_status_badge" title={text}>
+      <span className="deal_inv_status_badge_label">{text}</span>
+    </span>
+  );
+}
+
 function VerifiedAccBadge({ label }: { label: string }) {
   const t = String(label ?? "").trim() || "—";
-  const hint = t !== "—" ? t : undefined;
+  if (isTableHyphen(t)) return <DealTableHyphen />;
+  const hint = t;
   return (
     <span
       className="deal_inv_verified_badge deal_inv_verified_badge_ellipsis"
@@ -402,7 +418,7 @@ function VerifiedAccBadge({ label }: { label: string }) {
 
 function DealInvestorFundedBadge({ row }: { row: DealInvestorRow }) {
   const approved = investorRowIsFundApproved(row);
-  const label = approved ? "Approved" : "Not Approved";
+  const label = investorFundedColumnLabel(row);
   return (
     <span
       className={`deal_inv_funded_badge${
@@ -431,7 +447,8 @@ function DealInvEllipsisText({
   title?: string;
 }) {
   const display = String(text ?? "").trim() || "—";
-  const hint = titleProp?.trim() || (display !== "—" ? display : undefined);
+  if (isTableHyphen(display)) return <DealTableHyphen />;
+  const hint = titleProp?.trim() || display;
   return (
     <span
       className={`deal_inv_ellipsis_text${alignEnd ? " deal_inv_ellipsis_text_end" : ""}${className ? ` ${className}` : ""}`.trim()}
@@ -558,6 +575,17 @@ function mergeInvestorRows(
   return merged;
 }
 
+function investorRowIsSponsorPerson(row: DealInvestorRow): boolean {
+  const labels = [row.investorRole, ...(row.memberRoleLabels ?? [])];
+  return labels.some((raw) => {
+    const t = String(raw ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[_-]/g, " ");
+    return t === "lead sponsor" || t === "admin sponsor" || t === "co sponsor";
+  });
+}
+
 function DealInvestorsPopulated({
   initialPayload,
   dealId,
@@ -577,6 +605,7 @@ function DealInvestorsPopulated({
   offeringLinkAvailable,
   offeringLinkBlockedBecauseDraft = false,
   onRefreshInvestors,
+  onSponsorSaved,
   canApproveFund = false,
   viewOnly = false,
   viewerDealMemberRole = null,
@@ -603,6 +632,7 @@ function DealInvestorsPopulated({
   offeringLinkAvailable: boolean;
   offeringLinkBlockedBecauseDraft?: boolean;
   onRefreshInvestors?: () => void | Promise<void>;
+  onSponsorSaved?: () => void;
   canApproveFund?: boolean;
   viewOnly?: boolean;
   viewerDealMemberRole?: ViewerDealMemberRole;
@@ -615,6 +645,14 @@ function DealInvestorsPopulated({
   );
   const [rows, setRows] = useState<DealInvestorRow[]>(initialPayload.investors);
   const [approveFundBusyId, setApproveFundBusyId] = useState<string | null>(
+    null,
+  );
+  const [fundedDateRow, setFundedDateRow] = useState<DealInvestorRow | null>(
+    null,
+  );
+  const [fundedDateBusy, setFundedDateBusy] = useState(false);
+  const [fundedDateError, setFundedDateError] = useState("");
+  const [sponsorEditRow, setSponsorEditRow] = useState<DealInvestorRow | null>(
     null,
   );
   const [selectedInvestorIds, setSelectedInvestorIds] = useState<Set<string>>(
@@ -686,6 +724,37 @@ function DealInvestorsPopulated({
     },
     [canApproveFund, dealId, onRefreshInvestors],
   );
+
+  const saveFundedDate = useCallback(
+    async (date: string) => {
+      const row = fundedDateRow;
+      if (!row || !canApproveFund) return;
+      setFundedDateBusy(true);
+      setFundedDateError("");
+      try {
+        const values: AddInvestmentFormValues = {
+          ...dealInvestorRowToFormValues(row),
+          fundApproved: true,
+          fundApprovedAt: date,
+        };
+        const res = await putDealInvestment(dealId, row.id, values, null);
+        if (!res.ok) {
+          setFundedDateError(res.message);
+          return;
+        }
+        toast.success("Funded date updated", "The funded date was saved.");
+        setFundedDateRow(null);
+        await onRefreshInvestors?.();
+      } finally {
+        setFundedDateBusy(false);
+      }
+    },
+    [canApproveFund, dealId, fundedDateRow, onRefreshInvestors],
+  );
+
+  const openUpdateSponsor = useCallback((row: DealInvestorRow) => {
+    setSponsorEditRow(row);
+  }, []);
 
   const kpis = useMemo((): DealInvestorsKpis => {
     const base = initialPayload.kpis;
@@ -1074,7 +1143,10 @@ function DealInvestorsPopulated({
     const s = new Set(rows.map((r) => r.status).filter(Boolean));
     return [
       { value: "", label: "All statuses" },
-      ...[...s].sort().map((c) => ({ value: c, label: c })),
+      ...[...s].sort().map((c) => ({
+        value: c,
+        label: formatStoredInvestmentStatus(c),
+      })),
     ];
   }, [rows]);
 
@@ -1090,8 +1162,8 @@ function DealInvestorsPopulated({
   const fundingFilterOptions = useMemo(
     (): DropdownSelectOption[] => [
       { value: "", label: "All" },
-      { value: "funded", label: "Approved" },
-      { value: "pending", label: "Not Approved" },
+      { value: "funded", label: "Funded" },
+      { value: "pending", label: "Not Funded" },
     ],
     [],
   );
@@ -1161,29 +1233,27 @@ function DealInvestorsPopulated({
       {
         id: "profile",
         header: "Profile",
-        colWidth: "14rem",
+        colWidth: "12rem",
         thClassName: "deal_inv_th_profile",
         tdClassName: "deal_inv_td_profile",
         sortValue: (row) =>
           dealInvestorProfileDisplayName(row).toLowerCase(),
         cell: (row) => {
           const text = dealInvestorProfileDisplayName(row)
-          if (!text || text === "—")
-            return <span className="um_status_muted">—</span>
+          if (!text || isTableHyphen(text)) return <DealTableHyphen />
           return <span className="deal_inv_profile_full_text">{text}</span>
         },
       },
       {
         id: "profileType",
         header: "Profile type",
-        colWidth: "14rem",
+        colWidth: "12rem",
         thClassName: "deal_inv_th_profile deal_inv_th_profile_type",
         tdClassName: "deal_inv_td_profile deal_inv_td_profile_type",
         sortValue: (row) => dealInvestorProfileTypeDisplay(row).toLowerCase(),
         cell: (row) => {
           const text = dealInvestorProfileTypeDisplay(row)
-          if (!text || text === "—")
-            return <span className="um_status_muted">—</span>
+          if (!text || isTableHyphen(text)) return <DealTableHyphen />
           return <span className="deal_inv_profile_full_text">{text}</span>
         },
       },
@@ -1234,8 +1304,7 @@ function DealInvestorsPopulated({
             : formatInvestorClassTableLabel(row.investorClass, investorClasses);
           const dealLine = dealAllClassNamesLine.trim();
           const pillSource = assignedRaw || dealLine;
-          if (!pillSource.trim())
-            return <span className="deal_inv_class_pill_muted">—</span>;
+          if (!pillSource.trim()) return <DealTableHyphen />;
           const titleForTooltip =
             assignedRaw && dealLine && assignedRaw !== dealLine
               ? `${assignedRaw} · Deal: ${dealLine}`
@@ -1255,7 +1324,7 @@ function DealInvestorsPopulated({
         sortValue: (row) => dealInvestorStatusDisplayLabel(row).toLowerCase(),
         tdClassName: "deal_inv_td_ellipsis",
         cell: (row) => (
-          <DealInvEllipsisText text={dealInvestorStatusDisplayLabel(row)} />
+          <DealInvestorStatusBadge label={dealInvestorStatusDisplayLabel(row)} />
         ),
       },
       {
@@ -1390,6 +1459,15 @@ function DealInvestorsPopulated({
         cell: (row) => <DealInvestorFundedBadge row={row} />,
       },
       {
+        id: "fundedDate",
+        header: "Funded date",
+        sortValue: (row) => row.fundApprovedAtIso ?? "",
+        tdClassName: "deal_inv_td_ellipsis",
+        cell: (row) => (
+          <DealInvEllipsisText text={investorFundedDateLabel(row)} />
+        ),
+      },
+      {
         id: "selfAcc",
         header: "Self Acc",
         sortValue: (row) => row.selfAccredited ?? "",
@@ -1453,6 +1531,17 @@ function DealInvestorsPopulated({
                 row.addedByIsCoSponsorOnDeal === true
               }
               onApproveFund={canApproveFund ? handleApproveFund : undefined}
+              onEditFundedDate={
+                canApproveFund &&
+                investorRowSupportsApproveFund(row) &&
+                investorRowIsFundApproved(row)
+                  ? (target) => {
+                      setFundedDateError("");
+                      setFundedDateRow(target);
+                    }
+                  : undefined
+              }
+              approveFundBusy={approveFundBusyId === row.id}
               approveFundDisabled={
                 !canApproveFund ||
                 approveFundBusyId === row.id ||
@@ -1475,6 +1564,14 @@ function DealInvestorsPopulated({
                         : !investorEsignIsFullyCompletedForRow(row)
                           ? "Complete e-sign before approving the fund"
                           : undefined
+              }
+              onUpdateSponsor={
+                !viewOnly &&
+                viewerDealMemberRole === "lead_sponsor" &&
+                row.id !== ADD_MEMBER_DRAFT_ROW_ID &&
+                !investorRowIsSponsorPerson(row)
+                  ? openUpdateSponsor
+                  : undefined
               }
               onDelete={(r, removal) => onDeleteMember?.(r, "investor", removal)}
             />
@@ -1502,6 +1599,7 @@ function DealInvestorsPopulated({
       approveFundBusyId,
       canApproveFund,
       openEsignStatusModal,
+      openUpdateSponsor,
       viewOnly,
       viewerDealMemberRole,
     ],
@@ -1670,6 +1768,53 @@ function DealInvestorsPopulated({
         row={esignStatusRow}
         onClose={closeEsignStatusModal}
       />
+      {fundedDateRow ? (
+        <EditFundedDateModal
+          investorName={fundedDateRow.displayName?.trim() || "this investor"}
+          busy={fundedDateBusy}
+          error={fundedDateError}
+          onClose={() => {
+            if (fundedDateBusy) return
+            setFundedDateRow(null)
+          }}
+          onSave={(date) => void saveFundedDate(date)}
+        />
+      ) : null}
+      {sponsorEditRow ? (
+        <UpdateInvestorSponsorModal
+          dealId={dealId}
+          investorRowId={sponsorEditRow.id}
+          investorName={sponsorEditRow.displayName?.trim() || "this investor"}
+          onClose={() => setSponsorEditRow(null)}
+          onSaved={(sponsor) => {
+            const investorName =
+              sponsorEditRow.displayName?.trim() || "This investor"
+            const contactId = String(sponsorEditRow.contactId ?? "").trim()
+            setRows((prev) =>
+              prev.map((row) => {
+                const sameInvestor =
+                  row.id === sponsorEditRow.id ||
+                  (contactId.length > 0 &&
+                    String(row.contactId ?? "").trim() === contactId)
+                if (!sameInvestor) return row
+                return {
+                  ...row,
+                  addedByUserId: sponsor.userId,
+                  addedByDisplayName: sponsor.displayName,
+                  addedByEmail: sponsor.email,
+                }
+              }),
+            )
+            setSponsorEditRow(null)
+            toast.success(
+              "Sponsor updated",
+              `${investorName} is now sponsored by ${sponsor.displayName}.`,
+            )
+            void onRefreshInvestors?.()
+            onSponsorSaved?.()
+          }}
+        />
+      ) : null}
       {sendMailModalOpen ? (
         <div
           className="um_modal_overlay contacts_suspend_overlay"
@@ -2733,6 +2878,9 @@ export const DealInvestorsTab = forwardRef<
         canApproveFund={canApproveFund}
         viewerDealMemberRole={effectiveViewerRole}
         onRefreshInvestors={refreshInvestorsInPlace}
+        onSponsorSaved={() => {
+          onInvestorsChanged?.()
+        }}
       />
       <DealInvestorViewModal
         row={viewInvestorRow}

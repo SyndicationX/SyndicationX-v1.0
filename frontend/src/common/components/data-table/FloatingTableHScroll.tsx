@@ -169,10 +169,16 @@ export function FloatingTableHScroll({
         pagination instanceof HTMLElement
           ? pagination.getBoundingClientRect().top
           : null
-      const limitBottom =
-        paginationTop == null
-          ? port.bottom
-          : Math.min(port.bottom, paginationTop)
+      const commitBar = node.closest(".deals_dist_setup_page")?.querySelector(
+        ":scope > .ds_commit_bar",
+      )
+      const commitTop =
+        commitBar instanceof HTMLElement
+          ? commitBar.getBoundingClientRect().top
+          : null
+      let limitBottom = port.bottom
+      if (paginationTop != null) limitBottom = Math.min(limitBottom, paginationTop)
+      if (commitTop != null) limitBottom = Math.min(limitBottom, commitTop)
       const tableBottomInView = rect.bottom <= limitBottom + 1
       const fitsBelowTable =
         tableBottomInView &&

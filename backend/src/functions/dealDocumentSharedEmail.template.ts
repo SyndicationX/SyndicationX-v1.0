@@ -13,7 +13,7 @@ export interface DealDocumentSharedTemplateVars {
   memberEmail: string;
   documentNames: string[];
   senderBrand: string;
-  /** Absolute portal sign-in URL (FRONTEND_URL / SIGNIN_PAGE_URL). */
+  /** Sign-in URL that returns to this deal’s documents in Investing. */
   loginUrl: string;
 }
 
@@ -51,7 +51,8 @@ export function buildDealDocumentSharedEmailText(
     "A document has been shared with you:",
     documentListText(v.documentNames),
     "",
-    "To open the deal and view your documents, click here.",
+    "To open the deal and view your documents in Investing, click here:",
+    v.loginUrl.trim() || "(sign-in link unavailable)",
     "",
     `This message was sent to: ${v.memberEmail}`,
     "",
@@ -79,7 +80,7 @@ export function buildDealDocumentSharedEmailHtml(
     ? `<a href="${loginHref}" style="color:${SX_EMAIL_LINK};font-weight:700;text-decoration:underline;">click here</a>`
     : "click here";
   const loginBlock = `<p style="font-size:15px;line-height:1.6;color:#374151;margin:20px 0 0 0;">
-    To open the deal and view your documents, ${clickHere}.
+    To open the deal and view your documents in Investing, ${clickHere}.
   </p>`;
 
   /*

@@ -1,6 +1,9 @@
 import { formatDateDdMmmYyyy } from "@/common/utils/formatDateDisplay"
 import type { ContactRow } from "../types/contact.types"
-import { CONTACT_RELATIONSHIP_506B_OPTIONS } from "../types/contact.types"
+import {
+  CONTACT_RELATIONSHIP_506B_OPTIONS,
+  contactAddedFromLabel,
+} from "../types/contact.types"
 
 /** Table / UI / CSV: **DD-MMM-YYYY** (application standard). */
 export function formatContactSinceLabel(iso: string | undefined): string {
@@ -45,7 +48,7 @@ export function buildPlatformContactsCsv(
     "Signup Role",
     "Accreditation Status",
     // "Invited by",
-    ...(includeVisibility ? ["Visible on platform"] : []),
+    ...(includeVisibility ? ["Added from", "Visible on platform"] : []),
     "Joined",
   ]
   const lines = [headers.map(escapeCsvCell).join(",")]
@@ -60,7 +63,7 @@ export function buildPlatformContactsCsv(
       status || "N/A",
       // row.invitedByDisplayName?.trim() ?? "",
       ...(includeVisibility
-        ? [row.visibleToUsers === true ? "Yes" : "No"]
+        ? [contactAddedFromLabel(row), row.visibleToUsers === true ? "Yes" : "No"]
         : []),
       sinceForCsv(row),
     ]
@@ -88,7 +91,7 @@ export function buildContactsCsv(
     "Owners",
     ...(includeOrganization ? ["Organization"] : []),
     "Invited by",
-    ...(includeVisibility ? ["Visible on platform"] : []),
+    ...(includeVisibility ? ["Added from", "Visible on platform"] : []),
     "Added by",
     "Since",
   ]
@@ -111,7 +114,7 @@ export function buildContactsCsv(
         ...(includeOrganization ? [row.organizationName?.trim() ?? ""] : []),
         row.invitedByDisplayName?.trim() ?? "",
         ...(includeVisibility
-          ? [row.visibleToUsers === true ? "Yes" : "No"]
+          ? [contactAddedFromLabel(row), row.visibleToUsers === true ? "Yes" : "No"]
           : []),
         row.createdByDisplayName ?? "",
         sinceForCsv(row),

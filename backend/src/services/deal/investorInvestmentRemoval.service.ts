@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../../database/db.js";
 import { users } from "../../schema/auth.schema/signin.js";
 import { dealMember } from "../../schema/deal.schema/deal-member.schema.js";
@@ -16,7 +16,10 @@ import {
   investorDistributionPayouts,
 } from "../../schema/stripeInvestorPayments.schema.js";
 import {
+  committedNumericFromDealInvestmentRow,
   isDealCompanyUserStoredRole,
+  isLpInvestorRole,
+  isRetiredDealInvestment,
   loadRosterAddedByMaps,
   mapContactIdsToCanonicalCommitmentKeys,
   resolveInvestorRowAddedByUserId,
@@ -32,6 +35,7 @@ import {
 import {
   blocksLastLeadSponsorRemoval,
   planInvestorRemoval,
+  REMOVED_INVESTMENT_STATUS,
   runRemovalUnitOfWork,
   type RemovalAction,
   type RemovalInvestment,
@@ -121,6 +125,7 @@ async function leadOrAdminRemovingCoSponsorInvestor(params: {
     maps.byContactKey,
     maps.byLpRowId,
     rawToCanonical,
+    maps.lpContactKeys,
   );
   if (!addedBy) return false;
   const coSponsors = new Set(
@@ -180,6 +185,44 @@ async function investmentIdsWithMoney(ids: string[]): Promise<string[]> {
   return [...blocked];
 }
 
+async function syncLpCommitmentToOpenInvestments(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  dealId: string,
+  contactId: string,
+): Promise<void> {
+  const contact = contactId.trim();
+  if (!contact) return;
+  const rows = await tx
+    .select()
+    .from(dealInvestment)
+    .where(
+      and(
+        eq(dealInvestment.dealId, dealId),
+        sql`lower(${dealInvestment.contactId}) = ${contact.toLowerCase()}`,
+      ),
+    );
+  let total = 0;
+  for (const row of rows) {
+    if (isRetiredDealInvestment(row)) continue;
+    if (!isLpInvestorRole(row.investor_role)) continue;
+    total += committedNumericFromDealInvestmentRow(row);
+  }
+  const stored =
+    !Number.isFinite(total) || total <= 0
+      ? "0"
+      : String(Math.round(total * 100) / 100);
+  await tx
+    .update(dealLpInvestor)
+    .set({ committed_amount: stored, updatedAt: new Date() })
+    .where(
+      and(
+        eq(dealLpInvestor.dealId, dealId),
+        sql`lower(${dealLpInvestor.contactMemberId}) = ${contact.toLowerCase()}`,
+        isNull(dealLpInvestor.removedAt),
+      ),
+    );
+}
+
 async function applyMutation(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   dealId: string,
@@ -191,6 +234,7 @@ async function applyMutation(
     const updated = await tx
       .update(dealInvestment)
       .set({
+        status: REMOVED_INVESTMENT_STATUS,
         removedAt: now,
         removedByUserId: plan.actorUserId,
         removalReason: plan.reason,
@@ -212,6 +256,24 @@ async function applyMutation(
     }
     return;
   }
+  if (mutation.type === "release_investment_commitment") {
+    const updated = await tx
+      .update(dealInvestment)
+      .set({
+        status: REMOVED_INVESTMENT_STATUS,
+      })
+      .where(
+        and(eq(dealInvestment.id, mutation.id), eq(dealInvestment.dealId, dealId)),
+      )
+      .returning({ id: dealInvestment.id });
+    if (updated.length !== 1) {
+      throw new InvestorRemovalError(
+        "This investment changed before its committed amount could be removed.",
+        409,
+      );
+    }
+    return;
+  }
   if (mutation.type === "unlink_investor") {
     const updated = await tx
       .update(dealInvestment)
@@ -224,7 +286,6 @@ async function applyMutation(
         and(
           eq(dealInvestment.id, mutation.id),
           eq(dealInvestment.dealId, dealId),
-          isNull(dealInvestment.removedAt),
           isNull(dealInvestment.investorUnlinkedAt),
         ),
       )
@@ -450,6 +511,13 @@ export async function removeInvestorOrInvestment(params: {
           applyMutations: async () => {
             for (const mutation of plan.mutations) {
               await applyMutation(tx, dealId, plan, mutation);
+            }
+            if (plan.action === "remove_investment") {
+              await syncLpCommitmentToOpenInvestments(
+                tx,
+                dealId,
+                plan.removedContactId,
+              );
             }
           },
           writeAudit: async () => {

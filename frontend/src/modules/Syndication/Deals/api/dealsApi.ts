@@ -115,6 +115,11 @@ export interface DealDetailApi {
   viewerCanEditDeal?: boolean
   /** False when another organization's deal is visible here for viewing only. */
   viewerCanManageDeal?: boolean
+  /**
+   * True when this company can open the deal only because their investor is on
+   * it. Offering details and the lead sponsor are the only syndication surfaces.
+   */
+  viewerInvestorCompanyLimited?: boolean
   viewerIsLeadSponsor?: boolean
   suggestedPlanId?: string | null
   needsPlanUpgrade?: boolean
@@ -846,6 +851,19 @@ export function normalizeDealDetailApi(
       }
       if (raw === false || raw === "false" || raw === 0 || raw === "0") {
         return { viewerCanManageDeal: false as const }
+      }
+      return {}
+    })(),
+    ...(() => {
+      const raw = firstDefined(d, [
+        "viewerInvestorCompanyLimited",
+        "viewer_investor_company_limited",
+      ])
+      if (raw === true || raw === "true" || raw === 1 || raw === "1") {
+        return { viewerInvestorCompanyLimited: true as const }
+      }
+      if (raw === false || raw === "false" || raw === 0 || raw === "0") {
+        return { viewerInvestorCompanyLimited: false as const }
       }
       return {}
     })(),
@@ -3017,6 +3035,17 @@ function normalizeInvestorRowApi(
         "commitment_completed_at",
       ]),
     ),
+    investorW9Saved: (() => {
+      const v = firstDefined(raw, ["investorW9Saved", "investor_w9_saved"])
+      return v === true || v === "true" || v === 1 || v === "1"
+    })(),
+    investorQuestionnaireSaved: (() => {
+      const v = firstDefined(raw, [
+        "investorQuestionnaireSaved",
+        "investor_questionnaire_saved",
+      ])
+      return v === true || v === "true" || v === 1 || v === "1"
+    })(),
     ...(() => {
       const v = firstDefined(raw, ["investorArchived", "investor_archived"])
       if (v === true || v === "true" || v === 1 || v === "1") {
@@ -3025,6 +3054,15 @@ function normalizeInvestorRowApi(
       if (v === false || v === "false" || v === 0 || v === "0") {
         return { investorArchived: false as const }
       }
+      return {}
+    })(),
+    ...(() => {
+      const v = firstDefined(raw, ["sponsorRemoved", "sponsor_removed"])
+      if (v === true || v === "true" || v === 1 || v === "1") {
+        return { sponsorRemoved: true as const }
+      }
+      const status = str(firstDefined(raw, ["status"])).trim().toLowerCase()
+      if (status === "removed") return { sponsorRemoved: true as const }
       return {}
     })(),
     amountReceived: str(
@@ -3271,6 +3309,108 @@ export async function fetchDealInvestors(
   } catch (err) {
     console.error("[InvestorsTab DEBUG] fetchDealInvestors failed", err)
     return { kpis: emptyInvestorsKpis(), investors: [] }
+  }
+}
+
+export type InvestorSponsorOption = {
+  userId: string
+  displayName: string
+  email: string
+}
+
+function apiErrorMessage(data: unknown, fallback: string): string {
+  if (data && typeof data === "object" && "message" in data) {
+    const message = (data as { message?: unknown }).message
+    if (typeof message === "string" && message.trim()) return message.trim()
+  }
+  return fallback
+}
+
+/** Sponsors in the company that currently sponsors this investor. Lead sponsor only. */
+export async function fetchInvestorSponsorOptions(
+  dealId: string,
+  investorRowId: string,
+): Promise<
+  | {
+      ok: true
+      companyName: string
+      currentSponsorUserId: string
+      sponsors: InvestorSponsorOption[]
+    }
+  | { ok: false; message: string }
+> {
+  const base = getApiV1Base()
+  if (!base) return { ok: false, message: "API is not configured." }
+  try {
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(dealId)}/investors/${encodeURIComponent(investorRowId)}/sponsor-options`,
+      {
+        headers: { ...authHeaders({ omitActiveOrganization: true }) },
+        credentials: "include",
+      },
+    )
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return { ok: false, message: apiErrorMessage(data, "Could not load sponsors") }
+    }
+    const raw = data as Record<string, unknown>
+    const list = Array.isArray(raw.sponsors) ? raw.sponsors : []
+    const sponsors: InvestorSponsorOption[] = []
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue
+      const row = item as Record<string, unknown>
+      const userId = str(row.userId ?? row.user_id).trim()
+      if (!userId) continue
+      sponsors.push({
+        userId,
+        displayName: str(row.displayName ?? row.display_name).trim() || "Sponsor",
+        email: str(row.email).trim(),
+      })
+    }
+    return {
+      ok: true,
+      companyName: str(raw.companyName ?? raw.company_name).trim(),
+      currentSponsorUserId: str(
+        raw.currentSponsorUserId ?? raw.current_sponsor_user_id,
+      ).trim(),
+      sponsors,
+    }
+  } catch {
+    return { ok: false, message: "Could not load sponsors" }
+  }
+}
+
+/** Reassign an investor's sponsor to someone in that sponsor's company. */
+export async function updateInvestorSponsor(
+  dealId: string,
+  investorRowId: string,
+  sponsorUserId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const base = getApiV1Base()
+  if (!base) return { ok: false, message: "API is not configured." }
+  try {
+    const res = await fetch(
+      `${base}/deals/${encodeURIComponent(dealId)}/investors/${encodeURIComponent(investorRowId)}/sponsor`,
+      {
+        method: "PATCH",
+        headers: {
+          ...authHeaders({ omitActiveOrganization: true }),
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({ sponsor_user_id: sponsorUserId }),
+      },
+    )
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      return {
+        ok: false,
+        message: apiErrorMessage(data, "Could not update the sponsor"),
+      }
+    }
+    return { ok: true }
+  } catch {
+    return { ok: false, message: "Could not update the sponsor" }
   }
 }
 
@@ -5487,6 +5627,8 @@ function appendDealInvestmentMultipartFields(
     "fund_approved",
     values.fundApproved === true ? "true" : "false",
   )
+  const fundApprovedAt = values.fundApprovedAt?.trim()
+  if (fundApprovedAt) fd.append("fund_approved_at", fundApprovedAt)
   const replacementLeadSponsorContactId =
     values.replacementLeadSponsorContactId?.trim()
   if (replacementLeadSponsorContactId) {

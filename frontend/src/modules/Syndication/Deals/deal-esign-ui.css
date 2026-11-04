@@ -738,7 +738,7 @@
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  border-radius: 4px;
+  border-radius: 999px;
   color: #1d4ed8;
   background: color-mix(in srgb, #2563eb 14%, transparent);
 }
@@ -863,8 +863,8 @@
   border-radius: 999px;
   background: transparent;
   font: inherit;
-  font-size: 0.8125rem;
-  font-weight: 500;
+  font-size: 0.75rem;
+  font-weight: 600;
   line-height: 1.2;
   letter-spacing: -0.01em;
   white-space: nowrap;
@@ -874,6 +874,40 @@
 
 button.deal_inv_signed_pill {
   cursor: pointer;
+}
+
+.deal_inv_signed_hover_root.form_tooltip_root_inline {
+  display: inline-flex;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.deal_inv_signed_hover_root .form_tooltip_trigger_inline {
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
+  cursor: pointer;
+  border-radius: 999px;
+}
+
+.deal_inv_signed_hover_root .deal_inv_signed_pill {
+  cursor: pointer;
+}
+
+.deal_inv_signed_hover_root .deal_inv_signed_pill--done:hover {
+  background: #dcfce7;
+}
+
+.deal_inv_signed_hover_root .deal_inv_signed_pill--viewed:hover {
+  background: #dbeafe;
+}
+
+.deal_inv_signed_hover {
+  margin: 0;
+  max-width: 16rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .deal_inv_signed_pill_icon {

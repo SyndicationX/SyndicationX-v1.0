@@ -103,32 +103,45 @@
 .deal_members_tab .deal_inv_table_panel tbody td.deal_gp_td_profile,
 .deal_members_tab .deal_inv_table_panel .um_table.deal_inv_table thead th.deal_inv_th_profile.deal_gp_th_profile,
 .deal_members_tab .deal_inv_table_panel .um_table.deal_inv_table tbody td.deal_inv_td_profile.deal_gp_td_profile {
-  min-width: 5.5rem;
-  max-width: 8.5rem;
-  width: 6.75rem;
+  min-width: 11rem;
+  max-width: 16rem;
+  width: 12rem;
 }
 
-/* Deal role: Lead Sponsor / Admin sponsor / Co-sponsor pills share one width */
+/* Deal role pills hug their label (Co-sponsor is shorter than Lead / Admin sponsor). */
 .deal_members_tab .deal_inv_table_panel thead th.deal_gp_th_role,
 .deal_members_tab .deal_inv_table_panel tbody td.deal_gp_td_role,
 .deal_members_tab .deal_inv_table_panel .um_table.deal_inv_table thead th.deal_inv_th_role.deal_gp_th_role,
 .deal_members_tab .deal_inv_table_panel .um_table.deal_inv_table tbody td.deal_inv_td_role.deal_gp_td_role {
-  min-width: 11.5rem;
-  max-width: 12.5rem;
-  width: 11.5rem;
+  width: 1%;
+  min-width: 0;
+  max-width: none;
+  white-space: nowrap;
 }
 
 .deal_members_tab .deal_inv_table_panel .deal_gp_td_role .um_role_badge.deal_inv_role_badge {
   box-sizing: border-box;
-  width: 10.75rem;
-  min-width: 10.75rem;
-  max-width: 10.75rem;
+  width: fit-content;
+  min-width: 0;
+  max-width: max-content;
   justify-content: flex-start;
+  white-space: nowrap;
 }
 
 .deal_members_tab .deal_inv_table_panel .deal_gp_td_role .um_role_badge .um_role_badge_label {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
+  white-space: nowrap;
+}
+
+.deal_members_tab .deal_inv_table_panel .deal_inv_table.um_table_members thead th.um_th_actions,
+.deal_members_tab .deal_inv_table_panel .deal_inv_table.um_table_members tbody td.um_td_actions.deal_inv_td_actions {
+  width: 1%;
+  min-width: 4.25rem;
+  max-width: 4.75rem;
+  white-space: nowrap;
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
 }
 
 /* Initial load — centered in the table panel */
@@ -312,8 +325,8 @@
   .data_table_scroll_region
   .um_table.deal_inv_table,
 .deal_members_tab .deal_inv_table_panel .um_table.deal_inv_table {
-  width: 100%;
-  min-width: max-content;
+  width: max-content;
+  min-width: 100%;
   max-width: none;
   table-layout: auto;
 }

@@ -25,9 +25,13 @@ import {
   type StripeBillingSeatBand,
 } from "../../config/stripe.config.js";
 import {
+  COMPANY_USER,
+  LEGACY_USER,
+  PLATFORM_USER,
   isCompanyAdminRole,
   isPlatformAdminRole,
 } from "../../constants/roles.js";
+import { listUserCompanyMemberships } from "../auth/userCompanyMembership.service.js";
 import { userHasAccessToOrganization } from "../org/orgResolution.service.js";
 import { releaseBillingPaymentHold } from "../../middleware/billingPaymentLock.js";
 import {
@@ -144,6 +148,32 @@ export async function resolveCompanyBillingAccess(
       // Platform admins may view other customers’ records, but only pay when
       // they are the lead sponsor on the deal.
       canPay: !platformAdmin,
+      viewerScope: "all_deals",
+      dealIds: null,
+    };
+  }
+
+  /**
+   * Someone who signed up into an existing company is a company member.
+   * They can open Settings and see billing. They do not manage or pay it.
+   */
+  const portalRole = String(userRole ?? "").trim();
+  const staffPortalRole =
+    portalRole === COMPANY_USER ||
+    portalRole === PLATFORM_USER ||
+    portalRole === LEGACY_USER;
+  const belongsToCompany = await userHasAccessToOrganization(userId, cid);
+  const memberships = belongsToCompany
+    ? await listUserCompanyMemberships(userId)
+    : [];
+  const memberOfThisCompany = memberships.some(
+    (membership) => normalizeCompanyId(membership.companyId) === cid,
+  );
+  if (belongsToCompany && (staffPortalRole || memberOfThisCompany)) {
+    return {
+      canView: true,
+      canManage: false,
+      canPay: false,
       viewerScope: "all_deals",
       dealIds: null,
     };

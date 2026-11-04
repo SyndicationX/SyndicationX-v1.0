@@ -181,7 +181,7 @@
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  border-radius: 4px;
+  border-radius: 999px;
   color: #166534;
   background: color-mix(in srgb, #15803d 12%, transparent);
 }
