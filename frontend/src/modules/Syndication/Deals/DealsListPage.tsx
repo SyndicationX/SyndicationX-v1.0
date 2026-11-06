@@ -14,6 +14,11 @@ import { DealAvatarIconRing } from "../../../common/components/entity-avatar/Ent
 import { useCallback, useEffect, useId, useMemo, useState } from "react"
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom"
 import {
+  peekCachedResource,
+  useCachedResource,
+  writeCachedResource,
+} from "@/common/hooks/useCachedResource"
+import {
   TABLE_PAGE_SIZE_ID,
   usePersistedTablePageSize,
 } from "@/common/hooks/usePersistedTablePageSize"
@@ -22,7 +27,6 @@ import {
   readDealsSearchQuery,
 } from "@/common/deals/dealsSearchQuery"
 import { coSponsorMayOpenDeal } from "@/common/auth/coSponsorCompanyGate"
-import { getSessionUserEmail } from "@/common/auth/sessionUserEmail"
 import {
   isDealSponsorSessionUser,
   isSponsorWorkspaceInvestingViewer,
@@ -30,11 +34,8 @@ import {
 import { usePortalMode } from "@/modules/Investing/context/PortalModeContext"
 import { formatCount } from "@/common/utils/formatCount"
 import {
-  dealRowSupportsRosterApiPrefetch,
   filterDealListRowsVisibleToInvestors,
   filterDealListToInvestingDealsPage,
-  formatViewerInvestingDealRolesLabel,
-  resolveViewerInvestingDealRoles,
 } from "@/modules/Investing/utils/investingViewerDealScope"
 import {
   DataTable,
@@ -45,9 +46,6 @@ import { toast } from "../../../common/components/Toast"
 import {
   areRequiredDealListRowFieldsIncomplete,
   deleteDeal,
-  fetchDealInvestorClasses,
-  fetchDealInvestors,
-  fetchDealMembers,
   fetchDealsList,
   isDealListRowIncomplete,
   patchDealArchived,
@@ -87,12 +85,6 @@ import {
   formatDealListDateDisplay,
   secTypeDisplayLabel,
 } from "./dealsListDisplay"
-import { resolveInvestmentStatusSelectValue } from "./constants/investment-status"
-import {
-  displayInvestorCommittedAmount,
-  parseMoneyDigits,
-} from "./utils/offeringMoneyFormat"
-// import { DealInvestorRoleBadge } from "./tabs/investors/DealInvestorRoleBadge"
 import "../usermanagement/user_management.css"
 import "./tabs/deal_members/add-investment/add_deal_modal.css"
 import "./deal-investors-tab.css"
@@ -365,40 +357,27 @@ export function DealsListPage({
     useState<DealSaasPaywallDeal | null>(null)
   const [suspendAllOpen, setSuspendAllOpen] = useState(false)
   const [suspendAllIds, setSuspendAllIds] = useState<string[]>([])
-  const [rows, setRows] = useState<DealListRow[]>([])
-  const [loading, setLoading] = useState(true)
+  const dealsResourceKey = `deals-page-list:v2:${dealsListContext}:${mode}`
+  const dealsListEnabled =
+    dealsListContext !== "investing" || mode === "investing"
+  const [rows, setRows] = useState<DealListRow[]>(
+    () => peekCachedResource<DealListRow[]>(dealsResourceKey) ?? [],
+  )
   const [createDealDraftTick, setCreateDealDraftTick] = useState(0)
-  /**
-   * Same sources as deal detail: investors KPI + rows, and investor-classes
-   * (Offering Information) for the Investor Class column.
-   */
-  const [investorMetricsByDealId, setInvestorMetricsByDealId] = useState<
-    Record<
-      string,
-      {
-        committedRaw: string
-        softCommittedRaw: string
-        fundedRaw: string
-        remainingRaw: string
-        investorCount: number
-        investorClassesLine: string
-        /** Investing deals tab: Sponsor / LP Investor / both. */
-        viewerRolesLabel: string
-      }
-    >
-  >({})
-
   const loadDealsList = useCallback(() => {
     return dealsListContext === "investing"
       ? fetchDealsList({ includeParticipantDeals: true })
       : fetchDealsList()
   }, [dealsListContext])
 
-  useEffect(() => {
-    if (dealsListContext === "investing" && mode !== "investing") return
-    let cancelled = false
-    void (async () => {
-      setLoading(true)
+  const {
+    data: loadedDeals,
+    isLoading: dealsLoading,
+    reload: reloadDeals,
+  } = useCachedResource({
+    key: dealsResourceKey,
+    enabled: dealsListEnabled,
+    fetcher: async () => {
       let list = await loadDealsList()
       if (dealsListContext === "investing" && list.length > 0) {
         if (isDealSponsorSessionUser())
@@ -406,15 +385,14 @@ export function DealsListPage({
         else if (!isSponsorWorkspaceInvestingViewer())
           list = await filterDealListToInvestingDealsPage(list)
       }
-      if (!cancelled) {
-        setRows(list)
-        setLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [dealsListContext, mode, loadDealsList])
+      return list
+    },
+  })
+  const loading = dealsListEnabled && dealsLoading && rows.length === 0
+
+  useEffect(() => {
+    if (loadedDeals) setRows(loadedDeals)
+  }, [loadedDeals])
 
   useEffect(() => {
     if (dealsListContext === "investing") return
@@ -430,22 +408,10 @@ export function DealsListPage({
   }, [dealsListContext])
 
   useEffect(() => {
-    function onDealsRefetch() {
-      void (async () => {
-        let list = await loadDealsList()
-        if (dealsListContext === "investing" && list.length > 0) {
-          if (isDealSponsorSessionUser())
-            list = filterDealListRowsVisibleToInvestors(list)
-          else if (!isSponsorWorkspaceInvestingViewer())
-            list = await filterDealListToInvestingDealsPage(list)
-        }
-        setRows(list)
-      })()
-    }
-    window.addEventListener(DEALS_LIST_REFETCH_EVENT, onDealsRefetch)
+    window.addEventListener(DEALS_LIST_REFETCH_EVENT, reloadDeals)
     return () =>
-      window.removeEventListener(DEALS_LIST_REFETCH_EVENT, onDealsRefetch)
-  }, [loadDealsList, dealsListContext])
+      window.removeEventListener(DEALS_LIST_REFETCH_EVENT, reloadDeals)
+  }, [reloadDeals])
 
   const sessionCreateDealDraftRow = useMemo((): DealListRow | null => {
     void createDealDraftTick
@@ -507,114 +473,6 @@ export function DealsListPage({
     setDealsPage(1)
   }, [activeTab, query])
 
-  useEffect(() => {
-    const ids = filtered.map((r) => r.id)
-    if (ids.length === 0) {
-      setInvestorMetricsByDealId({})
-      return
-    }
-    let cancelled = false
-    void (async () => {
-      const sessionEmail = getSessionUserEmail() ?? ""
-      const em = sessionEmail.trim().toLowerCase()
-      const investFetchOpts =
-        dealsListContext === "investing"
-          ? ({ lpInvestorsOnly: false } as const)
-          : undefined
-      const entries = await Promise.all(
-        ids.map(async (id) => {
-          const row = filtered.find((r) => r.id === id)
-          if (row && !dealRowSupportsRosterApiPrefetch(row)) {
-            return [
-              id,
-              {
-                committedRaw: "—",
-                softCommittedRaw: "—",
-                fundedRaw: "—",
-                remainingRaw: "—",
-                investorCount: 0,
-                investorClassesLine: "",
-                viewerRolesLabel: "—",
-              },
-            ] as const
-          }
-          try {
-            const [{ kpis, investors }, classes, membersResult] =
-              await Promise.all([
-                fetchDealInvestors(id, investFetchOpts),
-                dealsListContext === "investing"
-                  ? Promise.resolve([] as Awaited<
-                      ReturnType<typeof fetchDealInvestorClasses>
-                    >)
-                  : fetchDealInvestorClasses(id),
-                fetchDealMembers(id),
-              ])
-            const membersRoster = membersResult.members
-            const investorClassesLine = classes
-              .map((c) => String(c.name ?? "").trim())
-              .filter(Boolean)
-              .join(", ")
-            const investorPayload = { kpis, investors }
-            const viewerRolesLabel =
-              dealsListContext === "investing" && em && em.includes("@")
-                ? formatViewerInvestingDealRolesLabel(
-                    resolveViewerInvestingDealRoles(
-                      membersRoster,
-                      investors,
-                      em,
-                      investorPayload,
-                    ),
-                  )
-                : "—"
-            const softCommittedTotal = investors
-              .filter(
-                (investor) =>
-                  resolveInvestmentStatusSelectValue(investor.status) ===
-                  "Soft committed",
-              )
-              .reduce((sum, investor) => {
-                const amount = parseMoneyDigits(
-                  displayInvestorCommittedAmount(investor),
-                )
-                return sum + (Number.isFinite(amount) ? amount : 0)
-              }, 0)
-            return [
-              id,
-              {
-                committedRaw: kpis.committed,
-                softCommittedRaw: String(
-                  Math.round(softCommittedTotal * 100) / 100,
-                ),
-                fundedRaw: kpis.totalFunded,
-                remainingRaw: kpis.remaining,
-                investorCount: investors.length,
-                investorClassesLine,
-                viewerRolesLabel,
-              },
-            ] as const
-          } catch {
-            return [
-              id,
-              {
-                committedRaw: "—",
-                softCommittedRaw: "—",
-                fundedRaw: "—",
-                remainingRaw: "—",
-                investorCount: 0,
-                investorClassesLine: "",
-                viewerRolesLabel: "—",
-              },
-            ] as const
-          }
-        }),
-      )
-      if (!cancelled)
-        setInvestorMetricsByDealId(Object.fromEntries(entries))
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [filtered, dealsListContext])
 
   useEffect(() => {
     const id =
@@ -657,6 +515,8 @@ export function DealsListPage({
     sessionCreateDealDraftRow,
     query,
   ])
+
+
 
   useEffect(() => {
     const totalPages = Math.max(
@@ -701,16 +561,17 @@ export function DealsListPage({
       const failed = results.find((r) => !r.ok)
       if (failed) {
         toast.error("Could not archive deals", failed.message)
-        const list = await loadDealsList()
-        setRows(list)
+        reloadDeals()
         handleSuspendAllCancel()
         return
       }
-      setRows((prev) =>
-        prev.map((r) =>
+      setRows((prev) => {
+        const next = prev.map((r) =>
           ids.includes(r.id) ? { ...r, archived: true } : r,
-        ),
-      )
+        )
+        writeCachedResource(dealsResourceKey, next)
+        return next
+      })
       handleSuspendAllCancel()
       toast.success(
         "Deals archived",
@@ -723,7 +584,9 @@ export function DealsListPage({
     (row: DealListRow) => {
       void coSponsorMayOpenDeal().then((allowed) => {
         if (!allowed) return
-        navigate(`/deals/${encodeURIComponent(row.id)}`)
+        navigate(`/deals/${encodeURIComponent(row.id)}`, {
+          state: { dealListRow: row },
+        })
       })
     },
     [navigate],
@@ -791,7 +654,6 @@ export function DealsListPage({
     //   align: "center",
     //   thClassName: "deals_th_align_center",
     //   sortValue: (row) => {
-    //     const m = investorMetricsByDealId[row.id]?.viewerRoleMatch
     //     if (!m) return ""
     //     const s =
     //       m.memberRoleLabels?.find((t) => String(t ?? "").trim())?.trim() ??
@@ -800,7 +662,6 @@ export function DealsListPage({
     //     return s.toLowerCase()
     //   },
     //   cell: (row) => {
-    //     const m = investorMetricsByDealId[row.id]?.viewerRoleMatch
     //     if (!m) {
     //       return <span className="um_status_muted">—</span>
     //     }
@@ -910,10 +771,9 @@ export function DealsListPage({
           hint="Your relationship to this deal: Lead Sponsor, Admin Sponsor, Co-Sponsor, LP Investor, or a combination."
         />
       ),
-      sortValue: (row) =>
-        (investorMetricsByDealId[row.id]?.viewerRolesLabel ?? "").toLowerCase(),
+      sortValue: (row) => (row.yourRole ?? "").toLowerCase(),
       cell: (row) => {
-        const label = investorMetricsByDealId[row.id]?.viewerRolesLabel ?? "—"
+        const label = row.yourRole?.trim() ?? ""
         if (!label || label === "—") {
           return <span className="um_status_muted">—</span>
         }
@@ -1010,16 +870,9 @@ export function DealsListPage({
         colWidth: "10.75rem",
         thClassName: "deals_th_align_right",
         tdClassName: "um_td_numeric deals_td_align_right",
-        sortValue: (row) =>
-          committedSortValue(
-            investorMetricsByDealId[row.id]?.softCommittedRaw ?? "—",
-          ),
+        sortValue: (row) => committedSortValue(row.softCommitted ?? "$0"),
         cell: (row) => (
-          <TableCompactAmountCell
-            amount={
-              investorMetricsByDealId[row.id]?.softCommittedRaw ?? "—"
-            }
-          />
+          <TableCompactAmountCell amount={row.softCommitted ?? "$0"} />
         ),
       },
       {
@@ -1035,15 +888,8 @@ export function DealsListPage({
         colWidth: "10.75rem",
         thClassName: "deals_th_align_right",
         tdClassName: "um_td_numeric deals_td_align_right",
-        sortValue: (row) => {
-          const m = investorMetricsByDealId[row.id]
-          return committedSortValue(m?.committedRaw ?? row.totalAccepted)
-        },
-        cell: (row) => {
-          const m = investorMetricsByDealId[row.id]
-          const raw = m?.committedRaw ?? row.totalAccepted
-          return <TableCompactAmountCell amount={raw} />
-        },
+        sortValue: (row) => committedSortValue(row.totalAccepted),
+        cell: (row) => <TableCompactAmountCell amount={row.totalAccepted} />,
       },
       {
         id: "funded",
@@ -1058,18 +904,10 @@ export function DealsListPage({
         colWidth: "10.75rem",
         thClassName: "deals_th_align_right",
         tdClassName: "um_td_numeric deals_td_align_right",
-        sortValue: (row) => {
-          const m = investorMetricsByDealId[row.id]
-          return committedSortValue(m?.fundedRaw ?? row.totalAccepted)
-        },
-        cell: (row) => {
-          const m = investorMetricsByDealId[row.id]
-          return (
-            <TableCompactAmountCell
-              amount={m?.fundedRaw ?? row.totalAccepted}
-            />
-          )
-        },
+        sortValue: (row) => committedSortValue(row.totalFunded ?? "$0"),
+        cell: (row) => (
+          <TableCompactAmountCell amount={row.totalFunded ?? "$0"} />
+        ),
       },
       {
         id: "gap",
@@ -1084,16 +922,10 @@ export function DealsListPage({
         colWidth: "10.75rem",
         thClassName: "deals_th_align_right",
         tdClassName: "um_td_numeric deals_td_align_right",
-        sortValue: (row) => {
-          const m = investorMetricsByDealId[row.id]
-          return committedSortValue(m?.remainingRaw ?? "0")
-        },
-        cell: (row) => {
-          const m = investorMetricsByDealId[row.id]
-          return (
-            <TableCompactAmountCell amount={m?.remainingRaw ?? "0"} />
-          )
-        },
+        sortValue: (row) => committedSortValue(row.totalInProgress),
+        cell: (row) => (
+          <TableCompactAmountCell amount={row.totalInProgress} />
+        ),
       },
     ]
 
@@ -1128,6 +960,7 @@ export function DealsListPage({
               canEditDeal={row.viewerCanEditDeal !== false}
               dealId={row.id}
               dealName={row.dealName}
+              listRow={row}
               dealStage={row.dealStage}
               archived={Boolean(row.archived)}
               saasAccessLocked={
@@ -1196,7 +1029,7 @@ export function DealsListPage({
     ]
 
     return dataCols
-  }, [investorMetricsByDealId, dealsListContext, rows, openSyndicatingDeal])
+  }, [dealsListContext, rows, openSyndicatingDeal])
 
   function handleOpenExportModal() {
     setExportModalOpen(true)
@@ -1280,11 +1113,17 @@ export function DealsListPage({
         }
         isLoading={loading && rows.length === 0}
         emptyLabel={
-          query.trim() ? "No deals match your search." : emptyMessage
+          loading && rows.length === 0
+            ? "Loading…"
+            : query.trim()
+              ? "No deals match your search."
+              : emptyMessage
         }
         emptyStateRole={loading ? "status" : undefined}
         pagination={
-          !loading && displayRows.length > 0 ? dealsPagination : undefined
+          !loading && displayRows.length > 0
+            ? dealsPagination
+            : undefined
         }
       />
     </div>

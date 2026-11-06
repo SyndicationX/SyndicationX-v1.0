@@ -1,5 +1,9 @@
 import { portalAuthHeaders } from "../../../../../common/auth/portalAuthHeaders"
 import { getApiV1Base } from "../../../../../common/utils/apiBaseUrl"
+import {
+  isRequestTimeoutError,
+  PORTAL_TIMEOUT_HEADER,
+} from "../../../../../common/utils/requestTimeout"
 import { isDisplayableEmail } from "../../../../../common/utils/displayEmail"
 import {
   emailTemplateHtmlToPlainText,
@@ -126,6 +130,7 @@ function normalizeMailRow(raw: unknown): InvestorCommunicationMailRow | null {
 
 export async function fetchDealInvestorCommunicationMails(
   dealId: string,
+  options?: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<{
   mails: InvestorCommunicationMailRow[]
   viewerCoSponsorEmailIntercept: "yes" | "no" | null
@@ -139,7 +144,16 @@ export async function fetchDealInvestorCommunicationMails(
   try {
     const res = await fetch(
       `${base}/deals/${encodeURIComponent(dealId.trim())}/investor-communication/mails`,
-      { headers: { ...authHeaders() }, credentials: "include" },
+      {
+        headers: {
+          ...authHeaders(),
+          ...(options?.timeoutMs != null
+            ? { [PORTAL_TIMEOUT_HEADER]: String(options.timeoutMs) }
+            : {}),
+        },
+        credentials: "include",
+        signal: options?.signal,
+      },
     )
     const data = (await res.json().catch(() => ({}))) as {
       mails?: unknown
@@ -162,7 +176,8 @@ export async function fetchDealInvestorCommunicationMails(
         .map(normalizeMailRow)
         .filter((r): r is InvestorCommunicationMailRow => r != null),
     }
-  } catch {
+  } catch (err) {
+    if (isRequestTimeoutError(err)) throw err
     return empty
   }
 }

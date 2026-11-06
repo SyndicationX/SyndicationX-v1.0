@@ -1,5 +1,10 @@
 import { Mail, MailCheck, Search, Send, Trash2 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCachedResource } from "@/common/hooks/useCachedResource"
+import {
+  dealCommunicationTabCacheKey,
+  dealMembersTabCacheKey,
+} from "../../hooks/useDealRosterTabData"
 import { BulkDeleteReasonModal } from "../../../../../common/components/bulk-delete-reason-modal/BulkDeleteReasonModal"
 import "../../../../../common/components/bulk-delete-reason-modal/bulk-delete-reason-modal.css"
 import {
@@ -118,7 +123,23 @@ export function InvestorCommunicationTab({
   viewOnly = false,
 }: InvestorCommunicationTabProps) {
   const [rows, setRows] = useState<InvestorCommunicationMailRow[]>([])
-  const [loading, setLoading] = useState(true)
+  const {
+    data: mailData,
+    isLoading: mailsLoading,
+  } = useCachedResource({
+    key: dealCommunicationTabCacheKey(dealId),
+    enabled: Boolean(dealId.trim()),
+    fetcher: () => fetchDealInvestorCommunicationMails(dealId),
+  })
+  const {
+    data: membersData,
+    isLoading: membersLoading,
+  } = useCachedResource({
+    key: dealMembersTabCacheKey(dealId),
+    enabled: Boolean(dealId.trim()),
+    fetcher: () => fetchDealMembers(dealId),
+  })
+  const [loading, setLoading] = useState(() => mailData == null)
   const [sendMailOpen, setSendMailOpen] = useState(false)
   const [resendMail, setResendMail] =
     useState<InvestorCommunicationMailRow | null>(null)
@@ -135,30 +156,22 @@ export function InvestorCommunicationTab({
 
   const getRowId = useCallback((row: InvestorCommunicationMailRow) => row.id, [])
 
-  const loadMails = useCallback(async () => {
-    if (!dealId.trim()) {
-      setRows([])
+  useEffect(() => {
+    if (mailData) {
+      setRows(mailData.mails)
+      const isCo = membersData
+        ? parseViewerDealMemberRoleFromApi(membersData.viewerDealMemberRole) ===
+          "co_sponsor"
+        : false
+      setViewerIsCosponsor(isCo)
+      setViewerInterceptNo(
+        isCo && mailData.viewerCoSponsorEmailIntercept === "no",
+      )
       setLoading(false)
       return
     }
-    setLoading(true)
-    const [{ mails, viewerCoSponsorEmailIntercept }, membersPayload] =
-      await Promise.all([
-        fetchDealInvestorCommunicationMails(dealId),
-        fetchDealMembers(dealId),
-      ])
-    const isCo =
-      parseViewerDealMemberRoleFromApi(membersPayload.viewerDealMemberRole) ===
-      "co_sponsor"
-    setViewerIsCosponsor(isCo)
-    setViewerInterceptNo(isCo && viewerCoSponsorEmailIntercept === "no")
-    setRows(mails)
-    setLoading(false)
-  }, [dealId])
-
-  useEffect(() => {
-    void loadMails()
-  }, [loadMails])
+    setLoading(mailsLoading || membersLoading)
+  }, [mailData, membersData, mailsLoading, membersLoading])
 
   const sessionUserId = getSessionUserId()
   const displayRows = useMemo(

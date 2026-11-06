@@ -29,11 +29,10 @@ import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema
 import { dealMember } from "../../schema/deal.schema/deal-member.schema.js";
 import { listInvestorClassesByDealId } from "./dealInvestorClass.service.js";
 import {
-  isPortalUserCoSponsorOnDeal,
-  isPortalUserLeadOrAdminSponsorOnDeal,
-  isPortalUserSponsorOnDeal,
   listCoSponsorPortalUserIdsOnDeal,
   listEquivalentPortalUserIdsForUser,
+  mapPortalUserRolesOnDeal,
+  resolveViewerDealMemberRoleOnDeal,
 } from "./dealMemberScope.service.js";
 import { redactCoSponsorInvestorEmailAndPhone } from "../privacy/coSponsorPiiRedaction.js";
 import {
@@ -2166,9 +2165,8 @@ export async function redactCoSponsorAddedInvestorEmailsForLeadAdminViewer<
 >(dealId: string, viewerUserId: string, rows: T[]): Promise<T[]> {
   const viewer = String(viewerUserId ?? "").trim();
   if (!viewer || rows.length === 0) return rows;
-  const [leadAdmin, coSponsor, actorRows, dealRows] = await Promise.all([
-    isPortalUserLeadOrAdminSponsorOnDeal(dealId, viewer),
-    isPortalUserCoSponsorOnDeal(dealId, viewer),
+  const [viewerRole, actorRows, dealRows] = await Promise.all([
+    resolveViewerDealMemberRoleOnDeal(dealId, viewer),
     db
       .select({ role: users.role })
       .from(users)
@@ -2180,6 +2178,9 @@ export async function redactCoSponsorAddedInvestorEmailsForLeadAdminViewer<
       .where(eq(addDealForm.id, dealId))
       .limit(1),
   ]);
+  const leadAdmin =
+    viewerRole === "lead_sponsor" || viewerRole === "admin_sponsor";
+  const coSponsor = viewerRole === "co_sponsor";
   const actorRole = String(actorRows[0]?.role ?? "").trim();
   const dealOrgId = String(dealRows[0]?.organizationId ?? "").trim();
   const roleInDealCompany =
@@ -2199,9 +2200,10 @@ export async function redactCoSponsorAddedInvestorEmailsForLeadAdminViewer<
   const withPhone =
     shouldRedact || coSponsor ? await attachInvestorPhones(rows) : rows;
   if (!shouldRedact) return withPhone;
-  const [viewerIds, coSponsorIds] = await Promise.all([
+  const [viewerIds, coSponsorIds, roleByUser] = await Promise.all([
     listEquivalentPortalUserIdsForUser(viewer),
     listCoSponsorPortalUserIdsOnDeal(dealId),
+    mapPortalUserRolesOnDeal(dealId),
   ]);
   const viewerIdSet = new Set(
     [...viewerIds, viewer].map((id) => String(id).trim().toLowerCase()),
@@ -2210,13 +2212,12 @@ export async function redactCoSponsorAddedInvestorEmailsForLeadAdminViewer<
     coSponsorIds.map((id) => String(id).trim().toLowerCase()).filter(Boolean),
   );
   const leadOrAdminAdders = new Set<string>();
-  await Promise.all(
-    [...coSponsorIdSet].map(async (id) => {
-      if (await isPortalUserLeadOrAdminSponsorOnDeal(dealId, id)) {
-        leadOrAdminAdders.add(id);
-      }
-    }),
-  );
+  for (const id of coSponsorIdSet) {
+    const role = roleByUser.get(id);
+    if (role === "lead_sponsor" || role === "admin_sponsor") {
+      leadOrAdminAdders.add(id);
+    }
+  }
   for (const id of leadOrAdminAdders) coSponsorIdSet.delete(id);
   return withPhone.map((row) => {
     const addedBy = String(row.addedByUserId ?? "").trim().toLowerCase();
@@ -2790,59 +2791,76 @@ export async function enrichInvestorApiRowsWithAddedBy<
     }
   }
   void viewerUserId;
-  const [names, emails, companyNames] = await Promise.all([
+  const [
+    names,
+    emails,
+    companyNames,
+    roleByUser,
+    coSponsorIds,
+    interceptByAdderLower,
+  ] = await Promise.all([
     resolveUserDisplayNamesByIds([...uidsNeeded]),
     resolveUserEmailsByIds([...uidsNeeded]),
     resolveUserCompanyNamesByIds([...uidsNeeded]),
+    mapPortalUserRolesOnDeal(dealId),
+    listCoSponsorPortalUserIdsOnDeal(dealId),
+    loadCoSponsorEmailInterceptByUserLower(dealId),
   ]);
   const sponsorByAdderLower = new Map<string, boolean>();
   const coSponsorByAdderLower = new Map<string, boolean>();
   const coSponsorOnDeal = new Set(
-    (await listCoSponsorPortalUserIdsOnDeal(dealId)).map((id) =>
-      String(id).trim().toLowerCase(),
-    ),
+    coSponsorIds.map((id) => String(id).trim().toLowerCase()).filter(Boolean),
   );
-  const interceptByAdderLower =
-    await loadCoSponsorEmailInterceptByUserLower(dealId);
+  const adderIds = [...uniqueAdderIds.values()];
+  const equivByAdder = new Map<string, string[]>();
   await Promise.all(
-    [...uniqueAdderIds.values()].map(async (id) => {
+    adderIds.map(async (id) => {
       const low = String(id).toLowerCase();
-      const [isS, isCo, isLeadOrAdmin] = await Promise.all([
-        isPortalUserSponsorOnDeal(dealId, id),
-        isPortalUserCoSponsorOnDeal(dealId, id),
-        isPortalUserLeadOrAdminSponsorOnDeal(dealId, id),
-      ]);
-      sponsorByAdderLower.set(low, isS);
-      // A lead or admin sponsor stays a lead or admin even if a co-sponsor row
-      // also exists. Their investors' emails stay visible to the other sponsors.
-      if (isLeadOrAdmin) {
-        coSponsorByAdderLower.set(low, false);
+      const role = roleByUser.get(low) ?? null;
+      if (
+        role === "co_sponsor" ||
+        role === "lead_sponsor" ||
+        role === "admin_sponsor" ||
+        coSponsorOnDeal.has(low)
+      ) {
         return;
       }
-      // Adder may be a scrubbed duplicate of the roster co-sponsor — treat as co-sponsor
-      // when any equivalent account is co-sponsor on this deal.
-      let isCoEffective = isCo;
-      if (!isCoEffective) {
-        const adderEquiv = await listEquivalentPortalUserIdsForUser(id);
-        for (const eqId of adderEquiv) {
-          const eqLow = String(eqId).trim().toLowerCase();
-          if (coSponsorOnDeal.has(eqLow)) {
-            isCoEffective = true;
-            break;
-          }
-          if (eqId === id) continue;
-          if (await isPortalUserCoSponsorOnDeal(dealId, eqId)) {
-            isCoEffective = true;
-            break;
-          }
-        }
-      }
-      coSponsorByAdderLower.set(
-        low,
-        isCoEffective || coSponsorOnDeal.has(low),
-      );
+      equivByAdder.set(low, await listEquivalentPortalUserIdsForUser(id));
     }),
   );
+  for (const id of adderIds) {
+    const low = String(id).toLowerCase();
+    const role = roleByUser.get(low) ?? null;
+    const isLeadOrAdmin =
+      role === "lead_sponsor" || role === "admin_sponsor";
+    const isCo = role === "co_sponsor";
+    sponsorByAdderLower.set(low, isLeadOrAdmin || isCo);
+    // A lead or admin sponsor stays a lead or admin even if a co-sponsor row
+    // also exists. Their investors' emails stay visible to the other sponsors.
+    if (isLeadOrAdmin) {
+      coSponsorByAdderLower.set(low, false);
+      continue;
+    }
+    // Adder may be a scrubbed duplicate of the roster co-sponsor — treat as co-sponsor
+    // when any equivalent account is co-sponsor on this deal.
+    let isCoEffective = isCo;
+    if (!isCoEffective) {
+      for (const eqId of equivByAdder.get(low) ?? []) {
+        const eqLow = String(eqId).trim().toLowerCase();
+        if (
+          coSponsorOnDeal.has(eqLow) ||
+          roleByUser.get(eqLow) === "co_sponsor"
+        ) {
+          isCoEffective = true;
+          break;
+        }
+      }
+    }
+    coSponsorByAdderLower.set(
+      low,
+      isCoEffective || coSponsorOnDeal.has(low),
+    );
+  }
 
   const needsLeadFallback = rows.some((row) => !addedByForRow(row));
   const leadFallback = needsLeadFallback
@@ -3010,10 +3028,72 @@ export async function sumCommittedAmountForDeal(dealId: string): Promise<number>
   return s;
 }
 
+export type DealListMoneyTotals = {
+  committed: number
+  softCommitted: number
+  funded: number
+}
+
 /**
- * `sumCommittedAmountForDeal` for many deals in one query. Deals absent from
- * `deal_investment` still get a `0` entry so callers can read the map directly.
+ * Committed, soft-committed, and funded totals for many deals in one read.
+ * Same basis as the Investors tab KPIs, without one request per deal.
  */
+export async function summarizeDealListMoneyByDealIds(
+  dealIds: readonly string[],
+): Promise<Map<string, DealListMoneyTotals>> {
+  const totals = new Map<string, DealListMoneyTotals>()
+  const ids = [
+    ...new Set(dealIds.map((d) => String(d ?? "").trim()).filter(Boolean)),
+  ]
+  if (ids.length === 0) return totals
+  for (const id of ids) {
+    totals.set(id, { committed: 0, softCommitted: 0, funded: 0 })
+  }
+
+  const rows = await db
+    .select({
+      dealId: dealInvestment.dealId,
+      commitmentAmount: dealInvestment.commitmentAmount,
+      extraContributionAmounts: dealInvestment.extraContributionAmounts,
+      fundApproved: dealInvestment.fundApproved,
+      status: dealInvestment.status,
+      fundApprovedCommitmentSnapshot:
+        dealInvestment.fundApprovedCommitmentSnapshot,
+    })
+    .from(dealInvestment)
+    .where(
+      and(
+        inArray(dealInvestment.dealId, ids),
+        eq(dealInvestment.isDraft, false),
+        isNull(dealInvestment.investorArchivedAt),
+        isNull(dealInvestment.removedAt),
+        isNull(dealInvestment.investorUnlinkedAt),
+      ),
+    )
+
+  for (const row of rows) {
+    const key = String(row.dealId)
+    const bucket = totals.get(key)
+    if (!bucket) continue
+    const parts = committedAmountParts(
+      row.commitmentAmount,
+      row.extraContributionAmounts as string[] | null,
+    )
+    const committed = parts.reduce((a, b) => a + b, 0)
+    bucket.committed += committed
+    if (String(row.status ?? "").trim().toLowerCase() === "soft committed") {
+      bucket.softCommitted += committed
+    }
+    bucket.funded += fundedNumericForInvestorKpiRow({
+      commitmentAmount: row.commitmentAmount,
+      extraContributionAmounts: row.extraContributionAmounts,
+      fundApproved: row.fundApproved,
+      status: row.status,
+      fundApprovedCommitmentSnapshot: row.fundApprovedCommitmentSnapshot,
+    } as DealInvestmentRow)
+  }
+  return totals
+}
 export async function sumCommittedAmountByDealIds(
   dealIds: readonly string[],
 ): Promise<Map<string, number>> {

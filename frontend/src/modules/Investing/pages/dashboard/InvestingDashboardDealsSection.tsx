@@ -8,6 +8,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { runPool, useCachedResource } from "@/common/hooks/useCachedResource";
 import { useSearchParams } from "react-router-dom";
 import { getSessionUserEmail } from "@/common/auth/sessionUserEmail";
 import { filterDealListRowsVisibleToInvestors } from "@/modules/Investing/utils/investingViewerDealScope";
@@ -142,15 +143,18 @@ async function loadDealsByBucket(
    */
   if (list.length === 0) return { ...EMPTY_BY_BUCKET };
 
-  const bundles = await Promise.all(
-    list.map(async (row) => {
-      const [payload, classes] = await Promise.all([
-        fetchDealInvestors(row.id),
-        fetchDealInvestorClasses(row.id),
-      ]);
-      return { row, payload, classes };
-    }),
-  );
+  const bundles: Array<{
+    row: DealListRow;
+    payload: Awaited<ReturnType<typeof fetchDealInvestors>>;
+    classes: Awaited<ReturnType<typeof fetchDealInvestorClasses>>;
+  }> = [];
+  await runPool(list, 4, async (row) => {
+    const [payload, classes] = await Promise.all([
+      fetchDealInvestors(row.id),
+      fetchDealInvestorClasses(row.id),
+    ]);
+    bundles.push({ row, payload, classes });
+  });
 
   if (platformAdminViewer || sponsorWorkspaceViewer) {
     const out: InvestingDashboardDealsByBucket = {
@@ -272,12 +276,23 @@ export function InvestingDashboardDealsSection() {
       searchParams.get(INVESTING_DASH_DEALS_TAB_PARAM),
     ),
   );
-  const [dealsByBucket, setDealsByBucket] =
-    useState<InvestingDashboardDealsByBucket>(EMPTY_BY_BUCKET);
+  const {
+    data: bucketData,
+    isLoading: bucketLoading,
+    reload: reloadBuckets,
+  } = useCachedResource({
+    key: "investing-dashboard-deal-buckets",
+    fetcher: async () => {
+      const viewerEmailNorm = getSessionUserEmail().trim().toLowerCase();
+      const next = await loadDealsByBucket(viewerEmailNorm);
+      return { next, viewerEmailNorm };
+    },
+  });
+  const dealsByBucket = bucketData?.next ?? EMPTY_BY_BUCKET;
+  const loading = bucketLoading && !bucketData;
   const [recentlyViewedDeals, setRecentlyViewedDeals] = useState<DealRecord[]>(
     [],
   );
-  const [loading, setLoading] = useState(true);
   const [recentlyViewedLoading, setRecentlyViewedLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [exportModalOpen, setExportModalOpen] = useState(false);
@@ -285,64 +300,38 @@ export function InvestingDashboardDealsSection() {
   const [dealsSortKey, setDealsSortKey] = useState<DealsSortKey>("createdAt");
 
   useEffect(() => {
+    if (!bucketData) return;
     let cancelled = false;
-
-    async function refreshDeals() {
-      setLoading(true);
-      setRecentlyViewedLoading(true);
-      const viewerEmailNorm = getSessionUserEmail().trim().toLowerCase();
-      const next = await loadDealsByBucket(viewerEmailNorm);
-      if (cancelled) return;
-      setDealsByBucket(next);
-      setLoading(false);
-      if (!isPortfolioRecentlyViewedEnabled()) {
-        setRecentlyViewedDeals([]);
-        setRecentlyViewedLoading(false);
-        return;
-      }
-      const recent = await loadRecentlyViewedDashboardDeals(next, viewerEmailNorm);
-      if (!cancelled) {
-        setRecentlyViewedDeals(recent);
-        setRecentlyViewedLoading(false);
-      }
+    if (!isPortfolioRecentlyViewedEnabled()) {
+      setRecentlyViewedDeals([]);
+      setRecentlyViewedLoading(false);
+      return;
     }
-
-    void refreshDeals();
-
+    setRecentlyViewedLoading(true);
+    void loadRecentlyViewedDashboardDeals(
+      bucketData.next,
+      bucketData.viewerEmailNorm,
+    ).then((recent) => {
+      if (cancelled) return;
+      setRecentlyViewedDeals(recent);
+      setRecentlyViewedLoading(false);
+    });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [bucketData]);
 
   useEffect(() => {
-    function onRefetch() {
-      void (async () => {
-        setLoading(true);
-        setRecentlyViewedLoading(true);
-        const viewerEmailNorm = getSessionUserEmail().trim().toLowerCase();
-        const next = await loadDealsByBucket(viewerEmailNorm);
-        setDealsByBucket(next);
-        setLoading(false);
-        if (!isPortfolioRecentlyViewedEnabled()) {
-          setRecentlyViewedDeals([]);
-          setRecentlyViewedLoading(false);
-          return;
-        }
-        const recent = await loadRecentlyViewedDashboardDeals(
-          next,
-          viewerEmailNorm,
-        );
-        setRecentlyViewedDeals(recent);
-        setRecentlyViewedLoading(false);
-      })();
-    }
-    window.addEventListener(DEALS_LIST_REFETCH_EVENT, onRefetch);
-    window.addEventListener(RECENTLY_VIEWED_DEALS_CHANGED_EVENT, onRefetch);
+    window.addEventListener(DEALS_LIST_REFETCH_EVENT, reloadBuckets);
+    window.addEventListener(RECENTLY_VIEWED_DEALS_CHANGED_EVENT, reloadBuckets);
     return () => {
-      window.removeEventListener(DEALS_LIST_REFETCH_EVENT, onRefetch);
-      window.removeEventListener(RECENTLY_VIEWED_DEALS_CHANGED_EVENT, onRefetch);
+      window.removeEventListener(DEALS_LIST_REFETCH_EVENT, reloadBuckets);
+      window.removeEventListener(
+        RECENTLY_VIEWED_DEALS_CHANGED_EVENT,
+        reloadBuckets,
+      );
     };
-  }, []);
+  }, [reloadBuckets]);
 
   useEffect(() => {
     const fromUrl = parseInvestingDashboardDealsTab(

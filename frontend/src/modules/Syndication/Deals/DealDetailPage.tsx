@@ -15,6 +15,10 @@ import {
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  peekCachedResource,
+  writeCachedResource,
+} from "@/common/hooks/useCachedResource"
+import {
   Link,
   useLocation,
   useNavigate,
@@ -23,10 +27,13 @@ import {
 } from "react-router-dom"
 import {
   dealDetailApiToRecord,
+  dealListRowToDealRecord,
   dealStageLabel,
   type DealRecord,
 } from "../dealsDashboardUtils"
+import type { DealListRow } from "./types/deals.types"
 import { usePortalMode } from "@/modules/Investing/context/PortalModeContext"
+import { usePrefetchDealRosterTabs } from "./hooks/useDealRosterTabData"
 import { getSessionUserEmail } from "../../../common/auth/sessionUserEmail"
 import { getSessionUserId } from "../../../common/auth/sessionUserId"
 import { isCompanyAdmin, isPlatformAdmin } from "../../../common/auth/roleUtils"
@@ -58,7 +65,7 @@ import {
   EMPTY_INVESTORS_PAYLOAD,
 } from "./dealOfferingPreviewShared"
 import { LpDealDetailsPage } from "@/modules/Investing/pages/deals/deal-details"
-import { refreshInvestmentDealDocumentsPreview } from "@/modules/Investing/pages/investments/utils/refreshInvestmentDealDocumentsPreview"
+import { syncInvestmentDealDocumentPreview } from "@/modules/Investing/pages/investments/utils/syncInvestmentDealDocumentPreview"
 import { applyOfferingInvestorPreviewJsonFromServer } from "./utils/offeringPreviewServerState"
 import { clearOfferingPreviewRuntime } from "./utils/offeringPreviewRuntimeStore"
 import { invitationMailSentOptimisticKeys, omitInvitationMailKeys } from "./utils/dealInvitationMailStatus"
@@ -146,6 +153,16 @@ interface DealDetailTabDef {
   icon: LucideIcon
 }
 
+function dealRecordFromOpenState(
+  dealId: string | undefined,
+  state: unknown,
+): DealRecord | undefined {
+  const row = (state as { dealListRow?: DealListRow } | null)?.dealListRow
+  const id = dealId?.trim() ?? ""
+  if (!row || !id || row.id !== id) return undefined
+  return dealListRowToDealRecord(row)
+}
+
 const DEAL_DETAIL_TABS: DealDetailTabDef[] = [
   { id: "offering_details", label: "Offering Details", icon: FileText },
   { id: "documents", label: "Documents", icon: File },
@@ -159,6 +176,13 @@ const DEAL_DETAIL_TABS: DealDetailTabDef[] = [
 export function DealDetailPage() {
   const { mode, switchToInvesting } = usePortalMode()
   const { dealId } = useParams()
+  const [dealDetailApi, setDealDetailApi] = useState<DealDetailApi | null>(
+    () =>
+      dealId
+        ? (peekCachedResource<DealDetailApi>(`deal-detail:${dealId}`) ?? null)
+        : null,
+  )
+  usePrefetchDealRosterTabs(dealId)
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -184,8 +208,13 @@ export function DealDetailPage() {
   const [invitationMailSendingByRowId, setInvitationMailSendingByRowId] =
     useState<Record<string, true>>({})
   const dealInvestorsTabRef = useRef<DealInvestorsTabHandle>(null)
-  const [deal, setDeal] = useState<DealRecord | null | undefined>(undefined)
-  const [dealDetailApi, setDealDetailApi] = useState<DealDetailApi | null>(null)
+  const [deal, setDeal] = useState<DealRecord | null | undefined>(() => {
+    const cached = dealId
+      ? peekCachedResource<DealDetailApi>(`deal-detail:${dealId}`)
+      : undefined
+    if (cached) return dealDetailApiToRecord(cached)
+    return dealRecordFromOpenState(dealId, location.state)
+  })
   const [saasPaywallDeal, setSaasPaywallDeal] =
     useState<DealSaasPaywallDeal | null>(null)
   const [manageStageOpen, setManageStageOpen] = useState(false)
@@ -199,6 +228,7 @@ export function DealDetailPage() {
   const handleDealPersisted = useCallback((d: DealDetailApi) => {
     setDealDetailApi(d)
     setDeal(dealDetailApiToRecord(d))
+    if (d.id) writeCachedResource(`deal-detail:${d.id}`, d)
     notifyDealsListRefetch()
   }, [])
   const [investingOfferingClasses, setInvestingOfferingClasses] = useState<
@@ -207,7 +237,12 @@ export function DealDetailPage() {
   const [investingOfferingInvestors, setInvestingOfferingInvestors] =
     useState<DealInvestorsPayload>(EMPTY_INVESTORS_PAYLOAD)
   const [investingOfferingLoading, setInvestingOfferingLoading] = useState(
-    () => mode === "investing",
+    () =>
+      mode === "investing" &&
+      !(
+        dealId &&
+        peekCachedResource(`deal-offering:${dealId}`)
+      ),
   )
   const [memberRosterForTabs, setMemberRosterForTabs] = useState<
     DealInvestorRow[]
@@ -232,9 +267,10 @@ export function DealDetailPage() {
 
   useEffect(() => {
     setViewerDealMemberRoleFromApi(undefined)
-    if (!dealId?.trim()) return
+    const id = dealDetailApi?.id?.trim() ?? ""
+    if (!id) return
     let cancelled = false
-    void fetchDealMembers(dealId).then((result) => {
+    void fetchDealMembers(id).then((result) => {
       if (cancelled) return
       setMemberRosterForTabs(result.members)
       setViewerDealMemberRoleFromApi(
@@ -244,7 +280,7 @@ export function DealDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [dealId, dealMembersRefreshKey])
+  }, [dealDetailApi?.id, dealMembersRefreshKey])
 
   const sessionEmail = getSessionUserEmail()
   const sessionUserId = getSessionUserId()
@@ -461,24 +497,44 @@ export function DealDetailPage() {
       return
     }
     let cancelled = false
-    setDeal(undefined)
-    setDealDetailApi(null)
+    const cachedDetail = peekCachedResource<DealDetailApi>(`deal-detail:${id}`)
+    const fromNav = dealRecordFromOpenState(id, location.state)
+    if (cachedDetail) {
+      setDealDetailApi(cachedDetail)
+      setDeal(dealDetailApiToRecord(cachedDetail))
+    } else if (fromNav) {
+      setDeal(fromNav)
+      setDealDetailApi((prev) => (prev?.id === id ? prev : null))
+    } else {
+      setDeal((prev) => (prev?.id === id ? prev : undefined))
+      setDealDetailApi((prev) => (prev?.id === id ? prev : null))
+    }
     setSaasPaywallDeal(null)
     setUpgradePromptDeal(null)
+    const controller = new AbortController()
     void (async () => {
       try {
-        const d = await fetchDealById(id)
+        const d = await fetchDealById(id, { signal: controller.signal })
         if (!cancelled) {
-          if (mode === "investing") {
-            await refreshInvestmentDealDocumentsPreview(d.id)
-          } else {
-            applyOfferingInvestorPreviewJsonFromServer(
-              d.id,
-              d.offeringInvestorPreviewJson,
-            )
-          }
+          writeCachedResource(`deal-detail:${id}`, d)
           setDealDetailApi(d)
           setDeal(dealDetailApiToRecord(d))
+          window.setTimeout(() => {
+            if (cancelled) return
+            if (mode === "investing") {
+              const previewJson = d.offeringInvestorPreviewJson?.trim()
+              if (previewJson) {
+                syncInvestmentDealDocumentPreview(d.id, previewJson, {
+                  notify: false,
+                })
+              }
+            } else {
+              applyOfferingInvestorPreviewJsonFromServer(
+                d.id,
+                d.offeringInvestorPreviewJson,
+              )
+            }
+          }, 0)
           if (
             mode !== "investing" &&
             d.viewerIsLeadSponsor === true &&
@@ -495,6 +551,13 @@ export function DealDetailPage() {
           }
         }
       } catch (err) {
+        if (cancelled) return
+        if (
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError")
+        ) {
+          return
+        }
         if (!cancelled) {
           if (isDealSaasPaymentRequiredError(err)) {
             setSaasPaywallDeal({
@@ -509,6 +572,7 @@ export function DealDetailPage() {
     })()
     return () => {
       cancelled = true
+      controller.abort()
       clearOfferingPreviewRuntime(id)
     }
   }, [dealId, mode])
@@ -519,25 +583,36 @@ export function DealDetailPage() {
       return
     }
     let cancelled = false
-    setInvestingOfferingLoading(true)
-    setInvestingOfferingClasses([])
-    setInvestingOfferingInvestors(EMPTY_INVESTORS_PAYLOAD)
+    const id = dealId.trim()
+    const offeringKey = `deal-offering:${id}`
+    const cachedOffering = peekCachedResource<{
+      classes: DealInvestorClass[]
+      investors: DealInvestorsPayload
+    }>(offeringKey)
+    if (cachedOffering) {
+      setInvestingOfferingClasses(cachedOffering.classes)
+      setInvestingOfferingInvestors(cachedOffering.investors)
+      setInvestingOfferingLoading(false)
+    } else {
+      setInvestingOfferingLoading(true)
+    }
     void (async () => {
       try {
-        const id = dealId.trim()
         const [icResult, invResult] = await Promise.allSettled([
           fetchDealInvestorClasses(id),
           fetchDealInvestors(id),
         ])
         if (cancelled) return
-        setInvestingOfferingClasses(
-          icResult.status === "fulfilled" ? icResult.value : [],
-        )
-        setInvestingOfferingInvestors(
+        const classes = icResult.status === "fulfilled" ? icResult.value : []
+        const investors =
           invResult.status === "fulfilled"
             ? invResult.value
-            : EMPTY_INVESTORS_PAYLOAD,
-        )
+            : EMPTY_INVESTORS_PAYLOAD
+        if (icResult.status === "fulfilled" || invResult.status === "fulfilled") {
+          writeCachedResource(offeringKey, { classes, investors })
+        }
+        setInvestingOfferingClasses(classes)
+        setInvestingOfferingInvestors(investors)
       } finally {
         if (!cancelled) setInvestingOfferingLoading(false)
       }
@@ -960,9 +1035,6 @@ export function DealDetailPage() {
       </div>
     )
 
-  if (mode === "investing" && investingOfferingLoading)
-    return <DealsPageCenteredLoader label="Loading deal…" />
-
   const showSyndicatingDealChrome = mode !== "investing"
 
   return (
@@ -1238,6 +1310,9 @@ export function DealDetailPage() {
               viewOnly={syndicationViewOnly}
             />
           </>
+        ) : !dealDetailApi &&
+          (activeTab === "offering_details" || activeTab === "documents") ? (
+          <DealsPageCenteredLoader label="Loading deal…" />
         ) : activeTab === "offering_details" && dealDetailApi ? (
           <DealOfferingDetailsTab
             detail={dealDetailApi}

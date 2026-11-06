@@ -6,7 +6,10 @@ import {
   PORTAL_OMIT_ACTIVE_ORG_HEADER,
 } from "../../../../common/auth/portalAuthHeaders"
 import { getApiV1Base } from "../../../../common/utils/apiBaseUrl"
-import { PORTAL_TIMEOUT_HEADER } from "../../../../common/utils/requestTimeout"
+import {
+  PORTAL_TIMEOUT_HEADER,
+  isRequestTimeoutError,
+} from "../../../../common/utils/requestTimeout"
 import {
   MAX_DEAL_IMAGE_FILE_BYTES,
   materializeImageFilesForUpload,
@@ -299,6 +302,15 @@ function normalizeDealListRow(
       firstDefined(r, ["totalAccepted", "total_accepted"]) ??
         raw.totalAccepted,
       "—",
+    ),
+    softCommitted: str(
+      firstDefined(r, ["softCommitted", "soft_committed"]) ??
+        raw.softCommitted,
+      "$0",
+    ),
+    totalFunded: str(
+      firstDefined(r, ["totalFunded", "total_funded"]) ?? raw.totalFunded,
+      "$0",
     ),
     raiseTarget: str(
       firstDefined(r, ["raiseTarget", "raise_target"]) ?? raw.raiseTarget,
@@ -870,12 +882,16 @@ export function normalizeDealDetailApi(
   }
 }
 
-export async function fetchDealById(dealId: string): Promise<DealDetailApi> {
+export async function fetchDealById(
+  dealId: string,
+  options?: { signal?: AbortSignal },
+): Promise<DealDetailApi> {
   const base = getApiV1Base()
   if (!base) throw new Error("VITE_BASE_URL is not configured.")
   const res = await fetch(`${base}/deals/${encodeURIComponent(dealId)}`, {
     headers: { ...authHeaders({ omitActiveOrganization: true }) },
     credentials: "include",
+    signal: options?.signal,
   })
   const data = (await res.json().catch(() => ({}))) as {
     deal?: DealDetailApi
@@ -2136,8 +2152,16 @@ function extractInvestorClassesPayload(data: Record<string, unknown>): unknown[]
   return []
 }
 
+function isAbortError(err: unknown): boolean {
+  return (
+    (err instanceof DOMException && err.name === "AbortError") ||
+    (err instanceof Error && err.name === "AbortError")
+  )
+}
+
 export async function fetchDealInvestorClasses(
   dealId: string,
+  options?: { signal?: AbortSignal },
 ): Promise<DealInvestorClass[]> {
   const base = getApiV1Base()
   if (!base) return []
@@ -2148,6 +2172,7 @@ export async function fetchDealInvestorClasses(
         // Match fetchDealById / fetchDealInvestors — LP invest-now is user-scoped, not active-org-scoped.
         headers: { ...authHeaders({ omitActiveOrganization: true }) },
         credentials: "include",
+        signal: options?.signal,
       },
     )
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
@@ -2164,7 +2189,8 @@ export async function fetchDealInvestorClasses(
         }
       })
       .filter((x): x is DealInvestorClass => x != null)
-  } catch {
+  } catch (err) {
+    if (isAbortError(err)) throw err
     return []
   }
 }
@@ -3265,7 +3291,11 @@ function normalizeDealMembersResponse(data: unknown): DealMembersPayload {
  */
 export async function fetchDealInvestors(
   dealId: string,
-  options?: { lpInvestorsOnly?: boolean; timeoutMs?: number },
+  options?: {
+    lpInvestorsOnly?: boolean
+    timeoutMs?: number
+    signal?: AbortSignal
+  },
 ): Promise<DealInvestorsPayload> {
   const base = getApiV1Base()
   if (!base) {
@@ -3288,6 +3318,7 @@ export async function fetchDealInvestors(
             : {}),
         },
         credentials: "include",
+        signal: options?.signal,
       },
     )
     const data = await res.json().catch(() => ({}))
@@ -3307,6 +3338,7 @@ export async function fetchDealInvestors(
     })
     return normalized
   } catch (err) {
+    if (isAbortError(err) || isRequestTimeoutError(err)) throw err
     console.error("[InvestorsTab DEBUG] fetchDealInvestors failed", err)
     return { kpis: emptyInvestorsKpis(), investors: [] }
   }
@@ -3508,7 +3540,11 @@ export async function fetchRosterPersonHasCompany(
 
 export async function fetchDealMembers(
   dealId: string,
-  options?: { referringSponsorRef?: string | null },
+  options?: {
+    referringSponsorRef?: string | null
+    signal?: AbortSignal
+    timeoutMs?: number
+  },
 ): Promise<DealMembersPayload> {
   const base = getApiV1Base()
   if (!base) return emptyDealMembersPayload()
@@ -3522,14 +3558,21 @@ export async function fetchDealMembers(
     const res = await fetch(
       `${base}/deals/${encodeURIComponent(dealId)}/members${q ? `?${q}` : ""}`,
       {
-        headers: { ...authHeaders({ omitActiveOrganization: true }) },
+        headers: {
+          ...authHeaders({ omitActiveOrganization: true }),
+          ...(options?.timeoutMs != null
+            ? { [PORTAL_TIMEOUT_HEADER]: String(options.timeoutMs) }
+            : {}),
+        },
         credentials: "include",
+        signal: options?.signal,
       },
     )
     const data = await res.json().catch(() => ({}))
     if (!res.ok) return emptyDealMembersPayload()
     return normalizeDealMembersResponse(data)
-  } catch {
+  } catch (err) {
+    if (isAbortError(err) || isRequestTimeoutError(err)) throw err
     return emptyDealMembersPayload()
   }
 }

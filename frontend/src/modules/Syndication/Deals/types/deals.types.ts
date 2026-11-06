@@ -7,6 +7,10 @@ export interface DealListRow {
   totalInProgress: string
   totalAccepted: string
   raiseTarget: string
+  /** Soft-committed investment total from the deals list. */
+  softCommitted?: string
+  /** Funded total from the deals list, same basis as the Investors tab. */
+  totalFunded?: string
   distributions: string
   investors: string
   closeDateDisplay: string

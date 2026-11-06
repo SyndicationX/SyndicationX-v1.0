@@ -430,6 +430,8 @@ function ContactsPage({
   const offeringVisibilityTitleId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const [rows, setRows] = useState<ContactRow[]>([])
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
   const [dealCountById, setDealCountById] = useState<Map<string, number>>(
     () => new Map(),
   )
@@ -509,6 +511,8 @@ function ContactsPage({
   >(() => new Set())
   /** Self-registered investors shown on the Platform Contacts tab. */
   const [platformRows, setPlatformRows] = useState<ContactRow[]>([])
+  const platformRowsRef = useRef(platformRows)
+  platformRowsRef.current = platformRows
   const [platformLoading, setPlatformLoading] = useState(true)
   const [platformSearchQuery, setPlatformSearchQuery] = useState("")
   const [platformPage, setPlatformPage] = useState(1)
@@ -941,7 +945,7 @@ function ContactsPage({
   }, [filteredRows, allContactsInFilterSelected])
 
   const loadContacts = useCallback(async () => {
-    setLoading(true)
+    if (rowsRef.current.length === 0) setLoading(true)
     try {
       const orgOptions = scopedOrganizationId
         ? { organizationId: scopedOrganizationId }
@@ -989,7 +993,7 @@ function ContactsPage({
   }, [orgScopeKey, platformAdmin, scopedOrganizationId])
 
   const loadPlatformContacts = useCallback(async () => {
-    setPlatformLoading(true)
+    if (platformRowsRef.current.length === 0) setPlatformLoading(true)
     try {
       setPlatformRows(await fetchPlatformContacts({ lean: true }))
     } finally {

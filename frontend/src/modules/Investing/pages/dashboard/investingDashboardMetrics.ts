@@ -1,4 +1,5 @@
 import { getSessionUserEmail } from "@/common/auth/sessionUserEmail"
+import { runPool } from "@/common/hooks/useCachedResource"
 import { inProgressNotCountersignedForViewer } from "@/modules/Investing/pages/dashboard/investingDashboardDealBucket"
 import { applyLpSessionDealIdScope, filterDealListRowsVisibleToInvestors } from "@/modules/Investing/utils/investingViewerDealScope"
 import { fetchMyDistributions } from "@/modules/Syndication/Deals/distribution-setup/api/myDistributionsApi"
@@ -78,15 +79,17 @@ export async function loadInvestingDashboardMetrics(): Promise<InvestingDashboar
     }
   }
 
-  const [perDeal, myDistributions] = await Promise.all([
-    Promise.all(
-      active.map(async (row) => {
-        const payload = await fetchDealInvestors(row.id, {
-          lpInvestorsOnly: false,
-        })
-        return { row, payload }
-      }),
-    ),
+  const perDeal: Array<{
+    row: (typeof active)[number]
+    payload: DealInvestorsPayload
+  }> = []
+  const [, myDistributions] = await Promise.all([
+    runPool(active, 4, async (row) => {
+      const payload = await fetchDealInvestors(row.id, {
+        lpInvestorsOnly: false,
+      })
+      perDeal.push({ row, payload })
+    }),
     fetchMyDistributions().catch(() => ({
       distributions: [],
       totalPayment: "0",

@@ -201,14 +201,6 @@ export async function getDealMembers(
       referringSponsorUserId: referringSponsor?.sponsorUserId,
       activeOrganizationId,
     });
-    const onboardingSponsorDisplayName =
-      onboardingSponsorUserId.toLowerCase() !== user.id.toLowerCase()
-        ? await resolveReferringSponsorDisplayNameOnDeal(
-            dealId,
-            onboardingSponsorUserId,
-          )
-        : "";
-    const leadSponsor = await resolveDealLeadSponsorFallback(dealId);
     const sponsorPortalId = async (
       rawId: string | null | undefined,
     ): Promise<string> => {
@@ -216,14 +208,23 @@ export async function getDealMembers(
       if (!raw) return "";
       return (await resolvePortalUserIdForContactMemberId(raw)) || raw;
     };
-    const onboardingPortalUserId =
+    const [onboardingSponsorDisplayName, leadSponsor] = await Promise.all([
       onboardingSponsorUserId.toLowerCase() !== user.id.toLowerCase()
-        ? await sponsorPortalId(onboardingSponsorUserId)
-        : "";
-    const referringPortalUserId = await sponsorPortalId(
-      referringSponsor?.sponsorUserId,
-    );
-    const leadPortalUserId = await sponsorPortalId(leadSponsor.userId);
+        ? resolveReferringSponsorDisplayNameOnDeal(
+            dealId,
+            onboardingSponsorUserId,
+          )
+        : Promise.resolve(""),
+      resolveDealLeadSponsorFallback(dealId),
+    ]);
+    const [onboardingPortalUserId, referringPortalUserId, leadPortalUserId] =
+      await Promise.all([
+        onboardingSponsorUserId.toLowerCase() !== user.id.toLowerCase()
+          ? sponsorPortalId(onboardingSponsorUserId)
+          : Promise.resolve(""),
+        sponsorPortalId(referringSponsor?.sponsorUserId),
+        sponsorPortalId(leadSponsor.userId),
+      ]);
     const companyNameByUserId = await resolveUserCompanyNamesByIds([
       onboardingSponsorUserId,
       onboardingPortalUserId,

@@ -414,11 +414,15 @@ async function listDealIdsWhereInvitingSponsorIsOnRoster(
  */
 export async function listDealIdsSponsoredByCompanyColleague(
   emailNorm: string,
+  onlyDealId?: string,
 ): Promise<Set<string>> {
   const e = String(emailNorm ?? "").trim().toLowerCase();
   if (!e || !e.includes("@")) return new Set();
-  const inflight = companyColleagueSponsorDealIdsInflight.get(e);
-  if (inflight) return inflight;
+  const onlyId = String(onlyDealId ?? "").trim();
+  if (!onlyId) {
+    const inflight = companyColleagueSponsorDealIdsInflight.get(e);
+    if (inflight) return inflight;
+  }
   const pending = pool
     .query<{ deal_id: string }>(
       `WITH        viewer_orgs AS (
@@ -483,8 +487,9 @@ export async function listDealIdsSponsoredByCompanyColleague(
                ON lower(trim(sponsor_contact.email)) = cu.email
              WHERE sponsor_contact.id::text = trim(both from dm.contact_member_id)
            )
-         )`,
-      [e],
+         )
+         AND ($2::uuid IS NULL OR dm.deal_id = $2::uuid)`,
+      [e, onlyId || null],
     )
     .then(
       (res) =>
@@ -493,10 +498,11 @@ export async function listDealIdsSponsoredByCompanyColleague(
             .map((r) => String(r.deal_id ?? "").trim().toLowerCase())
             .filter(Boolean),
         ),
-    )
-    .finally(() => {
-      companyColleagueSponsorDealIdsInflight.delete(e);
-    });
+    );
+  if (onlyId) return pending;
+  pending.finally(() => {
+    companyColleagueSponsorDealIdsInflight.delete(e);
+  });
   companyColleagueSponsorDealIdsInflight.set(e, pending);
   return pending;
 }
@@ -616,6 +622,110 @@ export async function listContactOrganizationInvestingDealIds(
     }
   }
   return filterDealIdsVisibleToInvestors(allowed);
+}
+
+/** One deal from a company where this email is a contact. Does not load that company's other deals. */
+export async function isDealVisibleViaContactOrganization(
+  emailNorm: string,
+  dealId: string,
+): Promise<boolean> {
+  const e = String(emailNorm ?? "").trim().toLowerCase();
+  const did = String(dealId ?? "").trim();
+  if (!e.includes("@") || !/^[0-9a-f-]{36}$/i.test(did)) return false;
+  const byOrg = await contactVisibilityByOrganization(e);
+  const orgIds = [...byOrg.keys()];
+  if (orgIds.length === 0) return false;
+
+  const companiesRows = await db
+    .select({ id: companies.id, name: companies.name })
+    .from(companies)
+    .where(inArray(companies.id, orgIds));
+  const orgIdByName = new Map<string, string>();
+  for (const company of companiesRows) {
+    const name = String(company.name ?? "").trim().toLowerCase();
+    const id = String(company.id ?? "").trim().toLowerCase();
+    if (name && id && !orgIdByName.has(name)) orgIdByName.set(name, id);
+  }
+
+  const res = await pool.query<{
+    sec_type: string | null;
+    organization_id: string | null;
+    owning_entity_name: string | null;
+  }>(
+    `SELECT d.sec_type, d.organization_id::text AS organization_id, d.owning_entity_name
+     FROM add_deal_form d
+     WHERE d.id = $2::uuid
+       AND (
+         lower(trim(d.organization_id::text)) = ANY($1::text[])
+         OR (
+           d.organization_id IS NULL
+           AND EXISTS (
+             SELECT 1 FROM companies co
+             WHERE lower(trim(co.id::text)) = ANY($1::text[])
+               AND lower(trim(co.name)) = lower(trim(d.owning_entity_name))
+           )
+         )
+       )`,
+    [orgIds, did],
+  );
+  const row = res.rows[0];
+  if (!row) return false;
+  const storedOrg = String(row.organization_id ?? "").trim().toLowerCase();
+  const namedOrg =
+    orgIdByName.get(String(row.owning_entity_name ?? "").trim().toLowerCase()) ??
+    "";
+  const organizationId = orgIds.includes(storedOrg) ? storedOrg : namedOrg;
+  if (!organizationId || !byOrg.has(organizationId)) return false;
+
+  const onDeal = await pool.query<{ ok: number }>(
+    `SELECT 1 AS ok
+     FROM (
+       SELECT 1
+       FROM deal_lp_investor dli
+       WHERE dli.deal_id = $2::uuid
+         AND dli.is_draft = false
+         AND ${lpInvestorRowMatchesLoginEmailSql("dli")}
+       UNION ALL
+       SELECT 1
+       FROM deal_member dm
+       WHERE dm.deal_id = $2::uuid
+         AND dm.is_draft = false
+         AND (
+           EXISTS (
+             SELECT 1 FROM contact c
+             WHERE c.id::text = trim(both from dm.contact_member_id)
+               AND lower(trim(c.email)) = $1
+           )
+           OR EXISTS (
+             SELECT 1 FROM users u
+             WHERE u.id::text = trim(both from dm.contact_member_id)
+               AND lower(trim(u.email)) = $1
+           )
+         )
+       UNION ALL
+       SELECT 1
+       FROM deal_investment di
+       WHERE di.deal_id = $2::uuid
+         AND di.is_draft = false
+         AND ${dealInvestmentRowMatchesLoginEmailSql("di")}
+     ) src
+     LIMIT 1`,
+    [e, did],
+  );
+  const participantDealIds = onDeal.rows.length
+    ? new Set([did.toLowerCase()])
+    : new Set<string>();
+  if (
+    !dealMatchesOrganizationVisibility(
+      byOrg.get(organizationId) ?? null,
+      row.sec_type,
+      did,
+      participantDealIds,
+    )
+  ) {
+    return false;
+  }
+  return (await filterDealIdsVisibleToInvestors([did])).length > 0;
 }
 
 /**

@@ -1,3 +1,4 @@
+import { runPool } from "@/common/hooks/useCachedResource"
 import { fetchContacts } from "../contacts/api/contactsApi"
 import { fetchMyFeedback } from "@/modules/feedback/api/feedbackApi"
 import {
@@ -50,16 +51,20 @@ async function loadDashboardSummaryForDealList(
     }
   }
 
-  const perDeal = await Promise.all(
-    list.map(async (row: DealListRow) => {
-      const [payload, classes, distSetup] = await Promise.all([
-        fetchDealInvestors(row.id, { lpInvestorsOnly: true }),
-        fetchDealInvestorClasses(row.id),
-        fetchDistributionSetup(row.id).catch(() => null),
-      ])
-      return { row, payload, classes, distSetup }
-    }),
-  )
+  const perDeal: Array<{
+    row: DealListRow
+    payload: Awaited<ReturnType<typeof fetchDealInvestors>>
+    classes: Awaited<ReturnType<typeof fetchDealInvestorClasses>>
+    distSetup: Awaited<ReturnType<typeof fetchDistributionSetup>> | null
+  }> = []
+  await runPool(list, 4, async (row) => {
+    const [payload, classes, distSetup] = await Promise.all([
+      fetchDealInvestors(row.id, { lpInvestorsOnly: true }),
+      fetchDealInvestorClasses(row.id),
+      fetchDistributionSetup(row.id).catch(() => null),
+    ])
+    perDeal.push({ row, payload, classes, distSetup })
+  })
 
   let totalInvestorRows = 0
   let sumTarget = 0

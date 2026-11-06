@@ -19,6 +19,7 @@ import {
 import { createPortal } from "react-dom"
 import { useNavigate } from "react-router-dom"
 import { coSponsorMayOpenDeal } from "@/common/auth/coSponsorCompanyGate"
+import type { DealListRow } from "../types/deals.types"
 import { toast } from "@/common/components/Toast"
 import { MemberRemoveConfirmModal } from "@/modules/Syndication/usermanagement/MemberRemoveConfirmModal"
 import "../tabs/deal_members/components/deal-member-row-actions.css"
@@ -26,6 +27,8 @@ import "../tabs/deal_members/components/deal-member-row-actions.css"
 interface DealRowActionsProps {
   dealId: string
   dealName: string
+  /** Row already on screen, so the deal page can open before the detail request finishes. */
+  listRow?: DealListRow
   archived?: boolean
   /**
    * Investing-mode list: only view deal (no preview modal, edit, archive, or delete).
@@ -79,6 +82,7 @@ interface DealRowActionsProps {
 export function DealRowActions({
   dealId,
   dealName,
+  listRow,
   archived = false,
   readOnlyActions = false,
   viewOnlySyndication = false,
@@ -225,7 +229,9 @@ export function DealRowActions({
     }
     void coSponsorMayOpenDeal().then((allowed) => {
       if (!allowed) return
-      navigate(`/deals/${encodeURIComponent(dealId)}`)
+      navigate(`/deals/${encodeURIComponent(dealId)}`, {
+        state: listRow ? { dealListRow: listRow } : undefined,
+      })
     })
   }
 

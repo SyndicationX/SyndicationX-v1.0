@@ -38,6 +38,11 @@ import {
   investorRowShowsDraftBadge,
 } from "../add-investment/addMemberDraftInvestorRow"
 import { fetchDealInvestorClasses, fetchDealMembers } from "../../../api/dealsApi"
+import { useCachedResource } from "@/common/hooks/useCachedResource"
+import {
+  dealInvestorClassesCacheKey,
+  dealMembersTabCacheKey,
+} from "../../../hooks/useDealRosterTabData"
 import { notifyDealMembersExportAudit } from "../../../api/dealMembersExportNotifyApi"
 import { formatMemberUsername } from "../../../../usermanagement/memberAdminShared"
 import { DealMemberUserCell } from "../../investors/DealMemberUserCell"
@@ -362,14 +367,26 @@ export function DealMembersTab({
 }: DealMembersTabProps) {
   const navigate = useNavigate()
   const [rows, setRows] = useState<DealInvestorRow[]>([])
+  const {
+    data: membersData,
+    isLoading: membersLoading,
+    reload: reloadMembers,
+  } = useCachedResource({
+    key: dealMembersTabCacheKey(dealId),
+    enabled: Boolean(dealId),
+    fetcher: () => fetchDealMembers(dealId),
+  })
+  const [loading, setLoading] = useState(() => membersData == null)
   const rowsRef = useRef<DealInvestorRow[]>([])
   useEffect(() => {
     rowsRef.current = rows
   }, [rows])
-  const [investorClasses, setInvestorClasses] = useState<DealInvestorClass[]>(
-    [],
-  )
-  const [loading, setLoading] = useState(true)
+  const { data: investorClassesData } = useCachedResource({
+    key: dealInvestorClassesCacheKey(dealId),
+    enabled: Boolean(dealId),
+    fetcher: () => fetchDealInvestorClasses(dealId),
+  })
+  const investorClasses = investorClassesData ?? []
   const [dealMembersPageSize, setDealMembersPageSize] =
     usePersistedTablePageSize(TABLE_PAGE_SIZE_ID.dealMembers)
   const [generalPartnersPageSize, setGeneralPartnersPageSize] =
@@ -401,16 +418,19 @@ export function DealMembersTab({
     useState<SendMailEmailPreviewPayload | null>(null)
   const memberSelectAllRef = useRef<HTMLInputElement | null>(null)
 
-  const load = useCallback(async () => {
-    const showFullPageLoading = rowsRef.current.length === 0
-    if (showFullPageLoading) setLoading(true)
-    try {
-      const { members } = await fetchDealMembers(dealId)
-      setRows(members)
-    } finally {
+  useEffect(() => {
+    if (!investorsRefreshKey) return
+    reloadMembers()
+  }, [investorsRefreshKey, reloadMembers])
+
+  useEffect(() => {
+    if (membersData) {
+      setRows(membersData.members)
       setLoading(false)
+      return
     }
-  }, [dealId])
+    setLoading(membersLoading)
+  }, [membersData, membersLoading])
 
   const handleViewMember = useCallback(
     async (row: DealInvestorRow) => {
@@ -429,10 +449,6 @@ export function DealMembersTab({
     [dealId, onViewMember, rosterKind],
   )
 
-  useEffect(() => {
-    void load()
-  }, [load, investorsRefreshKey])
-
   /** Drop stale add-member session draft when API already lists that contact (avoids duplicate row + stuck storage). */
   useEffect(() => {
     if (addInvestmentOpen || sharedInvestmentModalOpen) return
@@ -446,16 +462,6 @@ export function DealMembersTab({
     sharedInvestmentModalOpen,
     investorsRefreshKey,
   ])
-
-  useEffect(() => {
-    let cancelled = false
-    void fetchDealInvestorClasses(dealId).then((list) => {
-      if (!cancelled) setInvestorClasses(list)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [dealId])
 
   useEffect(() => {
     setQuery("")

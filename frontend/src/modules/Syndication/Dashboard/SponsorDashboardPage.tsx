@@ -7,7 +7,7 @@ import {
   UserRound,
   Users,
 } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useCachedResource } from "@/common/hooks/useCachedResource"
 import { Link } from "react-router-dom"
 import { ToolStyleCard } from "../../../common/components/tool-style-card/ToolStyleCard"
 import { formatCount } from "@/common/utils/formatCount"
@@ -15,33 +15,15 @@ import { cardCompactAmountOrDash } from "../../../common/components/card-compact
 import { usePortalMode } from "@/modules/Investing/context/PortalModeContext"
 import { InvestingDashboardPage } from "@/modules/Investing/pages/dashboard"
 import { SyndicatingDealsSection } from "../Deals/SyndicatingDealsSection"
-import {
-  loadSyndicationDashboardSummary,
-  type SyndicationDashboardSummary,
-} from "./syndicationDashboardData"
+import { loadSyndicationDashboardSummary } from "./syndicationDashboardData"
 import "../usermanagement/user_management.css"
 import "./sponsor-dashboard.css"
 
 function SyndicatingDashboard() {
-  const [summary, setSummary] = useState<SyndicationDashboardSummary | null>(
-    null,
-  )
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const s = await loadSyndicationDashboardSummary()
-        if (!cancelled) setSummary(s)
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const { data: summary, isLoading: loading } = useCachedResource({
+    key: "syndication-dashboard-summary",
+    fetcher: loadSyndicationDashboardSummary,
+  })
 
   return (
     <section className="um_page sponsor_dash sponsor_dash_syndicating">

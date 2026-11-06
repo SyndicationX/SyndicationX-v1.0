@@ -5,7 +5,14 @@ import {
   LayoutList,
   Search,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  cachedResourceIsFresh,
+  peekCachedResource,
+  runPool,
+  useCachedResource,
+  writeCachedResource,
+} from "@/common/hooks/useCachedResource";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   applyDealsSearchToParams,
@@ -302,94 +309,24 @@ export function SyndicatingDealsSection({
   const setSortKey = usesControlledSort
     ? onControlledSortKeyChange
     : setInternalSortKey;
-  const [deals, setDeals] = useState<DealRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [reviewByDealId, setReviewByDealId] = useState<
-    Record<string, { reviewRating: number; reviewCount: number }>
-  >({});
-  const [reviewsLoading, setReviewsLoading] = useState(false);
-  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const listKey = `dashboard-deals:${includeParticipantDeals ? 1 : 0}:${onlyDealsWithViewerCommitment ? 1 : 0}:${filterOfferingDashboardVisibility ? 1 : 0}`;
+  const cachedList = isControlled
+    ? undefined
+    : peekCachedResource<DealListRow[]>(listKey);
+  const [deals, setDeals] = useState<DealRecord[]>(() =>
+    (cachedList ?? []).map((row) => dealListRowToDealRecord(row)),
+  );
+  const [loading, setLoading] = useState(
+    () => !isControlled && (cachedList?.length ?? 0) === 0,
+  );
+  const dealsRef = useRef(deals);
+  dealsRef.current = deals;
 
-  useEffect(() => {
-    if (isControlled) {
-      setDeals(controlledDeals);
-      setLoading(controlledLoading);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      setLoading(true);
-      let list = await fetchDealsList(
-        includeParticipantDeals ? { includeParticipantDeals: true } : undefined,
-      );
-      if (includeParticipantDeals) {
-        list = filterDealListRowsVisibleToInvestors(list);
-      }
-      if (onlyDealsWithViewerCommitment && list.length > 0)
-        list = await filterDealListToViewerInvested(list);
-      if (filterOfferingDashboardVisibility) {
-        list = list.filter((row) => {
-          const rules = getDealStatusRules(row.offeringStatus);
-          if (includeParticipantDeals) {
-            return rules.status !== "closed" && rules.status !== "past";
-          }
-          return rules.allowDashboardVisibility;
-        });
-      }
-      if (cancelled) return;
-      if (list.length === 0) {
-        setDeals([]);
-        setLoading(false);
-        return;
-      }
-      const bundles = await Promise.all(
-        list.map(async (row) => {
-          const [payload, classes, distSetup] = await Promise.all([
-            fetchDealInvestors(row.id, { lpInvestorsOnly: true }),
-            fetchDealInvestorClasses(row.id),
-            fetchDistributionSetup(row.id).catch(() => null),
-          ]);
-          return {
-            row,
-            payload,
-            classes,
-            totalDistributed: sumPriorDistributionsAmount(
-              distSetup?.priorDistributions,
-            ),
-          };
-        }),
-      );
-      if (cancelled) return;
-      setDeals(
-        bundles.map(({ row, payload, classes, totalDistributed }) =>
-          mergeDealRecordWithInvestorsAndClasses(
-            row,
-            dealListRowToDealRecord(row),
-            payload,
-            classes,
-            { totalDistributed },
-          ),
-        ),
-      );
-      setLoading(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    isControlled,
-    controlledDeals,
-    controlledLoading,
-    includeParticipantDeals,
-    onlyDealsWithViewerCommitment,
-    filterOfferingDashboardVisibility,
-  ]);
-
-  useEffect(() => {
-    if (isControlled) return;
-    function onDealsListRefetch() {
-      void (async () => {
-        setLoading(true);
+  const { data: listRows, isLoading: listLoading, reload: reloadDeals } =
+    useCachedResource({
+      key: listKey,
+      enabled: !isControlled,
+      fetcher: async () => {
         let list = await fetchDealsList(
           includeParticipantDeals
             ? { includeParticipantDeals: true }
@@ -398,8 +335,9 @@ export function SyndicatingDealsSection({
         if (includeParticipantDeals) {
           list = filterDealListRowsVisibleToInvestors(list);
         }
-        if (onlyDealsWithViewerCommitment && list.length > 0)
+        if (onlyDealsWithViewerCommitment && list.length > 0) {
           list = await filterDealListToViewerInvested(list);
+        }
         if (filterOfferingDashboardVisibility) {
           list = list.filter((row) => {
             const rules = getDealStatusRules(row.offeringStatus);
@@ -409,84 +347,114 @@ export function SyndicatingDealsSection({
             return rules.allowDashboardVisibility;
           });
         }
-        if (list.length === 0) {
-          setDeals([]);
-          setLoading(false);
-          return;
-        }
-        const bundles = await Promise.all(
-          list.map(async (row) => {
-            const [payload, classes, distSetup] = await Promise.all([
-              fetchDealInvestors(row.id, { lpInvestorsOnly: true }),
-              fetchDealInvestorClasses(row.id),
-              fetchDistributionSetup(row.id).catch(() => null),
-            ]);
-            return {
-              row,
-              payload,
-              classes,
-              totalDistributed: sumPriorDistributionsAmount(
-                distSetup?.priorDistributions,
-              ),
-            };
-          }),
-        );
-        setDeals(
-          bundles.map(({ row, payload, classes, totalDistributed }) =>
-            mergeDealRecordWithInvestorsAndClasses(
-              row,
-              dealListRowToDealRecord(row),
-              payload,
-              classes,
-              { totalDistributed },
-            ),
-          ),
-        );
-        setLoading(false);
-      })();
-    }
-    window.addEventListener(DEALS_LIST_REFETCH_EVENT, onDealsListRefetch);
-    return () =>
-      window.removeEventListener(DEALS_LIST_REFETCH_EVENT, onDealsListRefetch);
-  }, [
-    isControlled,
-    includeParticipantDeals,
-    onlyDealsWithViewerCommitment,
-    filterOfferingDashboardVisibility,
-  ]);
+        return list;
+      },
+    });
+  const [reviewByDealId, setReviewByDealId] = useState<
+    Record<string, { reviewRating: number; reviewCount: number }>
+  >({});
+  const [reviewsLoading, setReviewsLoading] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
 
   useEffect(() => {
-    if (deals.length === 0) {
+    if (isControlled) {
+      setDeals(controlledDeals ?? []);
+      setLoading(controlledLoading);
+      return;
+    }
+    if (!listRows) {
+      setLoading(listLoading);
+      return;
+    }
+    let cancelled = false;
+    const paintRow = (
+      row: DealListRow,
+      bundle?: {
+        payload: Awaited<ReturnType<typeof fetchDealInvestors>>;
+        classes: Awaited<ReturnType<typeof fetchDealInvestorClasses>>;
+        totalDistributed: number;
+      },
+    ) => {
+      const base = dealListRowToDealRecord(row);
+      return bundle
+        ? mergeDealRecordWithInvestorsAndClasses(
+            row,
+            base,
+            bundle.payload,
+            bundle.classes,
+            { totalDistributed: bundle.totalDistributed },
+          )
+        : base;
+    };
+    setDeals(
+      listRows.map((row) => {
+        const bundleKey = `deal-card-bundle:${row.id}`;
+        return paintRow(row, peekCachedResource(bundleKey));
+      }),
+    );
+    setLoading(false);
+    void runPool(listRows, 4, async (row) => {
+      const bundleKey = `deal-card-bundle:${row.id}`;
+      if (cachedResourceIsFresh(bundleKey, 20_000)) return;
+      const [payload, classes, distSetup] = await Promise.all([
+        fetchDealInvestors(row.id, { lpInvestorsOnly: true }),
+        fetchDealInvestorClasses(row.id),
+        fetchDistributionSetup(row.id).catch(() => null),
+      ]);
+      if (cancelled) return;
+      const bundle = {
+        payload,
+        classes,
+        totalDistributed: sumPriorDistributionsAmount(
+          distSetup?.priorDistributions,
+        ),
+      };
+      writeCachedResource(bundleKey, bundle);
+      setDeals((prev) =>
+        prev.map((deal) => (deal.id === row.id ? paintRow(row, bundle) : deal)),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isControlled, controlledDeals, controlledLoading, listRows, listLoading]);
+
+  useEffect(() => {
+    if (isControlled) return;
+    window.addEventListener(DEALS_LIST_REFETCH_EVENT, reloadDeals);
+    return () =>
+      window.removeEventListener(DEALS_LIST_REFETCH_EVENT, reloadDeals);
+  }, [isControlled, reloadDeals]);
+
+  const reviewIdsKey = deals.map((deal) => deal.id).join("\n");
+
+  useEffect(() => {
+    const current = dealsRef.current;
+    if (current.length === 0) {
       setReviewByDealId({});
       setReviewsLoading(false);
       return;
     }
     let cancelled = false;
     setReviewsLoading(true);
-    void (async () => {
-      const out: Record<string, { reviewRating: number; reviewCount: number }> =
-        {};
-      const results = await Promise.all(
-        deals.map((d) =>
-          fetchDealReviewSummary(d.id).then((s) => [d.id, s] as const),
-        ),
-      );
+    const out: Record<string, { reviewRating: number; reviewCount: number }> =
+      {};
+    void runPool(current, 4, async (deal) => {
+      const summary = await fetchDealReviewSummary(deal.id);
+      if (cancelled || !summary) return;
+      out[deal.id] = {
+        reviewRating: summary.reviewRating,
+        reviewCount: summary.reviewCount,
+      };
+    }).then(() => {
       if (cancelled) return;
-      for (const [id, s] of results) {
-        if (s) {
-          out[id] = {
-            reviewRating: s.reviewRating,
-            reviewCount: s.reviewCount,
-          };
-        }
-      }
       setReviewByDealId(out);
       setReviewsLoading(false);
-    })();
+    });
     return () => {
       cancelled = true;
     };
-  }, [deals]);
+  }, [reviewIdsKey]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -850,9 +818,11 @@ export function SyndicatingDealsSection({
             getRowKey={(row, rowIndex) => row.id || `sponsor-deal-${rowIndex}`}
             isLoading={loading && sortedDeals.length === 0}
             emptyLabel={
-              query.trim()
-                ? "No deals match your search."
-                : (emptyStateMessage ?? "No deal to display.")
+              loading && sortedDeals.length === 0
+                ? "Loading…"
+                : query.trim()
+                  ? "No deals match your search."
+                  : (emptyStateMessage ?? "No deal to display.")
             }
             emptyStateRole={loading ? "status" : undefined}
           />

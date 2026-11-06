@@ -36,14 +36,24 @@ import {
   listDealIdsFromDealMemberRosterForUser,
   listDealIdsWhereViewerIsCoSponsor,
   listDealIdsWhereViewerIsLeadOrAdminSponsor,
+  isPortalUserCoSponsorOnDeal,
   isPortalUserDealSponsorOnDeal,
   viewerHasNonCoSponsorDealMemberRole,
+  viewerIsCoSponsorOnAnyDeal,
 } from "./dealMemberScope.service.js";
 import { assignCreatorAsLeadSponsorOnDeal } from "./dealMember.service.js";
-import { listLpInvestorDealIdsForUserEmail, listInvestingParticipantDealIdsForUser } from "../investing/lpInvestorAccess.service.js";
+import {
+  isLpInvestorEmailOnDeal,
+  listInvestingParticipantDealIdsForUser,
+  listLpInvestorDealIdsForUserEmail,
+} from "../investing/lpInvestorAccess.service.js";
 import { isDealAllowedByContactOfferingVisibility } from "../contact/contactOfferingVisibility.service.js";
 import { isInvestingPortalRequest } from "../../middleware/portalMode.middleware.js";
-import { listCrossOrgColleagueDealAccess } from "./crossOrgColleagueDeal.service.js";
+import { viewerScopeCache } from "../cache/listReadCache.js";
+import {
+  listCrossOrgColleagueDealAccess,
+  listCrossOrgColleagueDealAccessForDeal,
+} from "./crossOrgColleagueDeal.service.js";
 
 export type { DealViewerScope } from "./dealForm.service.js";
 
@@ -60,11 +70,50 @@ async function viewerEmailNormForScope(scope: DealViewerScope): Promise<string> 
   return String(row?.email ?? "").trim().toLowerCase();
 }
 
+function cloneDealViewerScope(scope: DealViewerScope): DealViewerScope {
+  return {
+    ...scope,
+    lpInvestorEmailScopedDealIds: scope.lpInvestorEmailScopedDealIds?.slice() ?? null,
+    coSponsorDashboardDealIds: scope.coSponsorDashboardDealIds?.slice() ?? null,
+    syndicationSponsorDealIds: scope.syndicationSponsorDealIds?.slice() ?? null,
+    crossOrgColleagueSponsoredDealIds:
+      scope.crossOrgColleagueSponsoredDealIds?.slice() ?? [],
+    investorCompanySyndicationDealIds:
+      scope.investorCompanySyndicationDealIds?.slice() ?? [],
+  };
+}
+
+const CO_SPONSOR_DASHBOARD_DENY = "00000000-0000-0000-0000-000000000000";
+
 export async function resolveDealViewerScope(
   userId: string,
   jwtUserRole: string | undefined,
   requestedOrganizationId?: string | null,
+  options?: { forDealId?: string | null },
 ): Promise<DealViewerScope> {
+  const forDealId = String(options?.forDealId ?? "").trim();
+  const scopeCacheKey = [
+    userId,
+    String(jwtUserRole ?? ""),
+    String(requestedOrganizationId ?? ""),
+    isInvestingPortalRequest() ? "investing" : "syndicating",
+    forDealId ? `deal:${forDealId}` : "all",
+  ].join("|");
+  const cachedScope = viewerScopeCache.get(scopeCacheKey);
+  if (cachedScope) return cloneDealViewerScope(cachedScope);
+  if (forDealId) {
+    const warmedListScope = viewerScopeCache.get(
+      [
+        userId,
+        String(jwtUserRole ?? ""),
+        String(requestedOrganizationId ?? ""),
+        isInvestingPortalRequest() ? "investing" : "syndicating",
+        "all",
+      ].join("|"),
+    );
+    if (warmedListScope) return cloneDealViewerScope(warmedListScope);
+  }
+
   const [row] = await db
     .select({
       organizationId: users.organizationId,
@@ -95,12 +144,24 @@ export async function resolveDealViewerScope(
     (isPlatformAdmin || (role === PLATFORM_USER && organizationId == null));
 
   const emailNorm = String(row?.email ?? "").trim().toLowerCase();
-  const [lpDealIds, coSponsorDealIdsEarly, leadAdminSponsorDealIds] =
-    await Promise.all([
-      listLpInvestorDealIdsForUserEmail(emailNorm),
-      listDealIdsWhereViewerIsCoSponsor(userId),
-      listDealIdsWhereViewerIsLeadOrAdminSponsor(userId),
-    ]);
+  /**
+   * Company and platform admins use workspace / all-deals access. Their scope
+   * does not read these rosters, so skip the full-table scans on deal open.
+   * A single-deal read also skips them and checks only that deal.
+   */
+  const skipGlobalRosterLists =
+    Boolean(forDealId) || isPlatformAdmin || isCompanyAdminRole(role);
+  const [lpDealIds, coSponsorDealIdsEarly, leadAdminSponsorDealIds]: [
+    string[],
+    string[],
+    string[],
+  ] = skipGlobalRosterLists
+    ? [[], [], []]
+    : await Promise.all([
+          listLpInvestorDealIdsForUserEmail(emailNorm),
+          listDealIdsWhereViewerIsCoSponsor(userId),
+          listDealIdsWhereViewerIsLeadOrAdminSponsor(userId),
+        ]);
   const viewerIsSponsorOnAnyDeal =
     coSponsorDealIdsEarly.length > 0 || leadAdminSponsorDealIds.length > 0;
   /**
@@ -116,7 +177,13 @@ export async function resolveDealViewerScope(
     !isCompanyAdminRole(role);
 
   let lpInvestorEmailScopedDealIds: string[] | null = null;
-  if (applyLpEmailScope) {
+  if (forDealId && isInvestingPortalRequest() && !isPlatformAdmin && !isCompanyAdminRole(role)) {
+    const inThisDeal = await isDealInInvestingParticipantListForUser(forDealId, {
+      userId,
+      emailNorm,
+    });
+    if (inThisDeal) lpInvestorEmailScopedDealIds = [forDealId];
+  } else if (applyLpEmailScope) {
     // Direct LP deals + inviting-sponsor offerings. Contact offering
     // visibility is applied only in Investing Mode.
     lpInvestorEmailScopedDealIds =
@@ -129,6 +196,21 @@ export async function resolveDealViewerScope(
 
   let coSponsorDashboardDealIds: string[] | null = null;
   if (
+    forDealId &&
+    !lpInvestorEmailScopedDealIds &&
+    !assignedParticipationOnly &&
+    !isPlatformAdmin &&
+    !isCompanyAdminRole(role)
+  ) {
+    const hasOtherRosterRole = await viewerHasNonCoSponsorDealMemberRole(userId);
+    if (!hasOtherRosterRole && (await viewerIsCoSponsorOnAnyDeal(userId))) {
+      const onThisDeal = await isPortalUserCoSponsorOnDeal(forDealId, userId);
+      coSponsorDashboardDealIds = onThisDeal
+        ? [forDealId]
+        : [CO_SPONSOR_DASHBOARD_DENY];
+    }
+  } else if (
+    !forDealId &&
     !applyLpEmailScope &&
     !assignedParticipationOnly &&
     !isPlatformAdmin &&
@@ -152,7 +234,9 @@ export async function resolveDealViewerScope(
 
   const crossOrgAccess = isPlatformAdmin
     ? { dealIds: [] as string[], investorCompanyDealIds: [] as string[] }
-    : await listCrossOrgColleagueDealAccess(userId);
+    : forDealId
+      ? await listCrossOrgColleagueDealAccessForDeal(userId, forDealId)
+      : await listCrossOrgColleagueDealAccess(userId);
   const crossOrgColleagueSponsoredDealIds = crossOrgAccess.dealIds;
   const investorCompanySyndicationDealIds = crossOrgAccess.investorCompanyDealIds;
 
@@ -162,10 +246,12 @@ export async function resolveDealViewerScope(
    */
   const syndicationSponsorOnly = !isOrgWorkspaceStaffRole(role);
   const syndicationSponsorDealIds = syndicationSponsorOnly
-    ? [...new Set([...leadAdminSponsorDealIds, ...coSponsorDealIdsEarly])]
+    ? forDealId
+      ? []
+      : [...new Set([...leadAdminSponsorDealIds, ...coSponsorDealIdsEarly])]
     : null;
 
-  return {
+  const scope: DealViewerScope = {
     userId,
     organizationId,
     isPlatformAdmin,
@@ -179,6 +265,8 @@ export async function resolveDealViewerScope(
     crossOrgColleagueSponsoredDealIds,
     investorCompanySyndicationDealIds,
   };
+  viewerScopeCache.set(scopeCacheKey, scope);
+  return cloneDealViewerScope(scope);
 }
 
 /** Deal is on the syndication list only because this company's investor is on it. */
@@ -231,10 +319,8 @@ async function investorParticipantMayReadDeal(
     return true;
   }
   const emailNorm = await viewerEmailNormForScope(scope);
-  if (emailNorm) {
-    const rosterDealIds = await listLpInvestorDealIdsForUserEmail(emailNorm);
-    const dealId = String(deal.id ?? "").trim().toLowerCase();
-    if (rosterDealIds.some((id) => id.toLowerCase() === dealId)) return true;
+  if (emailNorm && (await isLpInvestorEmailOnDeal(emailNorm, String(deal.id)))) {
+    return true;
   }
   return viewerHasSyndicationDealWorkspaceAccess(deal, scope);
 }

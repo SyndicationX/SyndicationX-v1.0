@@ -37,8 +37,7 @@ import {
 import { listInvestorClassesByDealId } from "./dealInvestorClass.service.js";
 import type { DealViewerScope } from "./dealForm.service.js";
 import {
-  listDealIdsWhereViewerIsCoSponsor,
-  listDealIdsWhereViewerIsLeadOrAdminSponsor,
+  listCoSponsorOnlyDealIdsForViewerAmong,
   listEquivalentPortalUserIdsForUser,
   resolveViewerDealMemberRoleOnDeal,
 } from "./dealMemberScope.service.js";
@@ -458,10 +457,24 @@ function isDealMembersSponsorRole(raw: string | null | undefined): boolean {
 export async function listMergedLpInvestorsForDeal(
   dealId: string,
 ): Promise<DealInvestmentRow[]> {
-  const allInvestments = await listDealInvestmentsByDealId(dealId, {
-    lpInvestorsOnly: false,
-    includeStatusRemoved: true,
-  });
+  const [allInvestments, roster, classes] = await Promise.all([
+    listDealInvestmentsByDealId(dealId, {
+      lpInvestorsOnly: false,
+      includeStatusRemoved: true,
+    }),
+    db
+      .select()
+      .from(dealLpInvestor)
+      .where(
+        and(
+          eq(dealLpInvestor.dealId, dealId),
+          eq(dealLpInvestor.isDraft, false),
+          isNull(dealLpInvestor.removedAt),
+        ),
+      )
+      .orderBy(desc(dealLpInvestor.updatedAt)),
+    listInvestorClassesByDealId(dealId),
+  ]);
   const autosaveKey = normalizeContactKey(
     DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER,
   );
@@ -470,18 +483,6 @@ export async function listMergedLpInvestorsForDeal(
     const k = normalizeContactKey(inv.contactId ?? "");
     return Boolean(k) && k !== autosaveKey;
   });
-
-  const roster = await db
-    .select()
-    .from(dealLpInvestor)
-    .where(
-      and(
-        eq(dealLpInvestor.dealId, dealId),
-        eq(dealLpInvestor.isDraft, false),
-        isNull(dealLpInvestor.removedAt),
-      ),
-    )
-    .orderBy(desc(dealLpInvestor.updatedAt));
 
   const allRawContactIds: string[] = [];
   for (const inv of investments) {
@@ -511,8 +512,6 @@ export async function listMergedLpInvestorsForDeal(
     if (!prev || new Date(m.updatedAt) > new Date(prev.updatedAt))
       rosterByCanonical.set(c, m);
   }
-
-  const classes = await listInvestorClassesByDealId(dealId);
 
   const rows: DealInvestmentRow[] = [];
   const coveredCanonical = new Set<string>();
@@ -580,14 +579,15 @@ export async function mapMergedLpRowsToInvestorApi(
 ): Promise<LpInvestorApiRow[]> {
   const enriched =
     rows.length > 0 ? await enrichInvestorRolesForDealRows(dealId, rows) : rows;
-  const resolved = await resolveUsersByContactIds(enriched);
-  const profileNames = await resolveUserInvestorProfileNamesByIds(
-    enriched.map((r) => String(r.userInvestorProfileId ?? "")),
-  );
-  const flags =
+  const [resolved, profileNames, flags] = await Promise.all([
+    resolveUsersByContactIds(enriched),
+    resolveUserInvestorProfileNamesByIds(
+      enriched.map((r) => String(r.userInvestorProfileId ?? "")),
+    ),
     enriched.length > 0
-      ? await loadInvitationMailSentFlags(dealId, enriched, lpRowIds)
-      : [];
+      ? loadInvitationMailSentFlags(dealId, enriched, lpRowIds)
+      : Promise.resolve([] as boolean[]),
+  ]);
   const out: LpInvestorApiRow[] = [];
   enriched.forEach((r, i) => {
     const base = mapRowToInvestorApi(r, resolved, {
@@ -647,9 +647,6 @@ export async function buildLpInvestorsFromMerged(
   const kpis = buildInvestorKpisFromRows(
     merged.filter((row) => !isRetiredDealInvestment(row)),
   );
-  const lpRosterIds = await resolveLpRosterIdSet(dealId, merged);
-  const base = await mapMergedLpRowsToInvestorApi(dealId, merged, lpRosterIds);
-
   const roster = await db
     .select()
     .from(dealLpInvestor)
@@ -660,16 +657,25 @@ export async function buildLpInvestorsFromMerged(
         isNull(dealLpInvestor.removedAt),
       ),
     );
-
+  const allowed = new Set(roster.map((row) => String(row.id).toLowerCase()));
+  const lpRosterIds = new Set<string>();
+  for (const row of merged) {
+    const id = String(row.id ?? "").toLowerCase();
+    if (allowed.has(id)) lpRosterIds.add(id);
+  }
+  const [base, indexed] = await Promise.all([
+    mapMergedLpRowsToInvestorApi(dealId, merged, lpRosterIds),
+    indexLpRosterPercents({
+      roster,
+      investorContactIds: merged.map((row) => String(row.contactId ?? "")),
+    }),
+  ]);
   const {
     byLpId,
     emailByLpId,
     lookupByContactId,
     lookupEmailByContactId,
-  } = await indexLpRosterPercents({
-    roster,
-    investorContactIds: base.map((inv) => String(inv.contactId ?? "")),
-  });
+  } = indexed;
 
   const investorsMerged = base.map((inv) => {
     const id = String(inv.id ?? "").toLowerCase();
@@ -812,8 +818,6 @@ export async function getLpInvestorsTabPayload(
   kpis: ReturnType<typeof buildInvestorKpisFromRows>;
   investors: LpInvestorApiRow[];
 }> {
-  scheduleDealInvestorEsignSync(dealId);
-
   let merged = await listMergedLpInvestorsForDeal(dealId);
   const uid = viewerUserId?.trim();
   if (uid && (await shouldScopeInvestorsToCoSponsorAddedOnly(dealId, uid))) {
@@ -823,7 +827,9 @@ export async function getLpInvestorsTabPayload(
       merged,
     );
   }
-  return buildLpInvestorsFromMerged(dealId, merged, uid);
+  const payload = await buildLpInvestorsFromMerged(dealId, merged, uid);
+  scheduleDealInvestorEsignSync(dealId);
+  return payload;
 }
 
 export type UpsertDealLpInvestorInput = {
@@ -1333,13 +1339,12 @@ export async function countDealLpInvestorsByDealIdsForViewer(
   const viewerUserId = String(scope?.userId ?? "").trim();
   let coSponsorOnlyDealIds: string[] = [];
   if (viewerUserId && scope && !scope.isPlatformAdmin) {
-    const [coIds, leadIds] = await Promise.all([
-      listDealIdsWhereViewerIsCoSponsor(viewerUserId),
-      listDealIdsWhereViewerIsLeadOrAdminSponsor(viewerUserId),
-    ]);
-    const leadSet = new Set(leadIds);
-    const coOnly = new Set(coIds.filter((id) => !leadSet.has(id)));
-    coSponsorOnlyDealIds = uuidIds.filter((id) => coOnly.has(id));
+    const coOnly = new Set(
+      (
+        await listCoSponsorOnlyDealIdsForViewerAmong(viewerUserId, uuidIds)
+      ).map((id) => id.toLowerCase()),
+    );
+    coSponsorOnlyDealIds = uuidIds.filter((id) => coOnly.has(id.toLowerCase()));
   }
 
   if (coSponsorOnlyDealIds.length > 0) {

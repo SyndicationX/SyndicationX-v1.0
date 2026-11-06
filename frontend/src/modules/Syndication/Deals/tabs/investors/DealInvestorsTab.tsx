@@ -106,6 +106,8 @@ import {
   putDealLpInvestor,
   type DealDetailApi,
 } from "../../api/dealsApi";
+import { useCachedResource } from "@/common/hooks/useCachedResource";
+import { dealInvestorClassesCacheKey, dealInvestorsTabCacheKey } from "../../hooks/useDealRosterTabData";
 import {
   ExtraCompanyUserPaymentRequiredError,
 } from "../../utils/extraCompanyUserBilling";
@@ -2265,13 +2267,29 @@ export const DealInvestorsTab = forwardRef<
   /** “Continue editing” on draft row: prefill AddLpInvestorModal from session add-member draft. */
   const [lpResumeAddMemberDraft, setLpResumeAddMemberDraft] = useState(false);
   const [payload, setPayload] = useState<DealInvestorsPayload | null>(null);
-  const [loading, setLoading] = useState(true);
+  const {
+    data: cachedInvestors,
+    isLoading: investorsResourceLoading,
+    reload: reloadInvestors,
+  } = useCachedResource({
+    key: dealInvestorsTabCacheKey(dealId),
+    enabled: Boolean(dealId),
+    fetcher: () => fetchDealInvestors(dealId, { lpInvestorsOnly: true }),
+  });
+  const [loading, setLoading] = useState(
+    () => investorsResourceLoading && cachedInvestors == null,
+  );
   const [localAddedInvestors, setLocalAddedInvestors] = useState<
     DealInvestorRow[]
   >([]);
-  const [investorClasses, setInvestorClasses] = useState<DealInvestorClass[]>(
-    [],
-  );
+  const {
+    data: investorClassesData,
+  } = useCachedResource({
+    key: dealInvestorClassesCacheKey(dealId),
+    enabled: Boolean(dealId),
+    fetcher: () => fetchDealInvestorClasses(dealId),
+  });
+  const investorClasses = investorClassesData ?? [];
   const [editRow, setEditRow] = useState<DealInvestorRow | null>(null);
   const [editLpRow, setEditLpRow] = useState<DealInvestorRow | null>(null);
   const [viewDistributionsInsteadOfInvestment, setViewDistributionsInsteadOfInvestment] =
@@ -2404,50 +2422,20 @@ export const DealInvestorsTab = forwardRef<
     onSharedInvestmentModalOpenChange,
   ]);
 
-  const investorsLoadGenerationRef = useRef(0);
-
   useEffect(() => {
-    const generation = ++investorsLoadGenerationRef.current;
-    let cancelled = false;
-    setLoading(true);
-    void (async () => {
-      const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true });
-      if (cancelled || generation !== investorsLoadGenerationRef.current) return;
-      setPayload(data);
+    if (cachedInvestors) {
+      setPayload(cachedInvestors);
       setLoading(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [dealId]);
+      return;
+    }
+    setLoading(investorsResourceLoading);
+  }, [cachedInvestors, investorsResourceLoading]);
 
   /** Parent-driven refresh (save, invite, delete). Keeps the table mounted. */
   useEffect(() => {
     if (investorsListRefreshKey === 0) return;
-    const generation = investorsLoadGenerationRef.current;
-    const requestedDealId = dealId;
-    let cancelled = false;
-    void (async () => {
-      const data = await fetchDealInvestors(requestedDealId, {
-        lpInvestorsOnly: true,
-      });
-      if (cancelled || generation !== investorsLoadGenerationRef.current) return;
-      setPayload(data);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [dealId, investorsListRefreshKey]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetchDealInvestorClasses(dealId).then((list) => {
-      if (!cancelled) setInvestorClasses(list);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [dealId]);
+    reloadInvestors();
+  }, [dealId, investorsListRefreshKey, reloadInvestors]);
 
   useEffect(() => {
     setLocalAddedInvestors([]);

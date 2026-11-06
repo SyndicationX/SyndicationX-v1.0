@@ -16,9 +16,10 @@ import { getUserDisplayNameById } from "../contact/contact.service.js";
 import { applyInvestorCommunicationDeliveryRouting, loadUnredactedDealInvestors } from "./dealInvestorCommunicationRouting.service.js";
 import { getViewerCoSponsorEmailIntercept } from "./dealCoSponsorEmailIntercept.service.js";
 import {
-  isPortalUserCoSponsorOnDeal,
   isPortalUserLeadOrAdminSponsorOnDeal,
+  listCoSponsorPortalUserIdsOnDeal,
   listEquivalentPortalUserIdsForUser,
+  resolveViewerDealMemberRoleOnDeal,
 } from "./dealMemberScope.service.js";
 
 export type DealInvestorCommunicationMailStatus =
@@ -118,35 +119,18 @@ function redactCoSponsorLpEmails(
   });
 }
 
-async function coSponsorAdderIdSet(
-  dealId: string,
-  recipients: DealInvestorCommunicationRecipient[],
-): Promise<Set<string>> {
-  const ids = [
-    ...new Set(
-      recipients
-        .map((r) => String(r.addedByUserId ?? "").trim())
-        .filter((id) => UUID_RE.test(id)),
-    ),
-  ];
-  const out = new Set<string>();
-  await Promise.all(
-    ids.map(async (id) => {
-      if (await isPortalUserCoSponsorOnDeal(dealId, id)) {
-        out.add(id.toLowerCase());
-      }
-    }),
-  );
-  return out;
-}
-
-async function presentMailRowToLeadOrAdmin(
-  dealId: string,
+function presentMailRowToLeadOrAdmin(
   row: DealInvestorCommunicationMailApiRow,
-): Promise<DealInvestorCommunicationMailApiRow> {
+  coSponsorIds: Set<string>,
+): DealInvestorCommunicationMailApiRow {
+  const adderIds = new Set<string>();
+  for (const recipient of row.recipientUsers) {
+    const id = String(recipient.addedByUserId ?? "").trim().toLowerCase();
+    if (id && coSponsorIds.has(id)) adderIds.add(id);
+  }
   const recipientUsers = redactCoSponsorLpEmails(
     row.recipientUsers.filter((r) => !isHeldUnsentCoSponsorLp(r)),
-    await coSponsorAdderIdSet(dealId, row.recipientUsers),
+    adderIds,
   );
   return {
     ...row,
@@ -239,18 +223,19 @@ export async function listDealInvestorCommunicationMails(
   const viewer = String(viewerUserId ?? "").trim();
   if (!viewer) return mapped;
 
-  if (await isPortalUserCoSponsorOnDeal(dealId, viewer)) {
+  const viewerRole = await resolveViewerDealMemberRoleOnDeal(dealId, viewer);
+  if (viewerRole === "co_sponsor") {
     return scopeMailsForCoSponsorViewer(dealId, mapped, viewer);
   }
-
-  const hideCoSponsorLpEmails = await isPortalUserLeadOrAdminSponsorOnDeal(
-    dealId,
-    viewer,
+  if (viewerRole !== "lead_sponsor" && viewerRole !== "admin_sponsor") {
+    return mapped;
+  }
+  const coSponsorIds = new Set(
+    (await listCoSponsorPortalUserIdsOnDeal(dealId)).map((id) =>
+      id.trim().toLowerCase(),
+    ),
   );
-  if (!hideCoSponsorLpEmails) return mapped;
-  return Promise.all(
-    mapped.map((row) => presentMailRowToLeadOrAdmin(dealId, row)),
-  );
+  return mapped.map((row) => presentMailRowToLeadOrAdmin(row, coSponsorIds));
 }
 
 function recipientOwnedByCoSponsor(
@@ -623,7 +608,12 @@ export async function sendDealInvestorCommunicationMail(
     if (
       await isPortalUserLeadOrAdminSponsorOnDeal(input.dealId, input.senderId)
     ) {
-      return presentMailRowToLeadOrAdmin(input.dealId, row);
+      const coSponsorIds = new Set(
+        (await listCoSponsorPortalUserIdsOnDeal(input.dealId)).map((id) =>
+          id.trim().toLowerCase(),
+        ),
+      );
+      return presentMailRowToLeadOrAdmin(row, coSponsorIds);
     }
     return row;
   }

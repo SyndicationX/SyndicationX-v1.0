@@ -671,9 +671,13 @@ export async function dealPackageUpgradeDue(row: AddDealFormRow): Promise<{
       needsCoGpUpgrade: false,
     };
   }
-  const suggestedPlanId = await suggestedPlanIdForDeal(String(row.id));
   const snapshot = await getDealCompanyUserSnapshot(String(row.id));
   const coGpCount = snapshot?.coGpCount ?? 0;
+  const suggestedPlanId = await suggestedPlanIdForDeal(
+    String(row.id),
+    undefined,
+    coGpCount,
+  );
   const payment = await subscriptionPayment(row.stripeSubscriptionId);
   if (
     paymentCoversRequiredPackage({
@@ -877,19 +881,26 @@ export async function dealSaasBillingListFields(
     });
   }
   const billable = isDealSaasBillable(row);
-  const suggestedPlanId = billable
-    ? await suggestedPlanIdForDeal(String(row.id), options?.raiseAmount)
-    : null;
   const billed = dealIsActivelyBilled(row);
+  const loadSnapshot = billable && billed && saasBillingHasStarted(row);
+  const snapshot = loadSnapshot
+    ? await getDealCompanyUserSnapshot(String(row.id))
+    : null;
+  const suggestedPlanId = billable
+    ? await suggestedPlanIdForDeal(
+        String(row.id),
+        options?.raiseAmount,
+        snapshot ? snapshot.coGpCount : undefined,
+      )
+    : null;
   const payment = billed
     ? await subscriptionPayment(row.stripeSubscriptionId)
     : null;
   let needsPlanUpgrade = dealShouldAlertPlanUpgrade(row, suggestedPlanId);
   let needsCoGpUpgrade = false;
   let owesPriceGap = false;
-  if (billed && saasBillingHasStarted(row) && suggestedPlanId) {
-    const snapshot = await getDealCompanyUserSnapshot(String(row.id));
-    const coGpCount = snapshot?.coGpCount ?? 0;
+  if (loadSnapshot && suggestedPlanId && snapshot) {
+    const coGpCount = snapshot.coGpCount ?? 0;
     const covered = paymentCoversRequiredPackage({
       paidCents: payment?.totalPaidCents,
       cycle: row.stripeBillingCycle,

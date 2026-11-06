@@ -20,7 +20,10 @@ import { db, pool } from "../../database/db.js";
 import { dealLpInvestor } from "../../schema/deal.schema/deal-lp-investor.schema.js";
 import { contact } from "../../schema/schema.js";
 import { userInvestorProfiles } from "../../schema/investing.schema/userProfileBook.schema.js";
-import { listDealIdsAssignedToUser } from "../deal/assigningDealUser.service.js";
+import {
+  isUserAssignedToDeal,
+  listDealIdsAssignedToUser,
+} from "../deal/assigningDealUser.service.js";
 import {
   listDealIdsWhereViewerIsLeadSponsor,
   listEquivalentPortalUserIdsForUser,
@@ -31,10 +34,14 @@ import {
 } from "../deal/dealFormCompleteness.service.js";
 import {
   filterDealIdsByContactOfferingVisibility,
+  isDealVisibleViaContactOrganization,
   listContactOrganizationInvestingDealIds,
   listDealIdsSponsoredByCompanyColleague,
 } from "../contact/contactOfferingVisibility.service.js";
-import { listCrossOrgColleagueDealAccess } from "../deal/crossOrgColleagueDeal.service.js";
+import {
+  listCrossOrgColleagueDealAccess,
+  listCrossOrgColleagueDealAccessForDeal,
+} from "../deal/crossOrgColleagueDeal.service.js";
 import {
   dealInvestmentRowMatchesLoginEmailSql,
   lpInvestorRowMatchesLoginEmailSql,
@@ -60,6 +67,7 @@ export function isLpInvestorRoleInLpTable(role: string | null | undefined): bool
 async function listDealIdsFromLpInvestorTableForEmail(
   emailNorm: string,
   alsoUserIds?: string[],
+  onlyDealId?: string,
 ): Promise<string[]> {
   const e = String(emailNorm ?? "").trim().toLowerCase();
   const extraIds = [
@@ -68,11 +76,13 @@ async function listDealIdsFromLpInvestorTableForEmail(
     ),
   ];
   if ((!e || !e.includes("@")) && extraIds.length === 0) return [];
+  const onlyId = String(onlyDealId ?? "").trim();
 
   const res = await pool.query<{ deal_id: string }>(
     `SELECT DISTINCT dli.deal_id::text AS deal_id
      FROM deal_lp_investor dli
      WHERE dli.is_draft = false
+     AND ($3::uuid IS NULL OR dli.deal_id = $3::uuid)
      AND (
        (
          $1::text <> ''
@@ -86,7 +96,7 @@ async function listDealIdsFromLpInvestorTableForEmail(
          )
        )
      )`,
-    [e.includes("@") ? e : "", extraIds],
+    [e.includes("@") ? e : "", extraIds, onlyId || null],
   );
 
   return [
@@ -562,17 +572,171 @@ export async function viewerHasInvestorProfile(
   return Boolean(row?.id);
 }
 
+const DEAL_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** LP roster row for this email on one deal. Does not list the investor's other deals. */
+export async function isLpInvestorEmailOnDeal(
+  emailNorm: string,
+  dealId: string,
+): Promise<boolean> {
+  const id = String(dealId ?? "").trim();
+  if (!DEAL_UUID_RE.test(id)) return false;
+  const ids = await listDealIdsFromLpInvestorTableForEmail(
+    emailNorm,
+    undefined,
+    id,
+  );
+  return ids.length > 0;
+}
+
+async function isSponsorMemberEmailOnDeal(
+  emailNorm: string,
+  dealId: string,
+): Promise<boolean> {
+  const e = String(emailNorm ?? "").trim().toLowerCase();
+  if (!e.includes("@") || !dealId) return false;
+  const res = await pool.query<{ ok: number }>(
+    `SELECT 1 AS ok
+     FROM deal_member dm
+     INNER JOIN users u ON lower(trim(u.email)) = $1
+     WHERE dm.deal_id = $2::uuid
+       AND dm.is_draft = false
+       AND lower(trim(dm.deal_member_role)) IN (
+         'lead sponsor', 'admin sponsor', 'co-sponsor', 'co sponsor'
+       )
+       AND (
+         trim(dm.contact_member_id) = u.id::text
+         OR EXISTS (
+           SELECT 1 FROM contact c
+           WHERE c.id::text = trim(both from dm.contact_member_id)
+             AND lower(trim(c.email)) = $1
+         )
+       )
+     LIMIT 1`,
+    [e, dealId],
+  );
+  return res.rows.length > 0;
+}
+
+async function isSponsorInvitedMemberEmailOnDeal(
+  emailNorm: string,
+  dealId: string,
+): Promise<boolean> {
+  const e = String(emailNorm ?? "").trim().toLowerCase();
+  if (!e.includes("@") || !dealId) return false;
+  const res = await pool.query<{ ok: number }>(
+    `SELECT 1 AS ok
+     FROM deal_member dm_investor
+     INNER JOIN users viewer_u ON lower(trim(viewer_u.email)) = $1
+     INNER JOIN users adder_u ON adder_u.id = dm_investor.added_by
+     INNER JOIN deal_member dm_sponsor ON
+       dm_sponsor.deal_id = dm_investor.deal_id
+       AND dm_sponsor.is_draft = false
+       AND lower(trim(dm_sponsor.deal_member_role)) IN (
+         'lead sponsor', 'admin sponsor', 'co-sponsor', 'co sponsor'
+       )
+       AND (
+         trim(dm_sponsor.contact_member_id) = adder_u.id::text
+         OR EXISTS (
+           SELECT 1 FROM contact c
+           WHERE c.id::text = trim(both from dm_sponsor.contact_member_id)
+             AND lower(trim(c.email)) = lower(trim(adder_u.email))
+         )
+       )
+     WHERE dm_investor.deal_id = $2::uuid
+       AND dm_investor.added_by IS NOT NULL
+       AND dm_investor.is_draft = false
+       AND (
+         trim(dm_investor.contact_member_id) = viewer_u.id::text
+         OR EXISTS (
+           SELECT 1 FROM contact c2
+           WHERE c2.id::text = trim(both from dm_investor.contact_member_id)
+             AND lower(trim(c2.email)) = $1
+         )
+       )
+     LIMIT 1`,
+    [e, dealId],
+  );
+  return res.rows.length > 0;
+}
+
+async function isDealInvestmentEmailOnDeal(
+  emailNorm: string,
+  dealId: string,
+): Promise<boolean> {
+  const e = String(emailNorm ?? "").trim().toLowerCase();
+  if (!e.includes("@") || !dealId) return false;
+  const res = await pool.query<{ ok: number }>(
+    `SELECT 1 AS ok
+     FROM deal_investment di
+     INNER JOIN users viewer_u ON lower(trim(viewer_u.email)) = $1
+     WHERE di.deal_id = $2::uuid
+       AND nullif(trim(di.contact_id), '') IS NOT NULL
+       AND di.is_draft = false
+       AND (
+         trim(both from di.contact_id) = viewer_u.id::text
+         OR ${dealInvestmentRowMatchesLoginEmailSql("di")}
+       )
+     LIMIT 1`,
+    [e, dealId],
+  );
+  return res.rows.length > 0;
+}
+
+async function invitingSponsorIsOnDeal(
+  emailNorm: string,
+  dealId: string,
+): Promise<boolean> {
+  const sponsorUserIds = await listSponsorUserIdsForInvestorEmail(emailNorm);
+  if (sponsorUserIds.length === 0) return false;
+  const res = await pool.query<{ ok: number }>(
+    `SELECT 1 AS ok
+     FROM deal_member dm
+     WHERE dm.deal_id = $2::uuid
+       AND dm.is_draft = false
+       AND lower(trim(dm.deal_member_role)) IN (${SPONSOR_DEAL_MEMBER_ROLES_SQL})
+       AND (
+         lower(trim(dm.contact_member_id)) = ANY(
+           SELECT lower(trim(x)) FROM unnest($1::text[]) AS x
+         )
+         OR EXISTS (
+           SELECT 1 FROM users su
+           INNER JOIN contact c ON c.id::text = trim(both from dm.contact_member_id)
+           WHERE lower(su.id::text) = ANY(
+             SELECT lower(trim(x)) FROM unnest($1::text[]) AS x
+           )
+             AND lower(trim(c.email)) = lower(trim(su.email))
+         )
+       )
+     LIMIT 1`,
+    [sponsorUserIds, dealId],
+  );
+  return res.rows.length > 0;
+}
+
 export async function isDealInDirectInvestingParticipationForUser(
   dealId: string,
   params: { userId: string; emailNorm: string },
 ): Promise<boolean> {
   const id = String(dealId ?? "").trim();
-  if (!id) return false;
-  const ids = await listDirectInvestingParticipantDealIdsForUser({
-    ...params,
-    applyContactOfferingVisibility: false,
-  });
-  return ids.includes(id);
+  const userId = String(params.userId ?? "").trim();
+  const emailNorm = String(params.emailNorm ?? "").trim().toLowerCase();
+  if (!DEAL_UUID_RE.test(id) || !userId) return false;
+
+  const equivalentIds = await listEquivalentPortalUserIdsForUser(userId);
+  const viewerKeys =
+    equivalentIds.length > 0 ? equivalentIds : userId ? [userId] : [];
+  const [lpIds, investment, sponsor, invited, assigned] = await Promise.all([
+    listDealIdsFromLpInvestorTableForEmail(emailNorm, viewerKeys, id),
+    isDealInvestmentEmailOnDeal(emailNorm, id),
+    isSponsorMemberEmailOnDeal(emailNorm, id),
+    isSponsorInvitedMemberEmailOnDeal(emailNorm, id),
+    isUserAssignedToDeal(userId, id),
+  ]);
+  if (lpIds.length > 0 || investment) return true;
+  if (!sponsor && !invited && !assigned) return false;
+  return (await filterDealIdsVisibleToInvestors([id])).length > 0;
 }
 
 export async function isDealInInvestingParticipantListForUser(
@@ -580,12 +744,43 @@ export async function isDealInInvestingParticipantListForUser(
   params: { userId: string; emailNorm: string },
 ): Promise<boolean> {
   const id = String(dealId ?? "").trim();
-  if (!id) return false;
-  const ids = await listInvestingParticipantDealIdsForUser({
-    ...params,
-    applyContactOfferingVisibility: false,
+  const userId = String(params.userId ?? "").trim();
+  const emailNorm = String(params.emailNorm ?? "").trim().toLowerCase();
+  if (!DEAL_UUID_RE.test(id) || !userId) return false;
+  if (await isDealInDirectInvestingParticipationForUser(id, params)) return true;
+
+  const [sponsorOnDeal, colleagueIds, crossOrg, viaOrganization] =
+    await Promise.all([
+      invitingSponsorIsOnDeal(emailNorm, id),
+      emailNorm.includes("@")
+        ? listDealIdsSponsoredByCompanyColleague(emailNorm, id)
+        : Promise.resolve(new Set<string>()),
+      listCrossOrgColleagueDealAccessForDeal(userId, id),
+      emailNorm.includes("@")
+        ? isDealVisibleViaContactOrganization(emailNorm, id)
+        : Promise.resolve(false),
+    ]);
+  if (viaOrganization) return true;
+  if (sponsorOnDeal) {
+    const visible = await filterDealIdsVisibleToInvestors([id]);
+    if (visible.length > 0) return true;
+  }
+  const dealKey = id.toLowerCase();
+  if (
+    [...colleagueIds].some((deal) => deal.toLowerCase() === dealKey) &&
+    (await filterDealIdsVisibleToInvestors([id])).length > 0
+  ) {
+    return true;
+  }
+  const investorOnly = new Set(
+    crossOrg.investorCompanyDealIds.map((deal) =>
+      String(deal ?? "").trim().toLowerCase(),
+    ),
+  );
+  return crossOrg.dealIds.some((deal) => {
+    const key = String(deal ?? "").trim().toLowerCase();
+    return key === dealKey && !investorOnly.has(key);
   });
-  return ids.includes(id);
 }
 
 /**

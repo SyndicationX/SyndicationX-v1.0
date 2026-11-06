@@ -347,6 +347,83 @@ export async function resolveViewerDealMemberRoleOnDeal(
   return null;
 }
 
+/**
+ * Highest roster role for every portal user on this deal, in one read.
+ * Investors-tab enrichment used to run the per-user role query once per sponsor.
+ */
+export async function mapPortalUserRolesOnDeal(
+  dealId: string,
+): Promise<Map<string, ViewerDealMemberRoleKind>> {
+  const d = String(dealId ?? "").trim();
+  const out = new Map<string, ViewerDealMemberRoleKind>();
+  if (!d) return out;
+  const res = await pool.query<{ user_id: string; role: string }>(
+    `SELECT u.id::text AS user_id, lower(trim(dm.deal_member_role)) AS role
+     FROM deal_member dm
+     INNER JOIN users u ON (
+       trim(dm.contact_member_id) = u.id::text
+       OR EXISTS (
+         SELECT 1 FROM contact c
+         WHERE c.id::text = trim(both from dm.contact_member_id)
+           AND lower(trim(c.email)) = lower(trim(u.email))
+       )
+     )
+     WHERE dm.deal_id = $1::uuid
+       AND dm.is_draft = false
+       AND trim(dm.deal_member_role) <> ''
+     UNION ALL
+     SELECT u.id::text AS user_id, lower(trim(di.investor_role)) AS role
+     FROM deal_investment di
+     INNER JOIN users u ON (
+       trim(di.contact_id) = u.id::text
+       OR EXISTS (
+         SELECT 1 FROM contact c
+         WHERE c.id::text = trim(both from di.contact_id)
+           AND lower(trim(c.email)) = lower(trim(u.email))
+       )
+     )
+     WHERE di.deal_id = $1::uuid
+       AND di.is_draft = false
+       AND trim(di.investor_role) <> ''
+       AND trim(di.contact_id) <> $2`,
+    [d, DEAL_INVESTMENT_AUTOSAVE_CONTACT],
+  );
+  const flags = new Map<
+    string,
+    { lead: boolean; admin: boolean; co: boolean; lp: boolean }
+  >();
+  for (const row of res.rows) {
+    const id = String(row.user_id ?? "").trim().toLowerCase();
+    if (!id) continue;
+    const classified = classifyDealMemberRoleRaw(row.role ?? "");
+    const prev = flags.get(id) ?? {
+      lead: false,
+      admin: false,
+      co: false,
+      lp: false,
+    };
+    flags.set(id, {
+      lead: prev.lead || classified.lead,
+      admin: prev.admin || classified.admin,
+      co: prev.co || classified.co,
+      lp: prev.lp || classified.lp,
+    });
+  }
+  for (const [id, flag] of flags) {
+    const role: ViewerDealMemberRoleKind = flag.lead
+      ? "lead_sponsor"
+      : flag.admin
+        ? "admin_sponsor"
+        : flag.co
+          ? "co_sponsor"
+          : flag.lp
+            ? "lp_investor"
+            : null;
+    if (role) out.set(id, role);
+  }
+  return out;
+}
+
 /** Returned when an admin sponsor or co-sponsor without a company tries to open a deal. */
 export const CO_SPONSOR_COMPANY_REQUIRED_MESSAGE =
   "Add a company to open this deal.";
@@ -417,6 +494,13 @@ export async function viewerIsCoSponsorWithoutCompany(
 ): Promise<boolean> {
   const uid = String(userId ?? "").trim();
   if (!uid) return false;
+
+  const [userRow] = await db
+    .select({ organizationId: users.organizationId })
+    .from(users)
+    .where(eq(users.id, uid))
+    .limit(1);
+  if (userRow?.organizationId) return false;
 
   const sql = (includeMembership: boolean) =>
     `SELECT (
@@ -594,6 +678,47 @@ export async function viewerHasNonCoSponsorDealMemberRole(
   return res.rows.length > 0;
 }
 
+/** True when this user is a co-sponsor on at least one deal. Stops at the first row. */
+export async function viewerIsCoSponsorOnAnyDeal(
+  userId: string,
+): Promise<boolean> {
+  const uid = String(userId ?? "").trim();
+  if (!uid) return false;
+  const res = await pool.query<{ ok: number }>(
+    `SELECT 1 AS ok
+     FROM deal_member dm
+     INNER JOIN users u ON u.id = $1::uuid
+     WHERE dm.is_draft = false
+       AND lower(trim(dm.deal_member_role)) IN ('co-sponsor', 'co sponsor')
+       AND (
+         trim(dm.contact_member_id) = u.id::text
+         OR EXISTS (
+           SELECT 1 FROM contact c
+           WHERE c.id::text = trim(both from dm.contact_member_id)
+             AND lower(trim(c.email)) = lower(trim(u.email))
+         )
+       )
+     UNION ALL
+     SELECT 1 AS ok
+     FROM deal_investment di
+     INNER JOIN users u ON u.id = $1::uuid
+     WHERE di.is_draft = false
+       AND lower(trim(di.investor_role)) IN ('co-sponsor', 'co sponsor')
+       AND trim(di.contact_id) <> $2
+       AND (
+         trim(di.contact_id) = u.id::text
+         OR EXISTS (
+           SELECT 1 FROM contact c
+           WHERE c.id::text = trim(di.contact_id)
+             AND lower(trim(c.email)) = lower(trim(u.email))
+         )
+       )
+     LIMIT 1`,
+    [uid, DEAL_INVESTMENT_AUTOSAVE_CONTACT],
+  );
+  return res.rows.length > 0;
+}
+
 /**
  * Lead Sponsor / Admin sponsor stored on `deal_member.deal_member_role` or
  * `deal_investment.investor_role`. Matches the same variants as
@@ -701,6 +826,71 @@ export async function listDealIdsWhereViewerIsLeadOrAdminSponsor(
  * Distinct deal ids where this user is Lead Sponsor
  * (`deal_member` or `deal_investment`, portal user id or contact email match).
  */
+/**
+ * Among `dealIds`, those where the viewer is a co-sponsor and not lead/admin.
+ * Scoped to the given deals so opening one deal does not scan every roster row.
+ */
+export async function listCoSponsorOnlyDealIdsForViewerAmong(
+  userId: string,
+  dealIds: string[],
+): Promise<string[]> {
+  const uid = String(userId ?? "").trim();
+  const ids = [
+    ...new Set(dealIds.map((id) => String(id ?? "").trim()).filter(Boolean)),
+  ];
+  if (!uid || ids.length === 0) return [];
+  const res = await pool.query<{ deal_id: string }>(
+    `WITH roles AS (
+       SELECT dm.deal_id::text AS deal_id,
+         CASE
+           WHEN ${sqlRoleIsLeadOrAdmin("dm.deal_member_role")} THEN 'lead'
+           WHEN lower(trim(dm.deal_member_role)) IN ('co-sponsor', 'co sponsor') THEN 'co'
+           ELSE 'other'
+         END AS kind
+       FROM deal_member dm
+       INNER JOIN users u ON u.id = $1::uuid
+       WHERE dm.deal_id = ANY($3::uuid[])
+         AND dm.is_draft = false
+         AND (
+           trim(dm.contact_member_id) = u.id::text
+           OR EXISTS (
+             SELECT 1 FROM contact c
+             WHERE c.id::text = trim(both from dm.contact_member_id)
+               AND lower(trim(c.email)) = lower(trim(u.email))
+           )
+         )
+       UNION ALL
+       SELECT di.deal_id::text AS deal_id,
+         CASE
+           WHEN ${sqlRoleIsLeadOrAdmin("di.investor_role")} THEN 'lead'
+           WHEN lower(trim(di.investor_role)) IN ('co-sponsor', 'co sponsor') THEN 'co'
+           ELSE 'other'
+         END AS kind
+       FROM deal_investment di
+       INNER JOIN users u ON u.id = $1::uuid
+       WHERE di.deal_id = ANY($3::uuid[])
+         AND di.is_draft = false
+         AND trim(di.contact_id) <> $2
+         AND (
+           trim(di.contact_id) = u.id::text
+           OR EXISTS (
+             SELECT 1 FROM contact c
+             WHERE c.id::text = trim(di.contact_id)
+               AND lower(trim(c.email)) = lower(trim(u.email))
+           )
+         )
+     )
+     SELECT deal_id
+     FROM roles
+     GROUP BY deal_id
+     HAVING bool_or(kind = 'co') AND NOT bool_or(kind = 'lead')`,
+    [uid, DEAL_INVESTMENT_AUTOSAVE_CONTACT, ids],
+  );
+  return res.rows
+    .map((r) => String(r.deal_id ?? "").trim())
+    .filter(Boolean);
+}
+
 export async function listDealIdsWhereViewerIsLeadSponsor(
   userId: string,
 ): Promise<string[]> {

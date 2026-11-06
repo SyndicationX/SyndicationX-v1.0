@@ -4,7 +4,7 @@ import {
   LineChart,
   PiggyBank,
 } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useCachedResource } from "@/common/hooks/useCachedResource"
 import { ToolStyleCard } from "@/common/components/tool-style-card/ToolStyleCard"
 import { cardCompactAmountOrDash } from "@/common/components/card-compact-amount/CardCompactAmount"
 import { formatCount } from "@/common/utils/formatCount"
@@ -12,29 +12,13 @@ import { InvestingDashboardDealsSection } from "./InvestingDashboardDealsSection
 import "@/modules/Syndication/usermanagement/user_management.css"
 import "@/modules/Syndication/Deals/deals-list.css"
 import "@/modules/Syndication/Dashboard/sponsor-dashboard.css"
-import {
-  loadInvestingDashboardMetrics,
-  type InvestingDashboardMetrics,
-} from "./investingDashboardMetrics"
+import { loadInvestingDashboardMetrics } from "./investingDashboardMetrics"
 
 export function InvestingDashboardPage() {
-  const [metrics, setMetrics] = useState<InvestingDashboardMetrics | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const m = await loadInvestingDashboardMetrics()
-        if (!cancelled) setMetrics(m)
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const { data: metrics, isLoading: loading } = useCachedResource({
+    key: "investing-dashboard-metrics",
+    fetcher: loadInvestingDashboardMetrics,
+  })
 
   return (
     <section className="um_page sponsor_dash sponsor_dash_investing">

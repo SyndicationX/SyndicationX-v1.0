@@ -86,7 +86,10 @@ function investorInViewerOrgSql(idExpr: string, emailExpr: string): string {
   )`;
 }
 
-function colleagueDealSql(includeMembership: boolean): string {
+function colleagueDealSql(
+  includeMembership: boolean,
+  forOneDeal: boolean,
+): string {
   const viewerOrgs = includeMembership
     ? `SELECT lower(trim(u.organization_id::text)) AS org_id
        FROM users u
@@ -214,7 +217,8 @@ function colleagueDealSql(includeMembership: boolean): string {
            )
            AND ${investorInViewerOrgSql("dm.contact_member_id", "NULL")}
        ) src
-       WHERE nullif(trim(src.deal_id), '') IS NOT NULL`;
+       WHERE nullif(trim(src.deal_id), '') IS NOT NULL
+         ${forOneDeal ? "AND lower(trim(src.deal_id)) = lower(trim($2::text))" : ""}`;
 }
 
 export type CrossOrgColleagueDealAccess = {
@@ -244,18 +248,48 @@ export async function listCrossOrgColleagueDealAccess(
     return { dealIds: [], investorCompanyDealIds: [] };
   }
 
+  return queryCrossOrgColleagueDealAccess(uid, orgIds);
+}
+
+/**
+ * Same access as {@link listCrossOrgColleagueDealAccess}, limited to one deal.
+ * Opening a deal must not scan every other offering.
+ */
+export async function listCrossOrgColleagueDealAccessForDeal(
+  userId: string,
+  dealId: string,
+): Promise<CrossOrgColleagueDealAccess> {
+  const uid = String(userId ?? "").trim();
+  const did = String(dealId ?? "").trim();
+  if (!uid || !DEAL_UUID_RE.test(did)) {
+    return { dealIds: [], investorCompanyDealIds: [] };
+  }
+  const orgIds = await listOrganizationIdsForUser(uid);
+  if (orgIds.length === 0) {
+    return { dealIds: [], investorCompanyDealIds: [] };
+  }
+  return queryCrossOrgColleagueDealAccess(uid, orgIds, did);
+}
+
+async function queryCrossOrgColleagueDealAccess(
+  uid: string,
+  orgIds: string[],
+  dealId?: string,
+): Promise<CrossOrgColleagueDealAccess> {
+  const forOneDeal = Boolean(dealId);
+  const params = forOneDeal ? [uid, dealId] : [uid];
   let rows: { deal_id: string; kind: string }[];
   try {
     const res = await pool.query<{ deal_id: string; kind: string }>(
-      colleagueDealSql(true),
-      [uid],
+      colleagueDealSql(true, forOneDeal),
+      params,
     );
     rows = res.rows;
   } catch (err) {
     if (!isMissingMembershipTableError(err)) throw err;
     const res = await pool.query<{ deal_id: string; kind: string }>(
-      colleagueDealSql(false),
-      [uid],
+      colleagueDealSql(false, forOneDeal),
+      params,
     );
     rows = res.rows;
   }

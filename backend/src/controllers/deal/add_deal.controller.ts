@@ -51,6 +51,7 @@ import {
   resolveOfferingPreviewSponsorAttribution,
 } from "../../services/deal/offeringPreviewSponsorRef.service.js";
 import {
+  isPortalUserLeadSponsorOnDeal,
   isPortalUserSponsorOnDeal,
   listDealIdsWhereViewerIsLeadSponsor,
   listDealIdsWhereViewerIsLeadOrAdminSponsor,
@@ -188,19 +189,28 @@ async function sendDealSaasLockIfNeeded(
   res: Response,
   row: AddDealFormRow,
   scope?: DealViewerScope | null,
+  precomputed?: {
+    viewerIsLeadSponsor: boolean;
+    access: { locked: boolean; reason: "unpaid" | "past_due" | "expired" | null };
+    upgrade: { due: boolean; suggestedPlanId: string | null } | null;
+    nextBillingDate?: string | null;
+  },
 ): Promise<boolean> {
-  const evaluated = await evaluateDealSaasWorkspaceAccessRefreshing(row);
-  const upgrade = evaluated.access.locked
-    ? null
-    : await dealPackageUpgradeDue(evaluated.row);
+  const evaluated = precomputed
+    ? { row, access: precomputed.access }
+    : await evaluateDealSaasWorkspaceAccessRefreshing(row);
+  const upgrade = precomputed
+    ? precomputed.upgrade
+    : evaluated.access.locked
+      ? null
+      : await dealPackageUpgradeDue(evaluated.row);
   if (!evaluated.access.locked && !upgrade?.due) return false;
-  const dealKey = String(evaluated.row.id ?? "").trim().toLowerCase();
-  let viewerIsLeadSponsor = false;
-  if (scope?.userId) {
+  let viewerIsLeadSponsor = precomputed?.viewerIsLeadSponsor ?? false;
+  if (!precomputed && scope?.userId) {
     try {
-      const leadIds = await listDealIdsWhereViewerIsLeadSponsor(scope.userId);
-      viewerIsLeadSponsor = leadIds.some(
-        (id) => String(id).trim().toLowerCase() === dealKey,
+      viewerIsLeadSponsor = await isPortalUserLeadSponsorOnDeal(
+        String(evaluated.row.id),
+        scope.userId,
       );
     } catch (err) {
       console.warn("sendDealSaasLockIfNeeded lead sponsor:", err);
@@ -213,7 +223,10 @@ async function sendDealSaasLockIfNeeded(
     upgrade?.due ? { locked: true, reason: "unpaid" } : evaluated.access,
     { viewerIsLeadSponsor },
   );
-  payload.nextBillingDate = await resolveNextBillingDate(evaluated.row);
+  payload.nextBillingDate =
+    precomputed?.nextBillingDate !== undefined
+      ? precomputed.nextBillingDate
+      : await resolveNextBillingDate(evaluated.row);
   if (upgrade?.due) {
     const label = String(evaluated.row.dealName ?? "").trim()
       ? `“${String(evaluated.row.dealName).trim()}”`
@@ -713,9 +726,7 @@ export async function getDeals(req: Request, res: Response): Promise<void> {
 /**
  * Sort values for the Deals list columns, keyed by the UI column ids.
  *
- * The Funded, Gap, Committed and Your Role columns are derived from investor
- * metrics the browser fetches per deal, so they are not sortable here and fall
- * back to the list's own ordering.
+ * Money columns use the amounts already attached to each list row.
  */
 function dealListSortValue(
   row: Record<string, unknown>,
@@ -746,7 +757,15 @@ function dealListSortValue(
     case "targetRaised":
       return amount(row.raiseTarget);
     case "softCommitted":
+      return amount(row.softCommitted);
+    case "committed":
+      return amount(row.totalAccepted);
+    case "funded":
+      return amount(row.totalFunded);
+    case "gap":
       return amount(row.totalInProgress);
+    case "yourRole":
+      return text(row.yourRole);
     default:
       return undefined;
   }
@@ -1790,18 +1809,22 @@ export async function getDealById(req: Request, res: Response): Promise<void> {
     return;
   }
   try {
-    if (await viewerIsCoSponsorWithoutCompany(user.id)) {
+    const [coSponsorBlocked, scope] = await Promise.all([
+      viewerIsCoSponsorWithoutCompany(user.id),
+      resolveDealViewerScope(
+        user.id,
+        user.userRole,
+        requestedOrganizationIdFromRequest(req),
+        { forDealId: dealId },
+      ),
+    ]);
+    if (coSponsorBlocked) {
       res.status(403).json({
         message: CO_SPONSOR_COMPANY_REQUIRED_MESSAGE,
         code: "company_required",
       });
       return;
     }
-    const scope = await resolveDealViewerScope(
-      user.id,
-      user.userRole,
-      requestedOrganizationIdFromRequest(req),
-    );
     const row = await getAddDealFormForViewerWithDraftCreatorRepair(
       dealId,
       scope,
@@ -1810,19 +1833,46 @@ export async function getDealById(req: Request, res: Response): Promise<void> {
       res.status(404).json({ message: "Deal not found" });
       return;
     }
-    if (await sendDealSaasLockIfNeeded(res, row, scope)) {
+    const evaluated = await evaluateDealSaasWorkspaceAccessRefreshing(row);
+    const dealKey = String(dealId).trim().toLowerCase();
+    const [withPreview, viewerIsLeadSponsor, sponsorOnDeal, canEditDeal, billing] =
+      await Promise.all([
+        ensureDealOfferingPreviewTokenStored(dealId),
+        isPortalUserLeadSponsorOnDeal(dealId, user.id).catch((err) => {
+          console.warn("getDealById lead sponsor:", err);
+          return false;
+        }),
+        isPortalUserSponsorOnDeal(dealId, user.id),
+        viewerMayEditDealProfile(dealId, user.id),
+        evaluated.access.locked
+          ? Promise.resolve(null)
+          : dealSaasBillingListFields(evaluated.row),
+      ]);
+    if (
+      await sendDealSaasLockIfNeeded(res, evaluated.row, scope, {
+        viewerIsLeadSponsor,
+        access: evaluated.access,
+        upgrade: billing
+          ? {
+              due: billing.needsPlanUpgrade,
+              suggestedPlanId: billing.suggestedPlanId,
+            }
+          : null,
+        nextBillingDate: billing?.nextBillingDate,
+      })
+    ) {
       return;
     }
-    const withPreview = await ensureDealOfferingPreviewTokenStored(dealId);
-    const rowForJson = withPreview ?? row;
+    const rowForJson = withPreview ?? evaluated.row;
+    const billingFields =
+      billing ?? (await dealSaasBillingListFields(rowForJson));
     const deal = await mapRowToJsonWithInvestmentCount(rowForJson, scope);
     const crossOrgViewOnly =
       !scope.isPlatformAdmin &&
       (scope.crossOrgColleagueSponsoredDealIds ?? []).some(
-        (id) =>
-          id.trim().toLowerCase() === String(dealId).trim().toLowerCase(),
+        (id) => id.trim().toLowerCase() === dealKey,
       ) &&
-      !(await isPortalUserSponsorOnDeal(dealId, user.id));
+      !sponsorOnDeal;
     const documentScopeUserId = crossOrgViewOnly
       ? await resolveCrossOrgColleagueSponsorForDeal(dealId, user.id)
       : user.id;
@@ -1834,35 +1884,25 @@ export async function getDealById(req: Request, res: Response): Promise<void> {
         json: deal.offeringInvestorPreviewJson ?? null,
         requireSponsorScope: crossOrgViewOnly,
       });
-    const billing = await dealSaasBillingListFields(rowForJson);
-    let viewerIsLeadSponsor = false;
-    try {
-      const leadIds = await listDealIdsWhereViewerIsLeadSponsor(scope.userId);
-      viewerIsLeadSponsor = leadIds.some(
-        (id) => String(id).trim().toLowerCase() === String(dealId).trim().toLowerCase(),
-      );
-    } catch (err) {
-      console.warn("getDealById lead sponsor:", err);
-    }
     const listRow =
       deal && typeof deal === "object" && "listRow" in deal
         ? {
             ...(deal as { listRow?: Record<string, unknown> }).listRow,
-            ...billing,
+            ...billingFields,
             viewerIsLeadSponsor,
           }
         : undefined;
     res.status(200).json({
       deal: {
         ...deal,
-        ...billing,
+        ...billingFields,
         viewerIsLeadSponsor,
-        viewerCanEditDeal: await viewerMayEditDealProfile(dealId, user.id),
+        viewerCanEditDeal: canEditDeal,
         viewerCanManageDeal: !crossOrgViewOnly,
         viewerInvestorCompanyLimited:
           !scope.isPlatformAdmin &&
           viewerInvestorCompanyLimitedDeal(scope, dealId) &&
-          !(await isPortalUserSponsorOnDeal(dealId, user.id)),
+          !sponsorOnDeal,
         ...(listRow ? { listRow } : {}),
       },
     });

@@ -712,7 +712,9 @@ export function DealOfferingPortfolioPage() {
           </div>
         ) : null}
 
-        {!isPublicOfferingRoute && detail.viewerCanManageDeal === false ? (
+        {!isPublicOfferingRoute &&
+        mode !== "investing" &&
+        detail.viewerCanManageDeal === false ? (
           <div
             className="deals_cross_org_view_only_notice"
             role="status"

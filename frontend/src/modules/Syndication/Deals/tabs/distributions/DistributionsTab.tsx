@@ -11,16 +11,23 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import {
+  peekCachedResource,
+  useCachedResource,
+  writeCachedResource,
+} from "@/common/hooks/useCachedResource"
+import {
+  dealDistributionsTabCacheKey,
+  loadDealDistributionsTab,
+} from "../../hooks/useDealRosterTabData"
+import {
   DataTable,
   type DataTableColumn,
 } from "../../../../../common/components/data-table/DataTable"
 import { TableCompactAmountCell } from "../../../../../common/components/card-compact-amount/CardCompactAmount"
 import { TabsScrollStrip } from "../../../../../common/components/tabs-scroll-strip/TabsScrollStrip"
-import { fetchDealInvestors } from "../../api/dealsApi"
 import {
   // clearPriorDistributions,
   deletePriorDistribution,
-  fetchDistributionSetup,
 } from "../../distribution-setup/api/distributionSetupApi"
 import type {
   DistributionSetupBundle,
@@ -152,7 +159,16 @@ export function DistributionsTab({
   const [activeSubTab, setActiveSubTab] =
     useState<DistributionsSubTab>("distributions")
   const openedFundingReturnRef = useRef(false)
-  const [loading, setLoading] = useState(true)
+  const {
+    data: distributionsData,
+    isLoading: distributionsLoading,
+    error: distributionsError,
+  } = useCachedResource({
+    key: dealDistributionsTabCacheKey(id || "_"),
+    enabled: Boolean(id),
+    fetcher: () => loadDealDistributionsTab(id),
+  })
+  const [loading, setLoading] = useState(() => distributionsData == null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [priorDistributions, setPriorDistributions] = useState<
     PriorDistributionRecord[]
@@ -176,56 +192,46 @@ export function DistributionsTab({
     string | null
   >(null)
 
-  const load = useCallback(async () => {
-    if (!id) return
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const [bundle, invPack, funding] = await Promise.all([
-        fetchDistributionSetup(id),
-        fetchDealInvestors(id, { lpInvestorsOnly: false }),
-        fetchDealDistributionFundingStatus(id).catch(() => null),
-      ])
-      setPriorDistributions(
-        sanitizePriorDistributions(bundle.priorDistributions ?? []),
-      )
-      setClasses(bundle.classes ?? [])
-      setInvestors(invPack.investors ?? [])
-      setDealFunding(funding)
-      if (bundle.dealName?.trim()) setResolvedDealName(bundle.dealName.trim())
-    } catch (err) {
-      setPriorDistributions([])
-      setClasses([])
-      setInvestors([])
-      setDealFunding(null)
-      setLoadError(
-        err instanceof Error ? err.message : "Could not load distributions.",
-      )
-    } finally {
-      setLoading(false)
-    }
-  }, [id])
-
   const refreshDistributionsQuietly = useCallback(async () => {
     if (!id) return
     try {
-      const [bundle, invPack] = await Promise.all([
-        fetchDistributionSetup(id),
-        fetchDealInvestors(id, { lpInvestorsOnly: false }),
-      ])
+      const next = await loadDealDistributionsTab(id)
+      writeCachedResource(dealDistributionsTabCacheKey(id), next)
       setPriorDistributions(
-        sanitizePriorDistributions(bundle.priorDistributions ?? []),
+        sanitizePriorDistributions(next.priorDistributions ?? []),
       )
-      setClasses(bundle.classes ?? [])
-      setInvestors(invPack.investors ?? [])
+      setClasses(next.classes ?? [])
+      setInvestors(next.investors ?? [])
+      if (next.dealName.trim()) setResolvedDealName(next.dealName.trim())
     } catch {
       /* keep the current table if a background refresh fails */
     }
   }, [id])
 
   useEffect(() => {
-    void load()
-  }, [load])
+    if (!distributionsData) {
+      setLoading(distributionsLoading)
+      if (!distributionsLoading && distributionsError) {
+        setPriorDistributions([])
+        setClasses([])
+        setInvestors([])
+        setDealFunding(null)
+        setLoadError(distributionsError.message)
+      }
+      return
+    }
+    setPriorDistributions(
+      sanitizePriorDistributions(distributionsData.priorDistributions ?? []),
+    )
+    setClasses(distributionsData.classes ?? [])
+    setInvestors(distributionsData.investors ?? [])
+    setDealFunding(distributionsData.dealFunding)
+    if (distributionsData.dealName.trim()) {
+      setResolvedDealName(distributionsData.dealName.trim())
+    }
+    setLoadError(null)
+    setLoading(false)
+  }, [distributionsData, distributionsLoading, distributionsError])
 
   useEffect(() => {
     const fundingReturn = searchParams.get("stripe_deal_funding")
@@ -493,6 +499,15 @@ export function DistributionsTab({
         setPriorDistributions(
           sanitizePriorDistributions(saved.priorDistributions ?? []),
         )
+        const cached = peekCachedResource<Awaited<ReturnType<typeof loadDealDistributionsTab>>>(
+          dealDistributionsTabCacheKey(id),
+        )
+        if (cached) {
+          writeCachedResource(dealDistributionsTabCacheKey(id), {
+            ...cached,
+            priorDistributions: saved.priorDistributions ?? [],
+          })
+        }
         setDeleteTarget(null)
         toast.success("Distribution deleted")
       } catch (err) {

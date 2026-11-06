@@ -1,8 +1,7 @@
 import type { AddDealFormRow } from "../../schema/deal.schema/add-deal-form.schema.js";
 import type { DealInvestorClassRow } from "../../schema/deal.schema/deal-investor-class.schema.js";
 import {
-  sumCommittedAmountByDealIds,
-  sumCommittedAmountForDeal,
+  summarizeDealListMoneyByDealIds,
 } from "./dealInvestment.service.js";
 import {
   listInvestorClassesByDealId,
@@ -27,6 +26,8 @@ export type EnrichedDealListRowFields = {
   raiseTarget: string;
   totalAccepted: string;
   totalInProgress: string;
+  softCommitted: string;
+  totalFunded: string;
   investmentType: string;
   propertyType: string;
 };
@@ -39,14 +40,14 @@ export type EnrichedDealListRowFields = {
  */
 function enrichedFieldsFrom(
   classes: readonly DealInvestorClassRow[],
-  sumCommitted: number,
+  money: { committed: number; softCommitted: number; funded: number },
 ): EnrichedDealListRowFields {
   let sumOffering = 0;
   for (const c of classes) {
     sumOffering += parseMoneyDigits(String(c.offeringSize ?? ""));
   }
 
-  const remaining = Math.max(0, sumOffering - sumCommitted);
+  const remaining = Math.max(0, sumOffering - money.committed);
 
   let investmentType = "";
   let propertyType = "";
@@ -70,8 +71,11 @@ function enrichedFieldsFrom(
 
   return {
     raiseTarget: sumOffering > 0 ? formatUsdNonZero(sumOffering) : "$0",
-    totalAccepted: sumCommitted > 0 ? formatUsdNonZero(sumCommitted) : "$0",
+    totalAccepted: money.committed > 0 ? formatUsdNonZero(money.committed) : "$0",
     totalInProgress: formatUsdNonZero(remaining),
+    softCommitted:
+      money.softCommitted > 0 ? formatUsdNonZero(money.softCommitted) : "$0",
+    totalFunded: money.funded > 0 ? formatUsdNonZero(money.funded) : "$0",
     investmentType: investmentType || "—",
     propertyType: propertyType || "—",
   };
@@ -81,11 +85,18 @@ export async function enrichDealListRowForApi(
   row: AddDealFormRow,
 ): Promise<EnrichedDealListRowFields> {
   const dealId = String(row.id);
-  const [classes, sumCommitted] = await Promise.all([
+  const [classes, moneyByDealId] = await Promise.all([
     listInvestorClassesByDealId(dealId),
-    sumCommittedAmountForDeal(dealId),
+    summarizeDealListMoneyByDealIds([dealId]),
   ]);
-  return enrichedFieldsFrom(classes, sumCommitted);
+  return enrichedFieldsFrom(
+    classes,
+    moneyByDealId.get(dealId) ?? {
+      committed: 0,
+      softCommitted: 0,
+      funded: 0,
+    },
+  );
 }
 
 /**
@@ -100,9 +111,9 @@ export async function mapDealListEnrichmentByDealId(
   const dealIds = rows.map((r) => String(r.id));
   if (dealIds.length === 0) return byDealId;
 
-  const [classesByDealId, committedByDealId] = await Promise.all([
+  const [classesByDealId, moneyByDealId] = await Promise.all([
     mapInvestorClassesByDealIds(dealIds),
-    sumCommittedAmountByDealIds(dealIds),
+    summarizeDealListMoneyByDealIds(dealIds),
   ]);
 
   for (const dealId of dealIds) {
@@ -110,7 +121,11 @@ export async function mapDealListEnrichmentByDealId(
       dealId,
       enrichedFieldsFrom(
         classesByDealId.get(dealId) ?? [],
-        committedByDealId.get(dealId) ?? 0,
+        moneyByDealId.get(dealId) ?? {
+          committed: 0,
+          softCommitted: 0,
+          funded: 0,
+        },
       ),
     );
   }
