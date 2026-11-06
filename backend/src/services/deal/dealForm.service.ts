@@ -564,7 +564,9 @@ export async function isAddDealFormInOrganizationScope(
   row: AddDealFormRow,
   organizationId: string,
 ): Promise<boolean> {
-  if (row.organizationId === organizationId) return true;
+  const dealOrg = String(row.organizationId ?? "").trim().toLowerCase();
+  const requestedOrg = String(organizationId ?? "").trim().toLowerCase();
+  if (dealOrg && requestedOrg && dealOrg === requestedOrg) return true;
   if (row.organizationId != null) return false;
   const [company] = await db
     .select({ name: companies.name })

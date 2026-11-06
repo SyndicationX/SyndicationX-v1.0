@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { createTtlCache } from "../../common/ttlCache.js";
 import { db, pool } from "../../database/db.js";
 import {
   isCompanyAdminRole,
@@ -86,6 +87,12 @@ export type ViewerDealMemberRoleKind =
   | "lp_investor"
   | null;
 
+const PORTAL_USER_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Same person is stable for a minute; the Investors tab asks for it on every row. */
+const equivalentPortalUserCache = createTtlCache<string[]>(60_000);
+
 /**
  * Portal user ids that should be treated as the same person for co-sponsor
  * scoping (`added_by`, contact `created_by`):
@@ -95,14 +102,34 @@ export type ViewerDealMemberRoleKind =
  *   (`redacted…` / missing `@`) — covers duplicate import accounts
  * - a scrubbed account in another company when a contact with this login
  *   email has that account's name, or the name on its investor row
+ *
+ * One query for the whole set. Running this once per investor opened a
+ * connection per sponsor and the proxy answered 502 when the pool ran out.
  */
-export async function listEquivalentPortalUserIdsForUser(
-  userId: string,
-): Promise<string[]> {
-  const uid = String(userId ?? "").trim();
-  if (!uid) return [];
-  const res = await pool.query<{ id: string }>(
-    `WITH me AS (
+export async function listEquivalentPortalUserIdsBySeeds(
+  userIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const misses: string[] = [];
+  for (const raw of userIds) {
+    const uid = String(raw ?? "").trim();
+    if (!PORTAL_USER_UUID_RE.test(uid)) continue;
+    const low = uid.toLowerCase();
+    if (out.has(low) || misses.some((id) => id.toLowerCase() === low)) continue;
+    const cached = equivalentPortalUserCache.get(low);
+    if (cached) {
+      out.set(low, cached);
+      continue;
+    }
+    misses.push(uid);
+  }
+  if (misses.length === 0) return out;
+
+  const seedIds = misses.map((id) => id.toLowerCase());
+  let res: { rows: { seed_id: string; id: string }[] };
+  try {
+    res = await pool.query<{ seed_id: string; id: string }>(
+    `WITH seeds AS (
        SELECT
          id,
          lower(trim(coalesce(email, ''))) AS email_norm,
@@ -110,36 +137,34 @@ export async function listEquivalentPortalUserIdsForUser(
          lower(trim(coalesce(last_name, ''))) AS ln,
          organization_id
        FROM users
-       WHERE id = $1::uuid
+       WHERE lower(id::text) = ANY($1::text[])
      )
-     SELECT DISTINCT u.id::text AS id
+     SELECT DISTINCT seeds.id::text AS seed_id, u.id::text AS id
      FROM users u
-     CROSS JOIN me
-     WHERE u.id = me.id
+     CROSS JOIN seeds
+     WHERE u.id = seeds.id
         OR (
-          me.email_norm <> ''
-          AND position('@' in me.email_norm) > 1
-          AND lower(trim(coalesce(u.email, ''))) = me.email_norm
+          seeds.email_norm <> ''
+          AND position('@' in seeds.email_norm) > 1
+          AND lower(trim(coalesce(u.email, ''))) = seeds.email_norm
         )
         OR (
-          me.organization_id IS NOT NULL
-          AND u.organization_id = me.organization_id
-          AND me.fn <> ''
-          AND me.ln <> ''
-          AND lower(trim(coalesce(u.first_name, ''))) = me.fn
-          AND lower(trim(coalesce(u.last_name, ''))) = me.ln
+          seeds.organization_id IS NOT NULL
+          AND u.organization_id = seeds.organization_id
+          AND seeds.fn <> ''
+          AND seeds.ln <> ''
+          AND lower(trim(coalesce(u.first_name, ''))) = seeds.fn
+          AND lower(trim(coalesce(u.last_name, ''))) = seeds.ln
           AND (
             lower(trim(coalesce(u.email, ''))) LIKE 'redacted%'
             OR position('@' in lower(trim(coalesce(u.email, '')))) < 1
-            OR me.email_norm LIKE 'redacted%'
-            OR position('@' in me.email_norm) < 1
+            OR seeds.email_norm LIKE 'redacted%'
+            OR position('@' in seeds.email_norm) < 1
           )
         )
         OR (
-          -- Same displayed email: a redacted duplicate and the login that
-          -- owns that address are one person, even in different companies.
-          position('@' in me.email_norm) > 1
-          AND me.email_norm NOT LIKE 'redacted%'
+          position('@' in seeds.email_norm) > 1
+          AND seeds.email_norm NOT LIKE 'redacted%'
           AND (
             lower(trim(coalesce(u.email, ''))) LIKE 'redacted%'
             OR position('@' in lower(trim(coalesce(u.email, '')))) < 1
@@ -147,7 +172,7 @@ export async function listEquivalentPortalUserIdsForUser(
           AND (
             EXISTS (
               SELECT 1 FROM contact c
-              WHERE lower(trim(c.email)) = me.email_norm
+              WHERE lower(trim(c.email)) = seeds.email_norm
                 AND nullif(trim(concat_ws(' ', u.first_name, u.last_name)), '') IS NOT NULL
                 AND (
                   lower(trim(c.full_name)) = lower(trim(concat_ws(' ', u.first_name, u.last_name)))
@@ -157,7 +182,7 @@ export async function listEquivalentPortalUserIdsForUser(
             OR EXISTS (
               SELECT 1
               FROM deal_lp_investor dli
-              INNER JOIN contact c ON lower(trim(c.email)) = me.email_norm
+              INNER JOIN contact c ON lower(trim(c.email)) = seeds.email_norm
               WHERE trim(both from dli.contact_member_id) = u.id::text
                 AND nullif(trim(dli.investor_name), '') IS NOT NULL
                 AND (
@@ -173,7 +198,7 @@ export async function listEquivalentPortalUserIdsForUser(
             OR EXISTS (
               SELECT 1
               FROM deal_investment di
-              INNER JOIN contact c ON lower(trim(c.email)) = me.email_norm
+              INNER JOIN contact c ON lower(trim(c.email)) = seeds.email_norm
               WHERE trim(both from di.contact_id) = u.id::text
                 AND nullif(trim(di.contact_display_name), '') IS NOT NULL
                 AND (
@@ -183,13 +208,41 @@ export async function listEquivalentPortalUserIdsForUser(
             )
           )
         )`,
-    [uid],
-  );
-  return [
-    ...new Set(
-      res.rows.map((r) => String(r.id ?? "").trim()).filter(Boolean),
-    ),
-  ];
+      [seedIds],
+    );
+  } catch (err) {
+    console.error("listEquivalentPortalUserIdsBySeeds:", err);
+    for (const id of seedIds) {
+      out.set(id, [id]);
+    }
+    return out;
+  }
+
+  const grouped = new Map<string, Set<string>>();
+  for (const id of misses) grouped.set(id.toLowerCase(), new Set());
+  for (const row of res.rows) {
+    const seed = String(row.seed_id ?? "").trim().toLowerCase();
+    const id = String(row.id ?? "").trim();
+    if (!seed || !id) continue;
+    const bucket = grouped.get(seed) ?? new Set<string>();
+    bucket.add(id);
+    grouped.set(seed, bucket);
+  }
+  for (const [seed, ids] of grouped) {
+    const list = [...ids];
+    equivalentPortalUserCache.set(seed, list);
+    out.set(seed, list);
+  }
+  return out;
+}
+
+export async function listEquivalentPortalUserIdsForUser(
+  userId: string,
+): Promise<string[]> {
+  const uid = String(userId ?? "").trim();
+  if (!uid) return [];
+  const grouped = await listEquivalentPortalUserIdsBySeeds([uid]);
+  return grouped.get(uid.toLowerCase()) ?? [];
 }
 
 /**
@@ -198,14 +251,8 @@ export async function listEquivalentPortalUserIdsForUser(
 export async function listEquivalentPortalUserIdsForUsers(
   userIds: string[],
 ): Promise<string[]> {
-  const seeds = [
-    ...new Set(userIds.map((id) => String(id ?? "").trim()).filter(Boolean)),
-  ];
-  if (seeds.length === 0) return [];
-  const nested = await Promise.all(
-    seeds.map((id) => listEquivalentPortalUserIdsForUser(id)),
-  );
-  return [...new Set(nested.flat().filter(Boolean))];
+  const grouped = await listEquivalentPortalUserIdsBySeeds(userIds);
+  return [...new Set([...grouped.values()].flat().filter(Boolean))];
 }
 
 /**

@@ -21,6 +21,7 @@ import {
   listDealIdsAssignedToUser,
 } from "./assigningDealUser.service.js";
 import {
+  listOrganizationIdsForUser,
   resolveActiveOrganizationIdForUser,
 } from "../org/orgResolution.service.js";
 import {
@@ -277,6 +278,29 @@ export function viewerInvestorCompanyLimitedDeal(
   return dealIdInList(dealId, scope.investorCompanySyndicationDealIds);
 }
 
+/**
+ * The deals list is scoped to the company selected at login. Opening a deal
+ * used to check only `users.organization_id`, so a deal in the selected
+ * company was rejected when that was not the user's primary company.
+ */
+async function dealVisibleInViewerCompanies(
+  deal: AddDealFormRow,
+  scope: DealViewerScope,
+): Promise<boolean> {
+  const seen = new Set<string>();
+  const candidates = [
+    scope.organizationId,
+    ...(await listOrganizationIdsForUser(scope.userId)),
+  ];
+  for (const orgId of candidates) {
+    const key = String(orgId ?? "").trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    if (await isAddDealFormInOrganizationScope(deal, key)) return true;
+  }
+  return false;
+}
+
 function dealIdInList(dealId: string, ids: string[] | null | undefined): boolean {
   const key = String(dealId ?? "").trim().toLowerCase();
   if (!key || !ids?.length) return false;
@@ -290,18 +314,13 @@ export async function viewerHasSyndicationDealWorkspaceAccess(
 ): Promise<boolean> {
   const dealId = String(deal.id);
   if (scope.syndicationSponsorOnly) {
-    if (scope.syndicationSponsorDealIds?.includes(dealId)) return true;
+    if (dealIdInList(dealId, scope.syndicationSponsorDealIds)) return true;
     return isPortalUserDealSponsorOnDeal(dealId, scope.userId);
   }
   if (scope.seesAllDeals) return true;
   if (await isPortalUserOnDealMemberRoster(dealId, scope.userId)) return true;
-  if (scope.coSponsorDashboardDealIds?.includes(dealId)) return true;
-  if (
-    scope.organizationId &&
-    (await isAddDealFormInOrganizationScope(deal, scope.organizationId))
-  ) {
-    return true;
-  }
+  if (dealIdInList(dealId, scope.coSponsorDashboardDealIds)) return true;
+  if (await dealVisibleInViewerCompanies(deal, scope)) return true;
   if (
     !scope.syndicationSponsorOnly &&
     dealIdInList(dealId, scope.crossOrgColleagueSponsoredDealIds)
@@ -371,7 +390,7 @@ export async function dealAccessibleToViewerScope(
   } else if (await isPortalUserOnDealMemberRoster(dealId, scope.userId)) {
     baseOk = true;
   } else if (scope.lpInvestorEmailScopedDealIds != null) {
-    if (scope.lpInvestorEmailScopedDealIds.includes(dealId)) {
+    if (dealIdInList(dealId, scope.lpInvestorEmailScopedDealIds)) {
       baseOk = true;
     } else {
       const emailNorm = await viewerEmailNormForScope(scope);
@@ -386,16 +405,13 @@ export async function dealAccessibleToViewerScope(
       }
     }
   } else if (scope.coSponsorDashboardDealIds?.length) {
-    baseOk = scope.coSponsorDashboardDealIds.includes(dealId);
+    baseOk = dealIdInList(dealId, scope.coSponsorDashboardDealIds);
   } else if (scope.assignedParticipationOnly) {
     baseOk = await isUserAssignedToDeal(scope.userId, dealId);
   } else if (scope.seesAllDeals) {
     baseOk = true;
-  } else if (scope.organizationId) {
-    baseOk = await isAddDealFormInOrganizationScope(
-      dealRow,
-      scope.organizationId,
-    );
+  } else {
+    baseOk = await dealVisibleInViewerCompanies(dealRow, scope);
   }
 
   /**
@@ -492,7 +508,6 @@ export async function assertDealIdReadableOrAssignedParticipant(
   if (scope.syndicationSponsorOnly && !isInvestingPortalRequest()) return false;
   /** LP email scope (incl. empty after Hide Offerings) — no org/assigned fallthrough. */
   if (scope.lpInvestorEmailScopedDealIds != null) return false;
-  if (scope.coSponsorDashboardDealIds != null) return false;
   const emailNorm = await viewerEmailNormForScope(scope);
   async function passesOffering(): Promise<boolean> {
     if (scope.isPlatformAdmin || !emailNorm) return true;
@@ -541,7 +556,6 @@ export async function getAddDealFormForViewerOrAssignedParticipant(
     return undefined;
   }
   if (scope.lpInvestorEmailScopedDealIds != null) return undefined;
-  if (scope.coSponsorDashboardDealIds != null) return undefined;
   const emailNorm = await viewerEmailNormForScope(scope);
   async function passesOffering(): Promise<boolean> {
     if (scope.isPlatformAdmin || !emailNorm) return true;

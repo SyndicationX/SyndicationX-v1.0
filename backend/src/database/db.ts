@@ -44,5 +44,17 @@ pool.on("error", (err) => {
   console.error("[db] idle client error:", err.message);
 });
 
+/**
+ * A checked-out client that loses its connection emits `error` with no listener,
+ * which kills the process. The proxy then answers 502 for the request that was
+ * in flight — usually the Investors tab, because that read holds connections
+ * the longest. Logging here keeps the process up; the query still rejects.
+ */
+pool.on("connect", (client) => {
+  client.on("error", (err: Error) => {
+    console.error("[db] client error:", err.message);
+  });
+});
+
 export const db = drizzle({ client: pool, schema });
 export { pool };

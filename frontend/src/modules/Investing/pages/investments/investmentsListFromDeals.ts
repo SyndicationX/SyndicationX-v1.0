@@ -323,26 +323,18 @@ function listRowFromDealAndInvestors(
  * When `nameByUserProfileIdFromBook` is omitted, a profile book fetch runs here. Prefer
  * passing the map from `getMergedInvestmentListRows` in `investmentsRuntimeData` to avoid duplicate fetches.
  */
+/** Which investing investments to open. Active and Pending share the non-archived set. */
+export type InvestmentListLoadScope = "all" | "active" | "archived"
+
 export async function loadInvestmentListRowsFromDeals(
   nameByUserProfileIdFromBook?: ReadonlyMap<string, string>,
+  scope: InvestmentListLoadScope = "all",
 ): Promise<InvestmentListRow[]> {
   const em = getSessionUserEmail()
   if (!em?.trim()) return []
   const emn = normEmail(em)
-  const list = applyLpSessionDealIdScope(
-    await fetchDealsList({ includeParticipantDeals: true }),
-  )
-  const scoped = await mapInvestingInvestmentsPageScope(list)
-  if (scoped.length === 0) return []
-
-  const [nameMap, myDistributions, participation] = await Promise.all([
-    nameByUserProfileIdFromBook
-      ? Promise.resolve(nameByUserProfileIdFromBook)
-      : fetchUserInvestorProfileNameMap(),
-    fetchMyDistributions().catch(() => ({
-      distributions: [] as MyDistributionPaymentRow[],
-      totalPayment: "0",
-    })),
+  const [rawList, participation] = await Promise.all([
+    fetchDealsList({ includeParticipantDeals: true }),
     fetchMyInvestorParticipation().catch(() => ({
       archivedDealIds: [] as string[],
       removedDealIds: [] as string[],
@@ -354,6 +346,26 @@ export async function loadInvestmentListRowsFromDeals(
   const archivedDealIds = new Set(
     participation.archivedDealIds.map((id) => id.trim().toLowerCase()),
   )
+  const list = applyLpSessionDealIdScope(rawList).filter((row) => {
+    const id = String(row.id ?? "").trim().toLowerCase()
+    if (id && removedDealIds.has(id)) return false
+    const archived = Boolean(id && archivedDealIds.has(id))
+    if (scope === "archived") return archived
+    if (scope === "active") return !archived
+    return true
+  })
+  const scoped = await mapInvestingInvestmentsPageScope(list)
+  if (scoped.length === 0) return []
+
+  const [nameMap, myDistributions] = await Promise.all([
+    nameByUserProfileIdFromBook
+      ? Promise.resolve(nameByUserProfileIdFromBook)
+      : fetchUserInvestorProfileNameMap(),
+    fetchMyDistributions().catch(() => ({
+      distributions: [] as MyDistributionPaymentRow[],
+      totalPayment: "0",
+    })),
+  ])
   const distributedByDeal = distributedAmountByDealId(myDistributions.distributions)
   const out: InvestmentListRow[] = []
   for (const {

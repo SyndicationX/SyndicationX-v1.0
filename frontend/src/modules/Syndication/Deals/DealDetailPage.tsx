@@ -182,7 +182,7 @@ export function DealDetailPage() {
         ? (peekCachedResource<DealDetailApi>(`deal-detail:${dealId}`) ?? null)
         : null,
   )
-  usePrefetchDealRosterTabs(dealId)
+  usePrefetchDealRosterTabs(dealDetailApi ? dealId : undefined)
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -215,6 +215,9 @@ export function DealDetailPage() {
     if (cached) return dealDetailApiToRecord(cached)
     return dealRecordFromOpenState(dealId, location.state)
   })
+  const [dealReloadKey, setDealReloadKey] = useState(0)
+  /** True when the deal request failed for a reason other than “this deal does not exist”. */
+  const [dealLoadFailed, setDealLoadFailed] = useState(false)
   const [saasPaywallDeal, setSaasPaywallDeal] =
     useState<DealSaasPaywallDeal | null>(null)
   const [manageStageOpen, setManageStageOpen] = useState(false)
@@ -511,45 +514,49 @@ export function DealDetailPage() {
     }
     setSaasPaywallDeal(null)
     setUpgradePromptDeal(null)
+    setDealLoadFailed(false)
     const controller = new AbortController()
-    void (async () => {
-      try {
-        const d = await fetchDealById(id, { signal: controller.signal })
-        if (!cancelled) {
-          writeCachedResource(`deal-detail:${id}`, d)
-          setDealDetailApi(d)
-          setDeal(dealDetailApiToRecord(d))
-          window.setTimeout(() => {
-            if (cancelled) return
-            if (mode === "investing") {
-              const previewJson = d.offeringInvestorPreviewJson?.trim()
-              if (previewJson) {
-                syncInvestmentDealDocumentPreview(d.id, previewJson, {
-                  notify: false,
-                })
-              }
-            } else {
-              applyOfferingInvestorPreviewJsonFromServer(
-                d.id,
-                d.offeringInvestorPreviewJson,
-              )
-            }
-          }, 0)
-          if (
-            mode !== "investing" &&
-            d.viewerIsLeadSponsor === true &&
-            d.needsPlanUpgrade === true
-          ) {
-            setUpgradePromptDeal({
-              id: d.id,
-              dealName: d.dealName ?? "",
-              needsPlanUpgrade: true,
-              suggestedPlanId: d.suggestedPlanId ?? null,
-              billingPlanId: d.billingPlanId ?? d.listRow?.billingPlanId ?? null,
-              viewerIsLeadSponsor: true,
+    const applyLoadedDeal = (d: DealDetailApi) => {
+      writeCachedResource(`deal-detail:${id}`, d)
+      setDealDetailApi(d)
+      setDeal(dealDetailApiToRecord(d))
+      setDealLoadFailed(false)
+      window.setTimeout(() => {
+        if (cancelled) return
+        if (mode === "investing") {
+          const previewJson = d.offeringInvestorPreviewJson?.trim()
+          if (previewJson) {
+            syncInvestmentDealDocumentPreview(d.id, previewJson, {
+              notify: false,
             })
           }
+        } else {
+          applyOfferingInvestorPreviewJsonFromServer(
+            d.id,
+            d.offeringInvestorPreviewJson,
+          )
         }
+      }, 0)
+      if (
+        mode !== "investing" &&
+        d.viewerIsLeadSponsor === true &&
+        d.needsPlanUpgrade === true
+      ) {
+        setUpgradePromptDeal({
+          id: d.id,
+          dealName: d.dealName ?? "",
+          needsPlanUpgrade: true,
+          suggestedPlanId: d.suggestedPlanId ?? null,
+          billingPlanId: d.billingPlanId ?? d.listRow?.billingPlanId ?? null,
+          viewerIsLeadSponsor: true,
+        })
+      }
+    }
+    void (async () => {
+      const loadOnce = () => fetchDealById(id, { signal: controller.signal })
+      try {
+        const d = await loadOnce()
+        if (!cancelled) applyLoadedDeal(d)
       } catch (err) {
         if (cancelled) return
         if (
@@ -558,16 +565,58 @@ export function DealDetailPage() {
         ) {
           return
         }
-        if (!cancelled) {
-          if (isDealSaasPaymentRequiredError(err)) {
-            setSaasPaywallDeal({
-              ...err.payload,
-              id: err.payload.id || id,
-            })
-          }
+        const status =
+          err && typeof err === "object" && "status" in err
+            ? Number((err as { status?: number }).status)
+            : 0
+        if (isDealSaasPaymentRequiredError(err)) {
+          setSaasPaywallDeal({
+            ...err.payload,
+            id: err.payload.id || id,
+          })
           setDeal(null)
           setDealDetailApi(null)
+          return
         }
+        /**
+         * A dropped connection (502) or a slow read (500) is not a missing deal.
+         * One retry covers the case where the first request lost the database
+         * pool to the rest of the page.
+         */
+        if (status !== 404) {
+          try {
+            const d = await loadOnce()
+            if (!cancelled) applyLoadedDeal(d)
+            return
+          } catch (retryErr) {
+            if (cancelled) return
+            if (
+              (retryErr instanceof DOMException && retryErr.name === "AbortError") ||
+              (retryErr instanceof Error && retryErr.name === "AbortError")
+            ) {
+              return
+            }
+            const retryStatus =
+              retryErr && typeof retryErr === "object" && "status" in retryErr
+                ? Number((retryErr as { status?: number }).status)
+                : 0
+            if (retryStatus === 404) {
+              setDealLoadFailed(false)
+              setDeal(null)
+              setDealDetailApi(null)
+              return
+            }
+            if (!cachedDetail && !fromNav) {
+              setDealLoadFailed(true)
+              setDeal(null)
+              setDealDetailApi(null)
+            }
+            return
+          }
+        }
+        setDealLoadFailed(false)
+        setDeal(null)
+        setDealDetailApi(null)
       }
     })()
     return () => {
@@ -575,7 +624,7 @@ export function DealDetailPage() {
       controller.abort()
       clearOfferingPreviewRuntime(id)
     }
-  }, [dealId, mode])
+  }, [dealId, mode, dealReloadKey])
 
   useEffect(() => {
     if (mode !== "investing" || !dealId?.trim()) {
@@ -1023,6 +1072,21 @@ export function DealDetailPage() {
               onClose={() => navigate(dealsListBackPath)}
             />
           </>
+        ) : dealLoadFailed ? (
+          <p className="deals_list_not_found">
+            This deal could not be loaded.{" "}
+            <button
+              type="button"
+              className="deals_list_inline_back"
+              onClick={() => {
+                setDeal(undefined)
+                setDealLoadFailed(false)
+                setDealReloadKey((key) => key + 1)
+              }}
+            >
+              Try again
+            </button>
+          </p>
         ) : (
           <p className="deals_list_not_found">
             Deal not found.{" "}

@@ -28,6 +28,7 @@ import {
   loadInvitationMailSentFlags,
   mapRowToInvestorApi,
   mapContactIdsToCanonicalCommitmentKeys,
+  resolveFirstCompanyAdminNamesByCompanyNames,
   resolveFirstInvestorClassForDeal,
   resolveInvestorClassForDealInvestment,
   resolveUserInvestorProfileNamesByIds,
@@ -811,7 +812,15 @@ export async function enrichFullInvestorApiFromLpRoster(
  * GET /deals/:dealId/investors?lp=1 — when `viewerUserId` is a Co-sponsor on the deal,
  * investors/KPIs are restricted to rows they added.
  */
-export async function getLpInvestorsTabPayload(
+const lpInvestorsTabInflight = new Map<
+  string,
+  Promise<{
+    kpis: ReturnType<typeof buildInvestorKpisFromRows>;
+    investors: LpInvestorApiRow[];
+  }>
+>();
+
+async function computeLpInvestorsTabPayload(
   dealId: string,
   viewerUserId?: string | null,
 ): Promise<{
@@ -830,6 +839,339 @@ export async function getLpInvestorsTabPayload(
   const payload = await buildLpInvestorsFromMerged(dealId, merged, uid);
   scheduleDealInvestorEsignSync(dealId);
   return payload;
+}
+
+export function getLpInvestorsTabPayload(
+  dealId: string,
+  viewerUserId?: string | null,
+): Promise<{
+  kpis: ReturnType<typeof buildInvestorKpisFromRows>;
+  investors: LpInvestorApiRow[];
+}> {
+  const key = `${dealId.trim()}\n${viewerUserId?.trim() ?? ""}`;
+  const existing = lpInvestorsTabInflight.get(key);
+  if (existing) return existing;
+  const pending = computeLpInvestorsTabPayload(dealId, viewerUserId).finally(
+    () => {
+      if (lpInvestorsTabInflight.get(key) === pending) {
+        lpInvestorsTabInflight.delete(key);
+      }
+    },
+  );
+  lpInvestorsTabInflight.set(key, pending);
+  return pending;
+}
+
+const LP_INVESTORS_TAB_CACHE_MS = 20_000;
+const lpInvestorsTabCache = new Map<
+  string,
+  {
+    at: number;
+    generation: number;
+    value: {
+      kpis: ReturnType<typeof buildInvestorKpisFromRows>;
+      investors: LpInvestorApiRow[];
+    };
+  }
+>();
+const lpInvestorsTabCacheGeneration = new Map<string, number>();
+
+/**
+ * Investors-tab read cache. Organization dropdowns reuse the roster that was
+ * just built instead of running that pipeline once per company.
+ * `refresh` drops the saved copy so a save is visible on the next read.
+ */
+export function getLpInvestorsTabPayloadCached(
+  dealId: string,
+  viewerUserId?: string | null,
+  options?: { refresh?: boolean },
+): Promise<{
+  kpis: ReturnType<typeof buildInvestorKpisFromRows>;
+  investors: LpInvestorApiRow[];
+}> {
+  const key = `${dealId.trim()}\n${viewerUserId?.trim() ?? ""}`;
+  const generation = options?.refresh
+    ? (lpInvestorsTabCacheGeneration.get(key) ?? 0) + 1
+    : (lpInvestorsTabCacheGeneration.get(key) ?? 0);
+  if (options?.refresh) {
+    lpInvestorsTabCacheGeneration.set(key, generation);
+    lpInvestorsTabCache.delete(key);
+    lpInvestorsTabInflight.delete(key);
+  } else {
+    const hit = lpInvestorsTabCache.get(key);
+    if (
+      hit &&
+      hit.generation === generation &&
+      Date.now() - hit.at < LP_INVESTORS_TAB_CACHE_MS
+    ) {
+      return Promise.resolve(hit.value);
+    }
+  }
+  return getLpInvestorsTabPayload(dealId, viewerUserId).then((value) => {
+    if ((lpInvestorsTabCacheGeneration.get(key) ?? 0) === generation) {
+      lpInvestorsTabCache.set(key, { at: Date.now(), generation, value });
+    }
+    return value;
+  });
+}
+
+export const DEAL_INVESTOR_NO_ORGANIZATION_ID = "none";
+
+export type DealInvestorOrganization = {
+  id: string;
+  name: string;
+  adminName?: string;
+};
+
+type OrganizationQueryRow = { id: string; name: string };
+
+const DEAL_INVESTOR_ORGANIZATIONS_SQL = `
+  SELECT DISTINCT c.id::text AS id, btrim(c.name) AS name
+  FROM companies c
+  WHERE c.id IN (
+    SELECT f.organization_id
+    FROM add_deal_form f
+    WHERE f.id = $1::uuid
+      AND f.organization_id IS NOT NULL
+    UNION
+    SELECT u.organization_id
+    FROM deal_lp_investor lp
+    JOIN users u ON u.id = lp.added_by
+    WHERE lp.deal_id = $1::uuid
+      AND lp.is_draft = false
+      AND lp.removed_at IS NULL
+      AND u.organization_id IS NOT NULL
+    UNION
+    SELECT m.company_id
+    FROM deal_lp_investor lp
+    JOIN user_company_membership m ON m.user_id = lp.added_by
+    WHERE lp.deal_id = $1::uuid
+      AND lp.is_draft = false
+      AND lp.removed_at IS NULL
+    UNION
+    SELECT u.organization_id
+    FROM deal_member dm
+    JOIN users u ON u.id::text = btrim(dm.contact_member_id)
+    WHERE dm.deal_id = $1::uuid
+      AND dm.is_draft = false
+      AND u.organization_id IS NOT NULL
+    UNION
+    SELECT m.company_id
+    FROM deal_member dm
+    JOIN user_company_membership m ON m.user_id::text = btrim(dm.contact_member_id)
+    WHERE dm.deal_id = $1::uuid
+      AND dm.is_draft = false
+    UNION
+    SELECT ct.organization_id
+    FROM deal_member dm
+    JOIN contact ct ON ct.id::text = btrim(dm.contact_member_id)
+    WHERE dm.deal_id = $1::uuid
+      AND dm.is_draft = false
+      AND ct.organization_id IS NOT NULL
+  )
+  AND btrim(c.name) <> ''
+  ORDER BY name
+`;
+
+const DEAL_INVESTOR_ORGANIZATIONS_SQL_NO_MEMBERSHIP = `
+  SELECT DISTINCT c.id::text AS id, btrim(c.name) AS name
+  FROM companies c
+  WHERE c.id IN (
+    SELECT f.organization_id
+    FROM add_deal_form f
+    WHERE f.id = $1::uuid
+      AND f.organization_id IS NOT NULL
+    UNION
+    SELECT u.organization_id
+    FROM deal_lp_investor lp
+    JOIN users u ON u.id = lp.added_by
+    WHERE lp.deal_id = $1::uuid
+      AND lp.is_draft = false
+      AND lp.removed_at IS NULL
+      AND u.organization_id IS NOT NULL
+    UNION
+    SELECT u.organization_id
+    FROM deal_member dm
+    JOIN users u ON u.id::text = btrim(dm.contact_member_id)
+    WHERE dm.deal_id = $1::uuid
+      AND dm.is_draft = false
+      AND u.organization_id IS NOT NULL
+    UNION
+    SELECT ct.organization_id
+    FROM deal_member dm
+    JOIN contact ct ON ct.id::text = btrim(dm.contact_member_id)
+    WHERE dm.deal_id = $1::uuid
+      AND dm.is_draft = false
+      AND ct.organization_id IS NOT NULL
+  )
+  AND btrim(c.name) <> ''
+  ORDER BY name
+`;
+
+function isDealUuid(value: string): boolean {
+  return isUuidContactKey(value);
+}
+
+async function queryDealOrganizations(
+  dealId: string,
+): Promise<OrganizationQueryRow[]> {
+  try {
+    const res = await pool.query<OrganizationQueryRow>(
+      DEAL_INVESTOR_ORGANIZATIONS_SQL,
+      [dealId],
+    );
+    return res.rows;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('relation "user_company_membership" does not exist')) {
+      throw err;
+    }
+    const res = await pool.query<OrganizationQueryRow>(
+      DEAL_INVESTOR_ORGANIZATIONS_SQL_NO_MEMBERSHIP,
+      [dealId],
+    );
+    return res.rows;
+  }
+}
+
+async function viewerCompanyIds(userId: string): Promise<Set<string>> {
+  try {
+    const res = await pool.query<{ id: string }>(
+      `
+      SELECT DISTINCT id FROM (
+        SELECT organization_id::text AS id
+        FROM users
+        WHERE id = $1::uuid AND organization_id IS NOT NULL
+        UNION
+        SELECT company_id::text AS id
+        FROM user_company_membership
+        WHERE user_id = $1::uuid
+      ) companies_for_user
+      WHERE id IS NOT NULL AND btrim(id) <> ''
+      `,
+      [userId],
+    );
+    return new Set(res.rows.map((row) => String(row.id).trim().toLowerCase()));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('relation "user_company_membership" does not exist')) {
+      throw err;
+    }
+    const res = await pool.query<{ id: string }>(
+      `
+      SELECT organization_id::text AS id
+      FROM users
+      WHERE id = $1::uuid AND organization_id IS NOT NULL
+      `,
+      [userId],
+    );
+    return new Set(
+      res.rows
+        .map((row) => String(row.id ?? "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+  }
+}
+
+async function dealHasInvestorWithoutOrganization(
+  dealId: string,
+): Promise<boolean> {
+  try {
+    const res = await pool.query(
+      `
+      SELECT 1
+      FROM deal_lp_investor lp
+      LEFT JOIN users u ON u.id = lp.added_by
+      WHERE lp.deal_id = $1::uuid
+        AND lp.is_draft = false
+        AND lp.removed_at IS NULL
+        AND u.organization_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM user_company_membership m
+          WHERE m.user_id = lp.added_by
+        )
+      LIMIT 1
+      `,
+      [dealId],
+    );
+    return res.rows.length > 0;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('relation "user_company_membership" does not exist')) {
+      throw err;
+    }
+    const res = await pool.query(
+      `
+      SELECT 1
+      FROM deal_lp_investor lp
+      LEFT JOIN users u ON u.id = lp.added_by
+      WHERE lp.deal_id = $1::uuid
+        AND lp.is_draft = false
+        AND lp.removed_at IS NULL
+        AND (lp.added_by IS NULL OR u.organization_id IS NULL)
+      LIMIT 1
+      `,
+      [dealId],
+    );
+    return res.rows.length > 0;
+  }
+}
+
+/**
+ * Organizations on this deal: the deal's company, sponsor companies, and the
+ * companies of people who added investors. A co-sponsor only receives their own.
+ */
+export async function listDealInvestorOrganizations(
+  dealId: string,
+  viewerUserId?: string | null,
+): Promise<DealInvestorOrganization[]> {
+  const id = String(dealId ?? "").trim();
+  if (!isDealUuid(id)) return [];
+  const rows = await queryDealOrganizations(id);
+  const uid = String(viewerUserId ?? "").trim();
+  let visible = rows
+    .map((row) => ({
+      id: String(row.id ?? "").trim(),
+      name: String(row.name ?? "").trim(),
+    }))
+    .filter((row) => row.id && row.name);
+  if (uid && isDealUuid(uid) && (await shouldScopeInvestorsToCoSponsorAddedOnly(id, uid))) {
+    const allowed = await viewerCompanyIds(uid);
+    visible = visible.filter((row) => allowed.has(row.id.toLowerCase()));
+  }
+  const includeUnassigned = await dealHasInvestorWithoutOrganization(id);
+  const organizations: DealInvestorOrganization[] = [...visible].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+  );
+  if (includeUnassigned || organizations.length === 0) {
+    organizations.push({
+      id: DEAL_INVESTOR_NO_ORGANIZATION_ID,
+      name: "No company",
+    });
+  }
+  const adminByCompany = await resolveFirstCompanyAdminNamesByCompanyNames(
+    organizations.map((org) => org.name),
+  );
+  return organizations.map((org) => {
+    const adminName = adminByCompany.get(org.name.toLowerCase()) ?? "";
+    return adminName ? { ...org, adminName } : org;
+  });
+}
+
+export function filterInvestorRowsForOrganization<
+  T extends { addedByCompanyName?: string },
+>(rows: T[], organization: { id: string; name: string }): T[] {
+  const unassigned = organization.id === DEAL_INVESTOR_NO_ORGANIZATION_ID;
+  const target = organization.name.trim().toLowerCase();
+  return rows.filter((row) => {
+    const parts = String(row.addedByCompanyName ?? "")
+      .split("||")
+      .map((part) => part.trim())
+      .filter((part) => part && part !== "—" && part.toLowerCase() !== "no company");
+    if (unassigned) return parts.length === 0;
+    return parts.some((part) => part.toLowerCase() === target);
+  });
 }
 
 export type UpsertDealLpInvestorInput = {

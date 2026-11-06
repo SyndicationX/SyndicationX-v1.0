@@ -97,8 +97,11 @@ import {
 } from "@/modules/Investing/pages/investments/upsertRuntimeFromDealSession";
 import {
   areRequiredDealDetailFieldsIncomplete,
+  emptyDealInvestorsPayload,
   fetchDealInvestorClasses,
+  fetchDealInvestorOrganizations,
   fetchDealInvestors,
+  type DealInvestorOrganization,
   postDealInvestment,
   postDealLpInvestor,
   putDealMemberRoster,
@@ -577,6 +580,23 @@ function mergeInvestorRows(
   return merged;
 }
 
+function investorCompanyNames(row: DealInvestorRow): string[] {
+  return String(row.addedByCompanyName ?? "")
+    .split("||")
+    .map((part) => part.trim())
+    .filter((part) => part && part !== "—" && part.toLowerCase() !== "no company");
+}
+
+function investorMatchesOrganization(
+  row: DealInvestorRow,
+  organization: DealInvestorOrganization,
+): boolean {
+  const names = investorCompanyNames(row);
+  if (organization.id === "none") return names.length === 0;
+  const target = organization.name.trim().toLowerCase();
+  return names.some((name) => name.toLowerCase() === target);
+}
+
 function investorRowIsSponsorPerson(row: DealInvestorRow): boolean {
   const labels = [row.investorRole, ...(row.memberRoleLabels ?? [])];
   return labels.some((raw) => {
@@ -590,6 +610,9 @@ function investorRowIsSponsorPerson(row: DealInvestorRow): boolean {
 
 function DealInvestorsPopulated({
   initialPayload,
+  summaryPending = false,
+  organizations,
+  organizationsLoading = false,
   dealId,
   dealName,
   dealDetail,
@@ -613,6 +636,10 @@ function DealInvestorsPopulated({
   viewerDealMemberRole = null,
 }: {
   initialPayload: DealInvestorsPayload;
+  /** KPIs stay on the skeleton until the deal-wide investor summary arrives. */
+  summaryPending?: boolean;
+  organizations: DealInvestorOrganization[];
+  organizationsLoading?: boolean;
   dealId: string;
   dealName: string;
   dealDetail?: DealDetailApi | null;
@@ -821,15 +848,82 @@ function DealInvestorsPopulated({
     setRows((prev) => mergeInvestorRows(prev, initialPayload.investors));
   }, [initialPayload]);
 
+  const [openOrganizationIds, setOpenOrganizationIds] = useState<string[]>([]);
+  const [organizationInvestors, setOrganizationInvestors] = useState<
+    Record<string, DealInvestorRow[]>
+  >({});
+  const [organizationLoadState, setOrganizationLoadState] = useState<
+    Record<string, "loading" | "ready" | "error">
+  >({});
+  const organizationLoadStateRef = useRef(organizationLoadState);
+  organizationLoadStateRef.current = organizationLoadState;
+  const rosterSignature = useMemo(
+    () =>
+      initialPayload.investors
+        .map(
+          (row) =>
+            `${row.id}:${row.commitmentAmountRaw ?? ""}:${row.status ?? ""}:${row.addedByCompanyName ?? ""}`,
+        )
+        .join("|"),
+    [initialPayload.investors],
+  );
+
+  useEffect(() => {
+    organizationLoadStateRef.current = {};
+    setOrganizationInvestors({});
+    setOrganizationLoadState({});
+  }, [rosterSignature]);
+
+  const loadOrganizationInvestors = useCallback(
+    async (organizationId: string) => {
+      const current = organizationLoadStateRef.current[organizationId];
+      if (current === "loading" || current === "ready") return;
+      organizationLoadStateRef.current = {
+        ...organizationLoadStateRef.current,
+        [organizationId]: "loading",
+      };
+      setOrganizationLoadState((prev) => ({
+        ...prev,
+        [organizationId]: "loading",
+      }));
+      try {
+        const data = await fetchDealInvestors(dealId, {
+          lpInvestorsOnly: true,
+          organizationId,
+        });
+        setOrganizationInvestors((prev) => ({
+          ...prev,
+          [organizationId]: data.investors,
+        }));
+        setOrganizationLoadState((prev) => ({
+          ...prev,
+          [organizationId]: "ready",
+        }));
+      } catch {
+        setOrganizationLoadState((prev) => ({
+          ...prev,
+          [organizationId]: "error",
+        }));
+      }
+    },
+    [dealId],
+  );
+
+  useEffect(() => {
+    for (const organizationId of openOrganizationIds) {
+      void loadOrganizationInvestors(organizationId);
+    }
+  }, [openOrganizationIds, loadOrganizationInvestors, rosterSignature]);
+
   /** Classes on this deal: Offering Information API, else list row (matches deals list column). */
   const dealAllClassNamesLine = useMemo(
     () => buildDealClassNamesLine(investorClasses, dealDetail),
     [investorClasses, dealDetail],
   );
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return rows.filter((r) => {
+  const investorRowMatchesFilters = useCallback(
+    (r: DealInvestorRow) => {
+      const q = query.trim().toLowerCase();
       if (q) {
         const mailLabel =
           r.invitationMailSent === true ? "email sent" : "not sent";
@@ -868,17 +962,22 @@ function DealInvestorsPopulated({
         if (investorRowIsFundApproved(r)) return false;
       }
       return true;
-    });
-  }, [
-    rows,
-    query,
-    filterClass,
-    filterStatus,
-    filterEsign,
-    filterFunding,
-    filterAccreditation,
-    dealAllClassNamesLine,
-  ]);
+    },
+    [
+      query,
+      filterClass,
+      filterStatus,
+      filterEsign,
+      filterFunding,
+      filterAccreditation,
+      dealAllClassNamesLine,
+    ],
+  );
+
+  const filtered = useMemo(
+    () => rows.filter((row) => investorRowMatchesFilters(row)),
+    [rows, investorRowMatchesFilters],
+  );
 
   // Commented for now — Approved / Not approved $ summary at end of filters.
   // const fundingAmountSummary = useMemo(() => {
@@ -1011,15 +1110,80 @@ function DealInvestorsPopulated({
     });
   }, []);
 
-  const companyGroups = useMemo(
-    () => groupInvestorsByCompany(filtered),
-    [filtered],
-  );
+  const useOrganizationDropdowns =
+    organizationsLoading || organizations.length > 0;
 
-  const selectedInvestorRows = useMemo(
-    () => filtered.filter((r) => selectedInvestorIds.has(r.id)),
-    [filtered, selectedInvestorIds],
-  );
+  const companyGroups = useMemo(() => {
+    if (!useOrganizationDropdowns) return groupInvestorsByCompany(filtered);
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return organizations.map((organization) => {
+      const loadState = organizationLoadState[organization.id];
+      const loaded = organizationInvestors[organization.id];
+      const detailsLoaded = loadState === "ready" || loadState === "error";
+      const source = loaded ?? [];
+      const withDrafts = [...source];
+      for (const row of rows) {
+        if (row.id !== ADD_MEMBER_DRAFT_ROW_ID) continue;
+        if (!investorMatchesOrganization(row, organization)) continue;
+        if (withDrafts.some((existing) => existing.id === row.id)) continue;
+        withDrafts.push(row);
+      }
+      const visible = withDrafts
+        .map((row) => byId.get(row.id) ?? row)
+        .filter((row) => investorRowMatchesFilters(row));
+      return {
+        key: organization.id,
+        name: organization.name,
+        ...(organization.adminName ? { adminName: organization.adminName } : {}),
+        rows: detailsLoaded ? visible : [],
+        detailsLoaded,
+        loading: loadState === "loading" || (!loadState && openOrganizationIds.includes(organization.id)),
+        ...(loadState === "error"
+          ? { error: "Could not load investors for this organization." }
+          : {}),
+      };
+    }).filter((group) => {
+      const filtersActive = Boolean(
+        query.trim() ||
+          filterClass ||
+          filterStatus ||
+          filterEsign ||
+          filterFunding ||
+          filterAccreditation,
+      );
+      if (!filtersActive || !group.detailsLoaded || group.error) return true;
+      return group.rows.length > 0;
+    });
+  }, [
+    filterAccreditation,
+    filterClass,
+    filterEsign,
+    filterFunding,
+    filterStatus,
+    filtered,
+    investorRowMatchesFilters,
+    openOrganizationIds,
+    organizationInvestors,
+    organizationLoadState,
+    organizations,
+    query,
+    rows,
+    useOrganizationDropdowns,
+  ]);
+
+  const selectedInvestorRows = useMemo(() => {
+    const seen = new Set<string>();
+    const selected: DealInvestorRow[] = [];
+    for (const row of [
+      ...companyGroups.flatMap((group) => group.rows),
+      ...filtered,
+    ]) {
+      if (!selectedInvestorIds.has(row.id) || seen.has(row.id)) continue;
+      seen.add(row.id);
+      selected.push(row);
+    }
+    return selected;
+  }, [companyGroups, filtered, selectedInvestorIds]);
   const senderEmail = useMemo(() => getCurrentSessionUserEmail(), []);
   const selectedTemplate = useMemo(
     () => emailTemplates.find((t) => t.id === selectedTemplateId) ?? null,
@@ -1746,12 +1910,16 @@ function DealInvestorsPopulated({
 
   return (
     <div className="deal_inv_populated deal_members_tab">
+      {summaryPending ? (
+        <DealInvestorsKpiSkeletonSection />
+      ) : (
       <section
         className="sponsor_dash_metrics deal_inv_kpi_metrics"
         aria-label="Deal investment summary"
       >
         {kpiMetricCards}
       </section>
+      )}
 
       <ExportDealInvestorRowsModal
         open={exportModalOpen}
@@ -2204,7 +2372,18 @@ function DealInvestorsPopulated({
           </section>
         </div>
 
-        {companyGroups.length === 0 ? (
+        {organizationsLoading && organizations.length === 0 ? (
+          <div
+            className="deal_investors_page_loading"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="data_table_loader_spinner" aria-hidden />
+            <span className="deal_investors_page_loading_text">
+              Loading organizations…
+            </span>
+          </div>
+        ) : companyGroups.length === 0 ? (
           <p className="deal_inv_company_groups_empty" role="status">
             No LP investors match your filters.
           </p>
@@ -2218,6 +2397,9 @@ function DealInvestorsPopulated({
             selectedInvestorIds={selectedInvestorIds}
             onToggleSelectGroup={toggleSelectCompanyGroup}
             searchActive={query.trim().length > 0}
+            onOpenKeysChange={
+              useOrganizationDropdowns ? setOpenOrganizationIds : undefined
+            }
             getRowClassName={(row) =>
               investorRowShowsDraftBadge(row) ? "deal_inv_row_draft" : undefined
             }
@@ -2267,6 +2449,11 @@ export const DealInvestorsTab = forwardRef<
   /** “Continue editing” on draft row: prefill AddLpInvestorModal from session add-member draft. */
   const [lpResumeAddMemberDraft, setLpResumeAddMemberDraft] = useState(false);
   const [payload, setPayload] = useState<DealInvestorsPayload | null>(null);
+  const [organizations, setOrganizations] = useState<DealInvestorOrganization[]>(
+    [],
+  );
+  const [organizationsLoading, setOrganizationsLoading] = useState(true);
+  const investorsRefreshRef = useRef(false);
   const {
     data: cachedInvestors,
     isLoading: investorsResourceLoading,
@@ -2274,7 +2461,11 @@ export const DealInvestorsTab = forwardRef<
   } = useCachedResource({
     key: dealInvestorsTabCacheKey(dealId),
     enabled: Boolean(dealId),
-    fetcher: () => fetchDealInvestors(dealId, { lpInvestorsOnly: true }),
+    fetcher: () => {
+      const refresh = investorsRefreshRef.current;
+      investorsRefreshRef.current = false;
+      return fetchDealInvestors(dealId, { lpInvestorsOnly: true, refresh });
+    },
   });
   const [loading, setLoading] = useState(
     () => investorsResourceLoading && cachedInvestors == null,
@@ -2391,6 +2582,7 @@ export const DealInvestorsTab = forwardRef<
       refetchInvestors: async () => {
         const data = await fetchDealInvestors(dealId, {
           lpInvestorsOnly: true,
+          refresh: true,
         });
         setPayload(data);
       },
@@ -2434,8 +2626,33 @@ export const DealInvestorsTab = forwardRef<
   /** Parent-driven refresh (save, invite, delete). Keeps the table mounted. */
   useEffect(() => {
     if (investorsListRefreshKey === 0) return;
+    investorsRefreshRef.current = true;
     reloadInvestors();
   }, [dealId, investorsListRefreshKey, reloadInvestors]);
+
+  useEffect(() => {
+    const id = dealId.trim();
+    if (!id) {
+      setOrganizations([]);
+      setOrganizationsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setOrganizationsLoading(true);
+    void fetchDealInvestorOrganizations(id)
+      .then((next) => {
+        if (!cancelled) setOrganizations(next);
+      })
+      .catch(() => {
+        if (!cancelled) setOrganizations([]);
+      })
+      .finally(() => {
+        if (!cancelled) setOrganizationsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dealId, investorsListRefreshKey]);
 
   useEffect(() => {
     setLocalAddedInvestors([]);
@@ -2569,7 +2786,7 @@ export const DealInvestorsTab = forwardRef<
       ]);
     } else {
       setLocalAddedInvestors([]);
-      const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true });
+      const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true, refresh: true });
       setPayload(data);
       const full = await fetchDealInvestors(dealId, { lpInvestorsOnly: false });
       upsertRuntimeForViewerFromInvestorsPayload(
@@ -2647,7 +2864,7 @@ export const DealInvestorsTab = forwardRef<
       }
       setEditRow(null);
       onAddInvestmentClose();
-      const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true });
+      const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true, refresh: true });
       setPayload(data);
       const full = await fetchDealInvestors(dealId, { lpInvestorsOnly: false });
       upsertRuntimeForViewerFromInvestorsPayload(
@@ -2674,12 +2891,12 @@ export const DealInvestorsTab = forwardRef<
 
   /** Background list update. Does not notify the parent or show the loading screen. */
   const refreshInvestorsInPlace = useCallback(async () => {
-    const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true });
+    const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true, refresh: true });
     setPayload(data);
   }, [dealId]);
 
   const refreshInvestorsFromApi = useCallback(async () => {
-    const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true });
+    const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true, refresh: true });
     setPayload(data);
     const full = await fetchDealInvestors(dealId, { lpInvestorsOnly: false });
     upsertRuntimeForViewerFromInvestorsPayload(
@@ -2691,7 +2908,7 @@ export const DealInvestorsTab = forwardRef<
   }, [dealId, dealDetail, onInvestorsChanged]);
 
   const refreshInvestorsListOnly = useCallback(async () => {
-    const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true });
+    const data = await fetchDealInvestors(dealId, { lpInvestorsOnly: true, refresh: true });
     setPayload(data);
     const full = await fetchDealInvestors(dealId, { lpInvestorsOnly: false });
     upsertRuntimeForViewerFromInvestorsPayload(
@@ -2719,6 +2936,7 @@ export const DealInvestorsTab = forwardRef<
       onBackendAutosave={async (detail) => {
         const data = await fetchDealInvestors(dealId, {
           lpInvestorsOnly: true,
+          refresh: true,
         });
         setPayload(data);
         const full = await fetchDealInvestors(dealId, {
@@ -2791,41 +3009,15 @@ export const DealInvestorsTab = forwardRef<
       </>
     );
 
-  if (loading)
-    return (
-      <>
-        {modal}
-        {lpInvestorModal}
-        <div className="deal_inv_populated deal_members_tab">
-          <DealInvestorsKpiSkeletonSection />
-          <div
-            className="um_panel um_members_tab_panel deal_inv_table_panel deal_investors_table_panel_loading"
-            aria-busy
-          >
-            <div
-              className="deal_investors_page_loading"
-              role="status"
-              aria-live="polite"
-              aria-label="Loading investors"
-            >
-              <div className="data_table_loader_spinner" aria-hidden />
-              <span className="deal_investors_page_loading_text">
-                Loading investors…
-              </span>
-            </div>
-          </div>
-        </div>
-      </>
-    );
-
-  if (!mergedPayload) return null;
-
   return (
     <>
       {modal}
       {lpInvestorModal}
       <DealInvestorsPopulated
-        initialPayload={mergedPayload}
+        initialPayload={mergedPayload ?? emptyDealInvestorsPayload()}
+        summaryPending={!mergedPayload || loading}
+        organizations={organizations}
+        organizationsLoading={organizationsLoading}
         dealId={dealId}
         dealName={dealName}
         dealDetail={dealDetail}

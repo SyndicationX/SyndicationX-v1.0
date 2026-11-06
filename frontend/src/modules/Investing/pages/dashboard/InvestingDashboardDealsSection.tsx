@@ -8,7 +8,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { runPool, useCachedResource } from "@/common/hooks/useCachedResource";
+import { runPool } from "@/common/hooks/useCachedResource";
 import { useSearchParams } from "react-router-dom";
 import { getSessionUserEmail } from "@/common/auth/sessionUserEmail";
 import { filterDealListRowsVisibleToInvestors } from "@/modules/Investing/utils/investingViewerDealScope";
@@ -93,12 +93,6 @@ function isDealSecType506b(raw: string | null | undefined): boolean {
   return secTypeIs506(raw, "b");
 }
 
-const EMPTY_BY_BUCKET: InvestingDashboardDealsByBucket = {
-  active: [],
-  in_progress: [],
-  coming_soon: [],
-};
-
 function mergeInvestingDashboardDealRecord(
   row: DealListRow,
   payload: Awaited<ReturnType<typeof fetchDealInvestors>>,
@@ -124,96 +118,188 @@ function mergeInvestingDashboardDealRecord(
   return record;
 }
 
-async function loadDealsByBucket(
+type DashboardDealEntry = {
+  row: DealListRow;
+  bucket: Exclude<DealsTab, "all">;
+  payload: Awaited<ReturnType<typeof fetchDealInvestors>>;
+  classes?: Awaited<ReturnType<typeof fetchDealInvestorClasses>>;
+  record?: DealRecord;
+};
+
+let dashboardList: DealListRow[] | null = null;
+let dashboardListEmail = "";
+const dashboardDeals = new Map<string, DashboardDealEntry>();
+let dashboardClassifyTask: Promise<void> | null = null;
+/** Deals classified while this tab is open get their class list immediately. */
+let dashboardOpenTab: DealsTab = "all";
+
+function resetInvestingDashboardDealCache(): void {
+  dashboardList = null;
+  dashboardListEmail = "";
+  dashboardDeals.clear();
+  dashboardClassifyTask = null;
+}
+
+async function attachClasses(
+  entry: DashboardDealEntry,
   viewerEmailNorm: string,
-): Promise<InvestingDashboardDealsByBucket> {
-  const platformAdminViewer = isPlatformAdmin();
-  const sponsorWorkspaceViewer = isSponsorWorkspaceInvestingViewer();
-  let list = await fetchDealsList(
-    platformAdminViewer ? undefined : { includeParticipantDeals: true },
+): Promise<void> {
+  if (entry.record) return;
+  const classes = await fetchDealInvestorClasses(entry.row.id);
+  entry.classes = classes;
+  entry.record = mergeInvestingDashboardDealRecord(
+    entry.row,
+    entry.payload,
+    classes,
+    viewerEmailNorm,
   );
-  if (!platformAdminViewer && !sponsorWorkspaceViewer) {
-    list = filterDealListRowsVisibleToInvestors(list);
+}
+
+function dashboardViewerUsesOfferingBuckets(): boolean {
+  return isPlatformAdmin() || isSponsorWorkspaceInvestingViewer();
+}
+
+function lpBucketForDeal(
+  row: DealListRow,
+  payload: Awaited<ReturnType<typeof fetchDealInvestors>>,
+  viewerEmailNorm: string,
+): Exclude<DealsTab, "all"> | null {
+  let bucket = classifyInvestingDashboardDealBucket(
+    row,
+    payload,
+    viewerEmailNorm,
+  );
+  if (!bucket && isInvestingDashboardOpportunityDeal(row)) {
+    bucket = "coming_soon";
   }
   /**
-   * Do not drop closed / managing-asset / past rows here. Those offerings are
-   * hidden as marketplace opportunities, but an LP who already invested must
-   * still reach {@link classifyInvestingDashboardDealBucket} (Active / In progress).
-   * Uninvested closed deals return null from classify and stay off the dashboard.
+   * The deals API already applied offering visibility. A 506(c) offering,
+   * or a 506(b) deal this investor is already on, must still appear when
+   * they have no separate LP investment row (for example after being
+   * added as a sponsor).
    */
-  if (list.length === 0) return { ...EMPTY_BY_BUCKET };
-
-  const bundles: Array<{
-    row: DealListRow;
-    payload: Awaited<ReturnType<typeof fetchDealInvestors>>;
-    classes: Awaited<ReturnType<typeof fetchDealInvestorClasses>>;
-  }> = [];
-  await runPool(list, 4, async (row) => {
-    const [payload, classes] = await Promise.all([
-      fetchDealInvestors(row.id),
-      fetchDealInvestorClasses(row.id),
-    ]);
-    bundles.push({ row, payload, classes });
-  });
-
-  if (platformAdminViewer || sponsorWorkspaceViewer) {
-    const out: InvestingDashboardDealsByBucket = {
-      active: [],
-      in_progress: [],
-      coming_soon: [],
-    };
-    for (const { row, payload, classes } of bundles) {
-      const bucket = classifyInvestingDashboardDealBucketForPlatformAdmin(row);
-      out[bucket].push(
-        mergeInvestingDashboardDealRecord(
-          row,
-          payload,
-          classes,
-          viewerEmailNorm,
-        ),
-      );
-    }
-    return out;
+  if (!bucket && investingRowKeptByUnsetOfferingVisibility(row)) {
+    bucket = isDealSecType506b(row.secType) ? "active" : "coming_soon";
   }
+  return bucket;
+}
 
-  if (!viewerEmailNorm) return { ...EMPTY_BY_BUCKET };
-
+function recordsFromDashboardCache(): InvestingDashboardDealsByBucket {
   const out: InvestingDashboardDealsByBucket = {
     active: [],
     in_progress: [],
     coming_soon: [],
   };
+  for (const entry of dashboardDeals.values()) {
+    if (entry.record) out[entry.bucket].push(entry.record);
+  }
+  return out;
+}
 
-  for (const { row, payload, classes } of bundles) {
-    let bucket = classifyInvestingDashboardDealBucket(
+function tabIncludesBucket(tab: DealsTab, bucket: Exclude<DealsTab, "all">): boolean {
+  return tab === "all" || tab === bucket;
+}
+
+async function ensureDashboardDealList(
+  viewerEmailNorm: string,
+): Promise<DealListRow[]> {
+  if (dashboardList && dashboardListEmail === viewerEmailNorm) return dashboardList;
+  const offeringBuckets = dashboardViewerUsesOfferingBuckets();
+  let list = await fetchDealsList(
+    offeringBuckets ? undefined : { includeParticipantDeals: true },
+  );
+  if (!offeringBuckets) list = filterDealListRowsVisibleToInvestors(list);
+  dashboardList = list;
+  dashboardListEmail = viewerEmailNorm;
+  return list;
+}
+
+/** Sponsor and platform-admin cards are bucketed from the deal list, then only the open tab is loaded. */
+async function loadOfferingBucketTab(
+  tab: DealsTab,
+  viewerEmailNorm: string,
+  onProgress: () => void,
+): Promise<void> {
+  const list = await ensureDashboardDealList(viewerEmailNorm);
+  onProgress();
+  const wanted = list.filter((row) =>
+    tabIncludesBucket(
+      tab,
+      classifyInvestingDashboardDealBucketForPlatformAdmin(row),
+    ),
+  );
+  await runPool(wanted, 3, async (row) => {
+    const existing = dashboardDeals.get(row.id);
+    if (existing?.record) return;
+    const bucket = classifyInvestingDashboardDealBucketForPlatformAdmin(row);
+    const [payload, classes] = await Promise.all([
+      fetchDealInvestors(row.id, { lpInvestorsOnly: true }),
+      fetchDealInvestorClasses(row.id),
+    ]);
+    dashboardDeals.set(row.id, {
       row,
+      bucket,
       payload,
-      viewerEmailNorm,
-    );
-    if (!bucket && isInvestingDashboardOpportunityDeal(row)) {
-      bucket = "coming_soon";
-    }
-    /**
-     * The deals API already applied offering visibility. A 506(c) offering,
-     * or a 506(b) deal this investor is already on, must still appear when
-     * they have no separate LP investment row (for example after being
-     * added as a sponsor).
-     */
-    if (!bucket && investingRowKeptByUnsetOfferingVisibility(row)) {
-      bucket = isDealSecType506b(row.secType) ? "active" : "coming_soon";
-    }
-    if (!bucket) continue;
-    out[bucket].push(
-      mergeInvestingDashboardDealRecord(
+      classes,
+      record: mergeInvestingDashboardDealRecord(
         row,
         payload,
         classes,
         viewerEmailNorm,
       ),
-    );
-  }
+    });
+    onProgress();
+  });
+}
 
-  return out;
+/** Investor classification. Class lists are fetched only for the tab that is open. */
+function ensureLpDealsClassified(
+  viewerEmailNorm: string,
+  onProgress: () => void,
+): Promise<void> {
+  if (!viewerEmailNorm) return Promise.resolve();
+  if (dashboardClassifyTask && dashboardListEmail === viewerEmailNorm) {
+    return dashboardClassifyTask;
+  }
+  dashboardClassifyTask = (async () => {
+    const list = await ensureDashboardDealList(viewerEmailNorm);
+    onProgress();
+    await runPool(list, 3, async (row) => {
+      let entry = dashboardDeals.get(row.id);
+      if (!entry) {
+        const payload = await fetchDealInvestors(row.id, {
+          lpInvestorsOnly: true,
+        });
+        const bucket = lpBucketForDeal(row, payload, viewerEmailNorm);
+        if (!bucket) return;
+        entry = { row, bucket, payload };
+        dashboardDeals.set(row.id, entry);
+      }
+      if (!entry.record && tabIncludesBucket(dashboardOpenTab, entry.bucket)) {
+        await attachClasses(entry, viewerEmailNorm);
+      }
+      onProgress();
+    });
+  })().catch((err) => {
+    dashboardClassifyTask = null;
+    throw err;
+  });
+  return dashboardClassifyTask;
+}
+
+async function hydrateLpTab(
+  tab: DealsTab,
+  viewerEmailNorm: string,
+  onProgress: () => void,
+): Promise<void> {
+  const wanted = [...dashboardDeals.values()].filter(
+    (entry) => !entry.record && tabIncludesBucket(tab, entry.bucket),
+  );
+  await runPool(wanted, 3, async (entry) => {
+    if (entry.record || !tabIncludesBucket(dashboardOpenTab, entry.bucket)) return;
+    await attachClasses(entry, viewerEmailNorm);
+    onProgress();
+  });
 }
 
 function dealRecordToDealListRow(record: DealRecord): DealListRow {
@@ -276,52 +362,79 @@ export function InvestingDashboardDealsSection() {
       searchParams.get(INVESTING_DASH_DEALS_TAB_PARAM),
     ),
   );
-  const {
-    data: bucketData,
-    isLoading: bucketLoading,
-    reload: reloadBuckets,
-  } = useCachedResource({
-    key: "investing-dashboard-deal-buckets",
-    fetcher: async () => {
-      const viewerEmailNorm = getSessionUserEmail().trim().toLowerCase();
-      const next = await loadDealsByBucket(viewerEmailNorm);
-      return { next, viewerEmailNorm };
-    },
-  });
-  const dealsByBucket = bucketData?.next ?? EMPTY_BY_BUCKET;
-  const loading = bucketLoading && !bucketData;
+  const [reloadToken, setReloadToken] = useState(0);
+  const [cacheTick, setCacheTick] = useState(0);
+  const [openingTab, setOpeningTab] = useState(true);
+  const viewerEmailNorm = getSessionUserEmail().trim().toLowerCase();
+  const offeringBuckets = dashboardViewerUsesOfferingBuckets();
+  const dealsByBucket = useMemo(() => {
+    void cacheTick;
+    return recordsFromDashboardCache();
+  }, [cacheTick]);
   const [recentlyViewedDeals, setRecentlyViewedDeals] = useState<DealRecord[]>(
     [],
   );
-  const [recentlyViewedLoading, setRecentlyViewedLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [dealsView, setDealsView] = useState<"grid" | "list">("grid");
   const [dealsSortKey, setDealsSortKey] = useState<DealsSortKey>("createdAt");
 
   useEffect(() => {
-    if (!bucketData) return;
+    let cancelled = false;
+    setOpeningTab(true);
+    dashboardOpenTab = activeTab;
+    const bump = () => {
+      if (!cancelled) setCacheTick((tick) => tick + 1);
+    };
+    void (async () => {
+      try {
+        if (offeringBuckets) {
+          await loadOfferingBucketTab(activeTab, viewerEmailNorm, bump);
+        } else if (viewerEmailNorm) {
+          await Promise.all([
+            ensureLpDealsClassified(viewerEmailNorm, bump),
+            hydrateLpTab(activeTab, viewerEmailNorm, bump),
+          ]);
+          if (!cancelled && dashboardOpenTab === activeTab) {
+            await hydrateLpTab(activeTab, viewerEmailNorm, bump);
+          }
+        }
+      } finally {
+        if (!cancelled) {
+          bump();
+          setOpeningTab(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, offeringBuckets, reloadToken, viewerEmailNorm]);
+
+  useEffect(() => {
+    if (openingTab) return;
     let cancelled = false;
     if (!isPortfolioRecentlyViewedEnabled()) {
       setRecentlyViewedDeals([]);
-      setRecentlyViewedLoading(false);
       return;
     }
-    setRecentlyViewedLoading(true);
     void loadRecentlyViewedDashboardDeals(
-      bucketData.next,
-      bucketData.viewerEmailNorm,
+      recordsFromDashboardCache(),
+      viewerEmailNorm,
     ).then((recent) => {
       if (cancelled) return;
       setRecentlyViewedDeals(recent);
-      setRecentlyViewedLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [bucketData]);
+  }, [activeTab, openingTab, reloadToken, viewerEmailNorm]);
 
   useEffect(() => {
+    function reloadBuckets() {
+      resetInvestingDashboardDealCache();
+      setReloadToken((token) => token + 1);
+    }
     window.addEventListener(DEALS_LIST_REFETCH_EVENT, reloadBuckets);
     window.addEventListener(RECENTLY_VIEWED_DEALS_CHANGED_EVENT, reloadBuckets);
     return () => {
@@ -331,7 +444,7 @@ export function InvestingDashboardDealsSection() {
         reloadBuckets,
       );
     };
-  }, [reloadBuckets]);
+  }, []);
 
   useEffect(() => {
     const fromUrl = parseInvestingDashboardDealsTab(
@@ -357,8 +470,20 @@ export function InvestingDashboardDealsSection() {
     setQuery("");
   }, [activeTab]);
 
-  const activeCount = dealsByBucket.active.length;
-  const inProgressCount = dealsByBucket.in_progress.length;
+  const classifiedCounts = useMemo(() => {
+    void cacheTick;
+    const counts = { active: 0, in_progress: 0, coming_soon: 0 };
+    if (offeringBuckets && dashboardList) {
+      for (const row of dashboardList) {
+        counts[classifyInvestingDashboardDealBucketForPlatformAdmin(row)] += 1;
+      }
+      return counts;
+    }
+    for (const entry of dashboardDeals.values()) counts[entry.bucket] += 1;
+    return counts;
+  }, [cacheTick, offeringBuckets]);
+  const activeCount = classifiedCounts.active;
+  const inProgressCount = classifiedCounts.in_progress;
   const opportunityTabDeals = useMemo(
     () =>
       mergeOpportunitiesTabDeals(
@@ -367,7 +492,10 @@ export function InvestingDashboardDealsSection() {
       ),
     [dealsByBucket.coming_soon, recentlyViewedDeals],
   );
-  const comingSoonCount = opportunityTabDeals.length;
+  const comingSoonCount = Math.max(
+    opportunityTabDeals.length,
+    classifiedCounts.coming_soon,
+  );
   const allCount = activeCount + inProgressCount + comingSoonCount;
   const dealsForTab = useMemo(() => {
     if (activeTab === "all") {
@@ -380,10 +508,7 @@ export function InvestingDashboardDealsSection() {
     if (activeTab === "coming_soon") return opportunityTabDeals;
     return dealsByBucket[activeTab];
   }, [activeTab, dealsByBucket, opportunityTabDeals]);
-  const tabLoading =
-    activeTab === "coming_soon"
-      ? loading || recentlyViewedLoading
-      : loading;
+  const tabLoading = openingTab && dealsForTab.length === 0;
   const { sectionTitle, searchPlaceholder, emptyLabel } = tabMeta(activeTab);
   const exportDeals = useMemo(
     () => dealsForTab.map(dealRecordToDealListRow),

@@ -36,6 +36,7 @@ import "@/modules/Syndication/Deals/deals-list.css"
 import { DEALS_LIST_REFETCH_EVENT } from "@/modules/Syndication/Deals/createDealFormDraftStorage"
 import {
   deleteMyInvestorDealParticipation,
+  fetchMyInvestorParticipation,
   patchMyInvestorDealParticipation,
 } from "@/modules/Investing/api/investorParticipationApi"
 import { ExportInvestmentsModal } from "./ExportInvestmentsModal"
@@ -260,33 +261,82 @@ function InvestmentsTablePanel({
   )
 }
 
-function useMergedInvestmentRows() {
-  const [rows, setRows] = useState<InvestmentListRow[]>([])
-  const [loading, setLoading] = useState(true)
-  const reload = useCallback(() => {
-    void (async () => {
-      setLoading(true)
-      try {
-        setRows(await getMergedInvestmentListRows())
-      } finally {
-        setLoading(false)
-      }
-    })()
+function investmentListScopeForTab(
+  tab: InvestmentsPageTab,
+): "active" | "archived" {
+  return tab === "archives" ? "archived" : "active"
+}
+
+function useMergedInvestmentRows(tab: InvestmentsPageTab) {
+  const scope = investmentListScopeForTab(tab)
+  const [activeRows, setActiveRows] = useState<InvestmentListRow[] | null>(null)
+  const [archivedRows, setArchivedRows] = useState<InvestmentListRow[] | null>(
+    null,
+  )
+  const [loadingScope, setLoadingScope] = useState<"active" | "archived" | null>(
+    null,
+  )
+  const [archiveIdCount, setArchiveIdCount] = useState<number | null>(null)
+  const requestRef = useRef(0)
+
+  const loadScope = useCallback(async (nextScope: "active" | "archived") => {
+    const requestId = requestRef.current + 1
+    requestRef.current = requestId
+    setLoadingScope(nextScope)
+    try {
+      const next = await getMergedInvestmentListRows(nextScope)
+      if (requestRef.current !== requestId) return
+      if (nextScope === "archived") setArchivedRows(next)
+      else setActiveRows(next)
+    } catch {
+      if (requestRef.current !== requestId) return
+      if (nextScope === "archived") setArchivedRows([])
+      else setActiveRows([])
+    } finally {
+      if (requestRef.current === requestId) setLoadingScope(null)
+    }
   }, [])
+
   useEffect(() => {
-    reload()
-  }, [reload])
+    const cached = scope === "archived" ? archivedRows : activeRows
+    if (cached) return
+    void loadScope(scope)
+  }, [activeRows, archivedRows, loadScope, scope])
+
+  useEffect(() => {
+    let cancelled = false
+    void fetchMyInvestorParticipation()
+      .then((participation) => {
+        if (!cancelled) setArchiveIdCount(participation.archivedDealIds.length)
+      })
+      .catch(() => {
+        if (!cancelled) setArchiveIdCount(0)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   useEffect(() => {
     function onRefetch() {
-      void (async () => {
-        setRows(await getMergedInvestmentListRows())
-      })()
+      setActiveRows(null)
+      setArchivedRows(null)
+      void fetchMyInvestorParticipation()
+        .then((participation) =>
+          setArchiveIdCount(participation.archivedDealIds.length),
+        )
+        .catch(() => setArchiveIdCount(0))
     }
     window.addEventListener(DEALS_LIST_REFETCH_EVENT, onRefetch)
     return () =>
       window.removeEventListener(DEALS_LIST_REFETCH_EVENT, onRefetch)
   }, [])
-  return { rows, setRows, loading, reload }
+
+  const rows = (scope === "archived" ? archivedRows : activeRows) ?? []
+  const loading =
+    (scope === "archived" ? archivedRows : activeRows) == null ||
+    loadingScope === scope
+  return { rows, loading, activeRows, archivedRows, archiveIdCount }
 }
 
 /** Column widths — keep in sync with `--data-table-sticky-col-*-width` in investments-page.css */
@@ -312,7 +362,8 @@ export default function InvestmentsPage() {
   const { switchToInvesting } = usePortalMode()
   const [searchParams, setSearchParams] = useSearchParams()
   const activeTab = parseInvestmentsTab(searchParams.get(INVESTMENTS_TAB_PARAM))
-  const { rows, loading } = useMergedInvestmentRows()
+  const { rows, loading, activeRows, archivedRows, archiveIdCount } =
+    useMergedInvestmentRows(activeTab)
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
@@ -396,21 +447,17 @@ export default function InvestmentsPage() {
   const { inProgressCount, pendingCount, archivedCount } = useMemo(() => {
     let inProgress = 0
     let pending = 0
-    let archived = 0
-    for (const r of rows) {
-      if (investmentRowArchivedForInvestorView(r)) {
-        archived++
-        continue
-      }
+    for (const r of activeRows ?? []) {
+      if (investmentRowArchivedForInvestorView(r)) continue
       if (investmentRowMatchesOnboardingTab(r, "pending")) pending++
       if (investmentRowMatchesOnboardingTab(r, "in_progress")) inProgress++
     }
     return {
       inProgressCount: inProgress,
       pendingCount: pending,
-      archivedCount: archived,
+      archivedCount: archivedRows?.length ?? archiveIdCount ?? 0,
     }
-  }, [rows])
+  }, [activeRows, archivedRows, archiveIdCount])
 
   const rowsForTab = useMemo(() => {
     if (activeTab === "archives") {

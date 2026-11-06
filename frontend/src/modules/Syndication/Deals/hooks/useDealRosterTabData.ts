@@ -69,7 +69,7 @@ export async function loadDealDistributionsTab(
 export function usePrefetchDealRosterTabs(dealId: string | undefined): void {
   const id = dealId?.trim() ?? ""
   const enabled = id.length > 0
-  useCachedResource({
+  const investorsPrefetch = useCachedResource({
     key: dealInvestorsTabCacheKey(id || "_"),
     enabled,
     fetcher: () => fetchDealInvestors(id, { lpInvestorsOnly: true }),
@@ -91,7 +91,12 @@ export function usePrefetchDealRosterTabs(dealId: string | undefined): void {
   })
   useCachedResource({
     key: dealDistributionsTabCacheKey(id || "_"),
-    enabled,
+    /**
+     * The distributions roster is a second full investors read. Starting it
+     * with the Investors tab exhausted the API and the proxy returned 502
+     * for Investors. Wait until that list has arrived.
+     */
+    enabled: enabled && investorsPrefetch.data != null,
     fetcher: () => loadDealDistributionsTab(id),
   })
 }

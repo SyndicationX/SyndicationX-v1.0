@@ -6,7 +6,11 @@ import {
   enrichInvestmentListRow,
   fetchUserInvestorProfileNameMap,
 } from "./investedAsDisplay"
-import { loadInvestmentListRowsFromDeals } from "./investmentsListFromDeals"
+import {
+  loadInvestmentListRowsFromDeals,
+  type InvestmentListLoadScope,
+} from "./investmentsListFromDeals"
+import { investmentRowArchivedForInvestorView } from "@/modules/Investing/utils/investorDealArchiveView"
 import type { InvestmentDetailRecord, InvestmentListRow } from "./investments.types"
 import {
   readRuntimeInvestmentRowById,
@@ -195,11 +199,21 @@ function collapseInvestmentsListRowsByDeal(
   return out.sort(investmentRecencySort)
 }
 
-export async function getMergedInvestmentListRows(): Promise<InvestmentListRow[]> {
-  const [fromApi, fromLocal] = await Promise.all([
-    loadInvestmentListRowsFromDeals(),
+export async function getMergedInvestmentListRows(
+  scope: InvestmentListLoadScope = "all",
+): Promise<InvestmentListRow[]> {
+  const [fromApi, fromLocalAll] = await Promise.all([
+    loadInvestmentListRowsFromDeals(undefined, scope),
     Promise.resolve(readRuntimeInvestmentRows()),
   ])
+  const fromLocal =
+    scope === "all"
+      ? fromLocalAll
+      : fromLocalAll.filter((row) =>
+          scope === "archived"
+            ? investmentRowArchivedForInvestorView(row)
+            : !investmentRowArchivedForInvestorView(row),
+        )
   const merged = mergeInvestmentLists(fromApi, fromLocal)
   const collapsed = collapseInvestmentsListRowsByDeal(merged)
   const needsProfileBook = collapsed.some(

@@ -30,6 +30,7 @@ import { dealMember } from "../../schema/deal.schema/deal-member.schema.js";
 import { listInvestorClassesByDealId } from "./dealInvestorClass.service.js";
 import {
   listCoSponsorPortalUserIdsOnDeal,
+  listEquivalentPortalUserIdsBySeeds,
   listEquivalentPortalUserIdsForUser,
   mapPortalUserRolesOnDeal,
   resolveViewerDealMemberRoleOnDeal,
@@ -1763,24 +1764,27 @@ export async function sumCommittedFromInvestorsAddedByMemberContacts(
   }
 
   const equivIdsByMemberKey = new Map<string, string[]>();
-  await Promise.all(
-    memberKeysArr.map(async (mk) => {
-      const seed = portalUserByMemberKey.get(mk);
-      if (!seed) {
-        equivIdsByMemberKey.set(mk, []);
-        return;
-      }
-      const equiv = await listEquivalentPortalUserIdsForUser(seed);
-      const ids = [
-        ...new Set(
-          (equiv.length > 0 ? equiv : [seed])
-            .map((id) => String(id).trim().toLowerCase())
-            .filter(Boolean),
-        ),
-      ];
-      equivIdsByMemberKey.set(mk, ids);
-    }),
+  const groupedEquiv = await listEquivalentPortalUserIdsBySeeds(
+    memberKeysArr
+      .map((mk) => portalUserByMemberKey.get(mk) ?? "")
+      .filter(Boolean),
   );
+  for (const mk of memberKeysArr) {
+    const seed = portalUserByMemberKey.get(mk);
+    if (!seed) {
+      equivIdsByMemberKey.set(mk, []);
+      continue;
+    }
+    const equiv = groupedEquiv.get(seed.toLowerCase()) ?? [];
+    const ids = [
+      ...new Set(
+        (equiv.length > 0 ? equiv : [seed])
+          .map((id) => String(id).trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ];
+    equivIdsByMemberKey.set(mk, ids);
+  }
 
   const allSponsorIds = [
     ...new Set([...equivIdsByMemberKey.values()].flat().filter(Boolean)),
@@ -1817,7 +1821,11 @@ export async function sumCommittedFromInvestorsAddedByMemberContacts(
                    )::double precision
                  )
                  FROM jsonb_array_elements(
-                   coalesce(di.extra_contribution_amounts, '[]'::jsonb)
+                   CASE
+                     WHEN jsonb_typeof(coalesce(di.extra_contribution_amounts, '[]'::jsonb)) = 'array'
+                     THEN coalesce(di.extra_contribution_amounts, '[]'::jsonb)
+                     ELSE '[]'::jsonb
+                   END
                  ) AS elem
                ),
                0
@@ -1917,7 +1925,11 @@ export async function sumCommittedFromInvestorsAddedByMemberContacts(
                  )::double precision
                )
                FROM jsonb_array_elements(
-                 coalesce(di.extra_contribution_amounts, '[]'::jsonb)
+                 CASE
+                   WHEN jsonb_typeof(coalesce(di.extra_contribution_amounts, '[]'::jsonb)) = 'array'
+                   THEN coalesce(di.extra_contribution_amounts, '[]'::jsonb)
+                   ELSE '[]'::jsonb
+                 END
                ) AS elem
              ),
              0
@@ -2812,22 +2824,17 @@ export async function enrichInvestorApiRowsWithAddedBy<
     coSponsorIds.map((id) => String(id).trim().toLowerCase()).filter(Boolean),
   );
   const adderIds = [...uniqueAdderIds.values()];
-  const equivByAdder = new Map<string, string[]>();
-  await Promise.all(
-    adderIds.map(async (id) => {
-      const low = String(id).toLowerCase();
-      const role = roleByUser.get(low) ?? null;
-      if (
-        role === "co_sponsor" ||
-        role === "lead_sponsor" ||
-        role === "admin_sponsor" ||
-        coSponsorOnDeal.has(low)
-      ) {
-        return;
-      }
-      equivByAdder.set(low, await listEquivalentPortalUserIdsForUser(id));
-    }),
-  );
+  const equivSeeds = adderIds.filter((id) => {
+    const low = String(id).toLowerCase();
+    const role = roleByUser.get(low) ?? null;
+    return !(
+      role === "co_sponsor" ||
+      role === "lead_sponsor" ||
+      role === "admin_sponsor" ||
+      coSponsorOnDeal.has(low)
+    );
+  });
+  const equivByAdder = await listEquivalentPortalUserIdsBySeeds(equivSeeds);
   for (const id of adderIds) {
     const low = String(id).toLowerCase();
     const role = roleByUser.get(low) ?? null;

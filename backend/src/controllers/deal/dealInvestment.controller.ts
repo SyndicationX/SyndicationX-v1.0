@@ -22,8 +22,10 @@ import {
 import { reconcileAssigningDealUsersForDeal } from "../../services/deal/assigningDealUser.service.js";
 import {
   enrichFullInvestorApiFromLpRoster,
+  filterInvestorRowsForOrganization,
   filterMergedLpInvestorsForCoSponsorViewer,
-  getLpInvestorsTabPayload,
+  getLpInvestorsTabPayloadCached,
+  listDealInvestorOrganizations,
   shouldScopeInvestorsToCoSponsorAddedOnly,
   mergeDealLpRosterIntoFullInvestorRows,
 } from "../../services/deal/dealLpInvestor.service.js";
@@ -241,6 +243,40 @@ function pageInvestorRows<T>(
   return paginateInMemory(sorted, pageQuery);
 }
 
+/** Organizations on this deal. Each investors-tab dropdown loads that company's investors. */
+export async function getDealInvestorOrganizations(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const dealId =
+    typeof req.params.dealId === "string" ? req.params.dealId : req.params.dealId?.[0];
+  if (!dealId) {
+    res.status(400).json({ message: "Missing deal id" });
+    return;
+  }
+  try {
+    const scope = await resolveDealViewerScope(
+      user.id,
+      user.userRole,
+      requestedOrganizationIdFromRequest(req),
+    );
+    if (!(await assertDealIdReadableOrAssignedParticipant(dealId, scope))) {
+      res.status(404).json({ message: "Deal not found" });
+      return;
+    }
+    const organizations = await listDealInvestorOrganizations(dealId, user.id);
+    res.status(200).json({ organizations });
+  } catch (err) {
+    console.error("getDealInvestorOrganizations:", err);
+    res.status(500).json({ message: "Could not load organizations" });
+  }
+}
+
 export async function getDealInvestors(
   req: Request,
   res: Response,
@@ -278,10 +314,35 @@ export async function getDealInvestors(
      */
     const pageQuery = parsePageQuery(req);
     if (lpInvestorsOnly) {
-      const { kpis, investors } = await getLpInvestorsTabPayload(
+      const refreshRaw = q.refresh;
+      const refresh =
+        refreshRaw === "1" ||
+        refreshRaw === "true" ||
+        String(refreshRaw).toLowerCase() === "yes";
+      const organizationId = String(
+        q.organizationId ?? q.organization_id ?? "",
+      ).trim();
+      const { kpis, investors: roster } = await getLpInvestorsTabPayloadCached(
         dealId,
         user.id,
+        { refresh },
       );
+      let investors = roster;
+      if (organizationId) {
+        const organizations = await listDealInvestorOrganizations(
+          dealId,
+          user.id,
+        );
+        const organization = organizations.find(
+          (org) => org.id.toLowerCase() === organizationId.toLowerCase(),
+        );
+        investors = organization
+          ? filterInvestorRowsForOrganization(
+              roster as Array<{ addedByCompanyName?: string }>,
+              organization,
+            ) as typeof roster
+          : [];
+      }
       const page = pageInvestorRows(investors, pageQuery);
       res.status(200).json({ kpis, investors: page.items, ...page.envelope });
       return;

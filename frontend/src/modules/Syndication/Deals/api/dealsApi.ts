@@ -1,6 +1,7 @@
 import { isPlatformAdmin } from "../../../../common/auth/roleUtils"
 import { isAccessibleCompanyId } from "../../../../common/auth/sessionMemberships"
 import {
+  isInvestingPortalSession,
   organizationIdQueryParam,
   portalAuthHeaders,
   PORTAL_OMIT_ACTIVE_ORG_HEADER,
@@ -889,7 +890,17 @@ export async function fetchDealById(
   const base = getApiV1Base()
   if (!base) throw new Error("VITE_BASE_URL is not configured.")
   const res = await fetch(`${base}/deals/${encodeURIComponent(dealId)}`, {
-    headers: { ...authHeaders({ omitActiveOrganization: true }) },
+    headers: {
+      ...authHeaders({
+        /**
+         * Syndicating list is scoped to the company chosen at login. Omitting
+         * that company here resolved the user's primary company instead, so a
+         * deal in the selected company came back as not found.
+         * Investing stays user-scoped.
+         */
+        omitActiveOrganization: isInvestingPortalSession(),
+      }),
+    },
     credentials: "include",
     signal: options?.signal,
   })
@@ -908,7 +919,9 @@ export async function fetchDealById(
         data.message,
       )
     }
-    throw new Error(data.message || `Could not load deal (${res.status})`)
+    const err = new Error(data.message || `Could not load deal (${res.status})`)
+    ;(err as Error & { status?: number }).status = res.status
+    throw err
   }
   if (!data.deal) throw new Error("Invalid response")
   const d = data.deal as DealDetailApi & Record<string, unknown>
@@ -3289,10 +3302,50 @@ function normalizeDealMembersResponse(data: unknown): DealMembersPayload {
  * Expected API: `GET /deals/:dealId/investors` → `{ kpis?: {...}, investors: [...] }`.
  * Pass `lpInvestorsOnly` to limit rows to LP investor role (`lpInvestorsOnly=1`).
  */
+export type DealInvestorOrganization = {
+  id: string
+  name: string
+  adminName?: string
+}
+
+/** Companies on this deal. The Investors tab opens one dropdown per company. */
+export async function fetchDealInvestorOrganizations(
+  dealId: string,
+): Promise<DealInvestorOrganization[]> {
+  const base = getApiV1Base()
+  if (!base) return []
+  const res = await fetch(
+    `${base}/deals/${encodeURIComponent(dealId)}/investor-organizations`,
+    {
+      headers: authHeaders({ omitActiveOrganization: true }),
+      credentials: "include",
+    },
+  )
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) return []
+  const raw = (data as { organizations?: unknown }).organizations
+  if (!Array.isArray(raw)) return []
+  const organizations: DealInvestorOrganization[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue
+    const row = item as Record<string, unknown>
+    const id = String(row.id ?? "").trim()
+    const name = String(row.name ?? "").trim()
+    if (!id || !name) continue
+    const adminName = String(row.adminName ?? row.admin_name ?? "").trim()
+    organizations.push(adminName ? { id, name, adminName } : { id, name })
+  }
+  return organizations
+}
+
 export async function fetchDealInvestors(
   dealId: string,
   options?: {
     lpInvestorsOnly?: boolean
+    /** Load only the investors whose sponsor belongs to this organization. */
+    organizationId?: string
+    /** Skip the short server cache after a save. */
+    refresh?: boolean
     timeoutMs?: number
     signal?: AbortSignal
   },
@@ -3306,7 +3359,13 @@ export async function fetchDealInvestors(
   }
   try {
     const lpOnly = Boolean(options?.lpInvestorsOnly)
-    const q = lpOnly ? "?lpInvestorsOnly=1" : ""
+    const params = new URLSearchParams()
+    if (lpOnly) params.set("lpInvestorsOnly", "1")
+    const organizationId = options?.organizationId?.trim() ?? ""
+    if (organizationId) params.set("organizationId", organizationId)
+    if (options?.refresh) params.set("refresh", "1")
+    const qs = params.toString()
+    const q = qs ? `?${qs}` : ""
     const res = await fetch(
       `${base}/deals/${encodeURIComponent(dealId)}/investors${q}`,
       {

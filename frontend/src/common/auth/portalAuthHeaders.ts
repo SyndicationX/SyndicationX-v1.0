@@ -18,6 +18,10 @@ export const PORTAL_MODE_HEADER = "X-Portal-Mode"
  */
 export const PORTAL_OMIT_ACTIVE_ORG_HEADER = "X-Portal-Omit-Active-Organization"
 
+export function isInvestingPortalSession(): boolean {
+  return readPortalModeHeaderValue() === "investing"
+}
+
 function readPortalModeHeaderValue(): "investing" | "syndicating" {
   if (typeof window !== "undefined" && isLpInvestorSessionUser()) {
     return "investing"

@@ -30,6 +30,7 @@ import {
 } from "../controllers/distributionSetup/distributionSetup.controller.js";
 import {
   getDealCommitmentAmountByContact,
+  getDealInvestorOrganizations,
   getDealInvestors,
   postDealInvestment,
   putDealInvestment,
@@ -142,6 +143,10 @@ router.put("/deals/:dealId/investor-classes/:classId", putDealInvestorClass);
 router.delete(
   "/deals/:dealId/investor-classes/:classId",
   deleteDealInvestorClass,
+);
+router.get(
+  "/deals/:dealId/investor-organizations",
+  getDealInvestorOrganizations,
 );
 router.get("/deals/:dealId/investors", getDealInvestors);
 router.get(

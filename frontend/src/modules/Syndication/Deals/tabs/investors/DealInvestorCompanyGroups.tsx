@@ -24,6 +24,13 @@ export type InvestorCompanyGroup = {
   /** First-created company admin, when the roster row includes one. */
   adminName?: string
   rows: DealInvestorRow[]
+  /**
+   * False while this dropdown has not loaded its investors yet.
+   * Omitted means the rows are already the full group (Deal Members).
+   */
+  detailsLoaded?: boolean
+  loading?: boolean
+  error?: string
 }
 
 export function groupInvestorsByCompany(
@@ -144,6 +151,9 @@ function DealInvestorCompanyGroup({
   const panelId = `deal-inv-company-${dealId}-${group.key.replace(/[^a-z0-9]+/gi, "-")}`
   const rowSig = group.rows.map((row) => row.id).join("\0")
 
+  const detailsLoaded = group.detailsLoaded !== false
+  const waitingForDetails = !detailsLoaded
+
   const committedTotal = useMemo(
     () =>
       countNoun === "member"
@@ -238,7 +248,11 @@ function DealInvestorCompanyGroup({
             sponsorMetrics ? " deal_inv_company_group_aside_sponsor" : ""
           }`}
         >
-          {sponsorMetrics ? (
+          {waitingForDetails ? (
+            <span className="deal_inv_company_group_count">
+              {group.loading ? "Loading investors…" : "View investors"}
+            </span>
+          ) : sponsorMetrics ? (
             <>
               <span className="deal_inv_company_group_metric deal_inv_company_group_metric_count">
                 <span className="deal_inv_company_group_committed_label">
@@ -284,6 +298,22 @@ function DealInvestorCompanyGroup({
       </button>
       {open ? (
         <div className="deal_inv_company_group_body" id={panelId}>
+          {waitingForDetails && group.loading ? (
+            <div
+              className="deal_investors_page_loading"
+              role="status"
+              aria-live="polite"
+            >
+              <div className="data_table_loader_spinner" aria-hidden />
+              <span className="deal_investors_page_loading_text">
+                Loading investors…
+              </span>
+            </div>
+          ) : waitingForDetails && group.error ? (
+            <p className="deal_inv_company_groups_empty" role="alert">
+              {group.error}
+            </p>
+          ) : (
           <DataTable
             visualVariant="members"
             membersTableClassName="um_table_members deal_inv_table"
@@ -298,6 +328,7 @@ function DealInvestorCompanyGroup({
             emptyLabel={emptyLabel}
             pagination={pagination}
           />
+          )}
         </div>
       ) : null}
     </section>
@@ -314,6 +345,7 @@ export function DealInvestorCompanyGroups({
   onToggleSelectGroup,
   getRowClassName,
   searchActive,
+  onOpenKeysChange,
   countNoun = "investor",
   emptyLabel = "No LP investors match your filters.",
 }: {
@@ -326,6 +358,8 @@ export function DealInvestorCompanyGroups({
   onToggleSelectGroup: (rows: DealInvestorRow[]) => void
   getRowClassName: (row: DealInvestorRow) => string | undefined
   searchActive: boolean
+  /** Keys of dropdowns that are expanded, so the parent can load their investors. */
+  onOpenKeysChange?: (keys: string[]) => void
   countNoun?: CompanyGroupCountNoun
   emptyLabel?: string
 }) {
@@ -341,6 +375,11 @@ export function DealInvestorCompanyGroups({
       return next
     })
   }, [groupKeySig, searchActive])
+
+  const openKeySig = [...openKeys].sort().join("\0")
+  useEffect(() => {
+    onOpenKeysChange?.(openKeySig ? openKeySig.split("\0") : [])
+  }, [openKeySig, onOpenKeysChange])
 
   const allOpen = groups.length > 0 && groups.every((group) => openKeys.has(group.key))
 
