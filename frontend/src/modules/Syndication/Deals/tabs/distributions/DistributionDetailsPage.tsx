@@ -82,6 +82,10 @@ import {
 import { FormTooltip } from "../../../../../common/components/form-tooltip/FormTooltip"
 import { isPlatformAdmin } from "../../../../../common/auth/roleUtils"
 import { AchPayoutConfirmModal } from "./AchPayoutConfirmModal"
+import {
+  BankAccountSetupDetailsModal,
+  type BankAccountSetupDetailsTarget,
+} from "./BankAccountSetupDetailsModal"
 import "../../../usermanagement/user_management.css"
 import "../../deals-list.css"
 import "../../deal-investors-tab.css"
@@ -277,6 +281,14 @@ export function DistributionDetailsPage() {
   const [bankAccountSetup, setBankAccountSetup] = useState<
     DistributionBankAccountSetupLine[]
   >([])
+  const [canViewBankAccountDetails, setCanViewBankAccountDetails] =
+    useState(false)
+  const [bankSetupDetailsTarget, setBankSetupDetailsTarget] =
+    useState<BankAccountSetupDetailsTarget | null>(null)
+  const closeBankSetupDetails = useCallback(
+    () => setBankSetupDetailsTarget(null),
+    [],
+  )
   const [dealFunding, setDealFunding] =
     useState<DealDistributionFundingStatus | null>(null)
   const [executingPayouts, setExecutingPayouts] = useState(false)
@@ -321,6 +333,7 @@ export function DistributionDetailsPage() {
       setDistribution(found)
       setPayouts(payoutRows.payouts)
       setBankAccountSetup(payoutRows.bankAccountSetup)
+      setCanViewBankAccountDetails(payoutRows.canViewBankAccountDetails)
       setDealFunding(funding)
       if (!found) {
         setError("That distribution was not found for this deal.")
@@ -332,6 +345,7 @@ export function DistributionDetailsPage() {
       setDistribution(null)
       setPayouts([])
       setBankAccountSetup([])
+      setCanViewBankAccountDetails(false)
       setDealFunding(null)
       setError(
         err instanceof Error ? err.message : "Could not load distribution.",
@@ -1367,6 +1381,16 @@ export function DistributionDetailsPage() {
                 row.investorId.trim().toLowerCase(),
               ) ?? "not_set_up"
             }
+            onClick={
+              canViewBankAccountDetails
+                ? () =>
+                    setBankSetupDetailsTarget({
+                      investmentId: row.investorId,
+                      investorName: row.investorName,
+                    })
+                : undefined
+            }
+            ariaLabel={`View bank account setup for ${row.investorName}`}
           />
         ),
       },
@@ -1466,6 +1490,7 @@ export function DistributionDetailsPage() {
       dealFunding?.fundingReady,
       payoutByInvestmentId,
       bankSetupByInvestmentId,
+      canViewBankAccountDetails,
       canSendInvestorPayout,
       isInvestorPayoutLocked,
       requestSendInvestorAchPayout,
@@ -1667,6 +1692,13 @@ export function DistributionDetailsPage() {
         dealAllClassNamesLine={dealAllClassNamesLine}
         distributionContext={viewDistributionContext}
         initialSectionTab="distribution"
+      />
+
+      <BankAccountSetupDetailsModal
+        dealId={dealId}
+        distributionId={distributionId}
+        target={bankSetupDetailsTarget}
+        onClose={closeBankSetupDetails}
       />
 
       <AchPayoutConfirmModal

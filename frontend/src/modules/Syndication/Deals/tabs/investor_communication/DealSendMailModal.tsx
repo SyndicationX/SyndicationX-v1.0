@@ -27,7 +27,10 @@ import {
   scopeDealInvestorRowsForViewer,
 } from "../../utils/dealDetailTabVisibility"
 import {
+  ensureEmailTemplateContent,
   loadEmailTemplates,
+  peekActiveEmailTemplateSummaries,
+  prefetchEmailTemplateContent,
   type EmailTemplateRow,
 } from "../../../contacts/emailTemplatesStorage"
 import {
@@ -49,6 +52,84 @@ import type { InvestorCommunicationMailRow } from "./investor-communication.type
 import "../../../contacts/contacts.css"
 import "../../../usermanagement/user_management.css"
 import "./investor_communication.css"
+
+type DealSendMailComposer = {
+  recipients: DealMailRecipient[]
+  viewerIsCosponsor: boolean
+}
+
+const COMPOSER_TTL_MS = 45_000
+const composerCache = new Map<string, { at: number; data: DealSendMailComposer }>()
+const composerInflight = new Map<string, Promise<DealSendMailComposer>>()
+
+async function fetchDealSendMailComposer(
+  dealId: string,
+): Promise<DealSendMailComposer> {
+  const [allPayload, classes, membersPayload] = await Promise.all([
+    fetchDealInvestors(dealId),
+    fetchDealInvestorClasses(dealId),
+    fetchDealMembers(dealId),
+  ])
+  const viewerRole = parseViewerDealMemberRoleFromApi(
+    membersPayload.viewerDealMemberRole,
+  )
+  const viewerIsCosponsor = viewerRole === "co_sponsor"
+  const investors = scopeDealInvestorRowsForViewer(
+    mergeDealInvestorRowsForMail([], allPayload.investors),
+    viewerRole,
+    getSessionUserId(),
+  )
+  const built = buildDealMailRecipients({
+    investors,
+    classes,
+    viewerUserId: getSessionUserId(),
+    viewerEmail: getSessionUserEmail(),
+  })
+  const recipients = viewerIsCosponsor
+    ? filterDealMailRecipientsForCoSponsorViewer(built, {
+        viewerUserId: getSessionUserId(),
+        viewerEmail: getSessionUserEmail(),
+      })
+    : appendDealRosterSponsorsAsRecipients(
+        built,
+        membersPayload.members ?? [],
+      )
+  return { recipients, viewerIsCosponsor }
+}
+
+function loadDealSendMailComposer(
+  dealId: string,
+): Promise<DealSendMailComposer> {
+  const id = dealId.trim()
+  const hit = composerCache.get(id)
+  if (hit && Date.now() - hit.at < COMPOSER_TTL_MS) {
+    return Promise.resolve(hit.data)
+  }
+  const existing = composerInflight.get(id)
+  if (existing) return existing
+  const pending = fetchDealSendMailComposer(id)
+    .then((data) => {
+      composerCache.set(id, { at: Date.now(), data })
+      return data
+    })
+    .finally(() => {
+      if (composerInflight.get(id) === pending) composerInflight.delete(id)
+    })
+  composerInflight.set(id, pending)
+  return pending
+}
+
+function peekDealSendMailComposer(dealId: string): DealSendMailComposer | null {
+  return composerCache.get(dealId.trim())?.data ?? null
+}
+
+/** Start recipient and template reads before the user opens Send email. */
+export function prefetchDealSendMailData(dealId: string): void {
+  const id = dealId.trim()
+  if (!id) return
+  void loadEmailTemplates({ summary: true })
+  void loadDealSendMailComposer(id)
+}
 
 export interface DealSendMailModalProps {
   dealId: string
@@ -74,6 +155,7 @@ export function DealSendMailModal({
 }: DealSendMailModalProps) {
   const navigate = useNavigate()
   const [loadingRecipients, setLoadingRecipients] = useState(false)
+  const [loadingTemplates, setLoadingTemplates] = useState(false)
   const [recipients, setRecipients] = useState<DealMailRecipient[]>([])
   const [selectedRecipientIds, setSelectedRecipientIds] = useState<
     Set<string>
@@ -123,80 +205,79 @@ export function DealSendMailModal({
     [selectedRecipients],
   )
 
+  const preselectKey = useMemo(
+    () =>
+      (initialRecipientEmails ?? [])
+        .map((e) => e.trim().toLowerCase())
+        .filter((e) => e.includes("@"))
+        .join("\n"),
+    [initialRecipientEmails],
+  )
+
   useEffect(() => {
     if (!open || !dealId.trim()) return
     let cancelled = false
-    setLoadingRecipients(true)
-    setSelectedRecipientIds(new Set())
-    setViewerIsCosponsor(false)
-    setReleaseConfirmOpen(false)
-    const preselectEmails = new Set(
-      (initialRecipientEmails ?? [])
-        .map((e) => e.trim().toLowerCase())
-        .filter((e) => e.includes("@")),
-    )
-    void (async () => {
-      const [templates, lpPayload, allPayload, classes, membersPayload] =
-        await Promise.all([
-          loadEmailTemplates(),
-          fetchDealInvestors(dealId.trim(), { lpInvestorsOnly: true }),
-          fetchDealInvestors(dealId.trim()),
-          fetchDealInvestorClasses(dealId.trim()),
-          fetchDealMembers(dealId.trim()),
-        ])
-      if (cancelled) return
-      const viewerRole = parseViewerDealMemberRoleFromApi(
-        membersPayload.viewerDealMemberRole,
-      )
-      const viewerIsCo = viewerRole === "co_sponsor"
-      setViewerIsCosponsor(viewerIsCo)
-      const investors = scopeDealInvestorRowsForViewer(
-        mergeDealInvestorRowsForMail(
-          lpPayload.investors,
-          allPayload.investors,
-        ),
-        viewerRole,
-        getSessionUserId(),
-      )
-      const built = buildDealMailRecipients({
-        investors,
-        classes,
-        viewerUserId: getSessionUserId(),
-        viewerEmail: getSessionUserEmail(),
-      })
-      const merged = viewerIsCo
-        ? filterDealMailRecipientsForCoSponsorViewer(built, {
-            viewerUserId: getSessionUserId(),
-            viewerEmail: getSessionUserEmail(),
-          })
-        : appendDealRosterSponsorsAsRecipients(
-            built,
-            membersPayload.members ?? [],
-          )
-      setRecipients(merged)
-      setSelectedRecipientIds(
-        defaultDealMailRecipientIds(merged, {
-          preselectEmails: releaseToOwnInvestors ? [] : [...preselectEmails],
-        }),
-      )
-      const active = templates.filter((t) => !t.archived)
-      setEmailTemplates(active)
-      const preferredTemplateId = String(initialTemplateId ?? "").trim()
-      setSelectedTemplateId((prev) => {
-        if (preferredTemplateId && active.some((t) => t.id === preferredTemplateId)) {
-          return preferredTemplateId
-        }
-        if (prev && active.some((t) => t.id === prev)) return prev
-        return active[0]?.id ?? ""
-      })
-      setSendMailCc("")
-      setSendMailEmailPreview(null)
+    const preselectEmails = releaseToOwnInvestors
+      ? []
+      : preselectKey
+        ? preselectKey.split("\n")
+        : []
+    const apply = (data: DealSendMailComposer, initSelection: boolean) => {
+      setRecipients(data.recipients)
+      setViewerIsCosponsor(data.viewerIsCosponsor)
+      if (initSelection) {
+        setSelectedRecipientIds(
+          defaultDealMailRecipientIds(data.recipients, { preselectEmails }),
+        )
+        setSendMailCc("")
+        setSendMailEmailPreview(null)
+        setReleaseConfirmOpen(false)
+      }
       setLoadingRecipients(false)
-    })()
+    }
+    const cached = peekDealSendMailComposer(dealId)
+    if (cached) apply(cached, true)
+    else {
+      setLoadingRecipients(true)
+      setRecipients([])
+      setSelectedRecipientIds(new Set())
+      setViewerIsCosponsor(false)
+    }
+    void loadDealSendMailComposer(dealId.trim()).then((data) => {
+      if (cancelled) return
+      apply(data, !cached)
+    })
     return () => {
       cancelled = true
     }
-  }, [open, dealId, initialRecipientEmails, initialTemplateId, releaseToOwnInvestors])
+  }, [open, dealId, preselectKey, releaseToOwnInvestors])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    const cached = peekActiveEmailTemplateSummaries()
+    const preferredTemplateId = String(initialTemplateId ?? "").trim()
+    const applyTemplates = (rows: EmailTemplateRow[]) => {
+      const active = rows.filter((t) => !t.archived)
+      setEmailTemplates(active)
+      const preferred = active.find((t) => t.id === preferredTemplateId)
+      setSelectedTemplateId((prev) => {
+        if (preferred) return preferred.id
+        if (prev && active.some((t) => t.id === prev)) return prev
+        return active[0]?.id ?? ""
+      })
+      prefetchEmailTemplateContent(preferred ?? active[0])
+      setLoadingTemplates(false)
+    }
+    if (cached) applyTemplates(cached)
+    else setLoadingTemplates(true)
+    void loadEmailTemplates({ summary: true }).then((rows) => {
+      if (!cancelled) applyTemplates(rows)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, initialTemplateId])
 
   const closeModal = useCallback(() => {
     if (sending) return
@@ -223,20 +304,27 @@ export function DealSendMailModal({
         )
         return
       }
-      setSendMailEmailPreview({
-        templateId: template.id,
-        templateName: template.name,
-        templateArchived: Boolean(template.archived),
-        createdBy: template.createdBy,
-        createdAt: template.createdAt,
-        subject: template.subject,
-        bodyHtml: template.body,
-        toEmails: senderEmail ? [senderEmail] : [],
-        ccEmails: parseEmailInput(sendMailCc),
-        bccEmails: selectedDeliveryEmails,
-        attachment: template.attachment,
-        startInEditMode: mode === "edit",
-      })
+      void (async () => {
+        const full = await ensureEmailTemplateContent(template)
+        if (!full) {
+          toast.error("Could not load template", "Try again.")
+          return
+        }
+        setSendMailEmailPreview({
+          templateId: full.id,
+          templateName: full.name,
+          templateArchived: Boolean(full.archived),
+          createdBy: full.createdBy,
+          createdAt: full.createdAt,
+          subject: full.subject,
+          bodyHtml: full.body,
+          toEmails: senderEmail ? [senderEmail] : [],
+          ccEmails: parseEmailInput(sendMailCc),
+          bccEmails: selectedDeliveryEmails,
+          attachment: full.attachment,
+          startInEditMode: mode === "edit",
+        })
+      })()
     },
     [emailTemplates, selectedCanDeliver, selectedDeliveryEmails, selectedTemplateId, sendMailCc, senderEmail],
   )
@@ -246,7 +334,7 @@ export function DealSendMailModal({
       setSendMailEmailPreview((p) =>
         p ? { ...p, ...patch, startInEditMode: false } : null,
       )
-      void loadEmailTemplates().then((rows) => {
+      void loadEmailTemplates({ summary: true }).then((rows) => {
         setEmailTemplates(rows.filter((t) => !t.archived))
       })
     },
@@ -266,15 +354,20 @@ export function DealSendMailModal({
       toast.error("Template required", "Choose an email template first.")
       return
     }
+    setSending(true)
+    const full = await ensureEmailTemplateContent(template)
+    if (!full) {
+      setSending(false)
+      toast.error("Could not load template", "Try again.")
+      return
+    }
     const previewSubject = sendMailEmailPreview?.subject?.trim()
     const previewBody = sendMailEmailPreview?.bodyHtml
-    const subject = previewSubject || template.subject
-    const bodyHtml = previewBody ?? template.body
-
-    setSending(true)
+    const subject = previewSubject || full.subject
+    const bodyHtml = previewBody ?? full.body
     const result = await postDealInvestorCommunicationMail({
       dealId,
-      templateId: template.id,
+      templateId: full.id,
       subject,
       bodyHtml,
       ccRaw: sendMailCc,
@@ -436,11 +529,19 @@ export function DealSendMailModal({
                   id="deal-inv-comm-send-mail-template"
                   className="um_field_select contacts_send_mail_template_select"
                   value={selectedTemplateId}
-                  onChange={(e) => setSelectedTemplateId(e.target.value)}
-                  disabled={sending || loadingRecipients}
+                  onChange={(e) => {
+                    const id = e.target.value
+                    setSelectedTemplateId(id)
+                    prefetchEmailTemplateContent(
+                      emailTemplates.find((t) => t.id === id),
+                    )
+                  }}
+                  disabled={sending || loadingTemplates}
                 >
                   {emailTemplates.length === 0 ? (
-                    <option value="">No active templates</option>
+                    <option value="">
+                      {loadingTemplates ? "Loading templates…" : "No active templates"}
+                    </option>
                   ) : null}
                   {emailTemplates.map((tpl) => (
                     <option key={tpl.id} value={tpl.id}>
@@ -505,6 +606,7 @@ export function DealSendMailModal({
               disabled={
                 sending ||
                 loadingRecipients ||
+                loadingTemplates ||
                 !selectedTemplateId ||
                 selectedRecipients.length === 0 ||
                 !selectedCanDeliver

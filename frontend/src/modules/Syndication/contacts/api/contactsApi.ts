@@ -781,11 +781,13 @@ function parseContactDealLastWent(value: unknown): string | null {
 
 export async function fetchContactDeals(
   id: string,
+  options?: { organizationId?: string },
 ): Promise<ContactDealRow[]> {
   const base = getApiV1Base()
   if (!base || !id.trim()) return []
   const params = new URLSearchParams()
-  const oid = organizationIdQueryParam()
+  const oid =
+    options?.organizationId?.trim() || organizationIdQueryParam() || ""
   if (oid) params.set("organizationId", oid)
   const q = params.toString()
   const res = await fetch(
@@ -828,12 +830,16 @@ export async function fetchContactDeals(
     .filter((row): row is ContactDealRow => row != null)
 }
 
-export async function fetchContact(id: string): Promise<ContactRow | null> {
+export async function fetchContact(
+  id: string,
+  options?: { organizationId?: string },
+): Promise<ContactRow | null> {
   const base = getApiV1Base()
   if (!base || !id.trim()) return null
   try {
     const params = new URLSearchParams()
-    const oid = organizationIdQueryParam()
+    const oid =
+      options?.organizationId?.trim() || organizationIdQueryParam() || ""
     if (oid) params.set("organizationId", oid)
     const q = params.toString()
     const res = await fetch(

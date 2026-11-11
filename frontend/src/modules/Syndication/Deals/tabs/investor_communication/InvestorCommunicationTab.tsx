@@ -17,7 +17,7 @@ import { getSessionUserId } from "../../../../../common/auth/sessionUserId"
 import { formatDateDdMmmYyyy } from "../../../../../common/utils/formatDateDisplay"
 import { formatCount } from "@/common/utils/formatCount"
 import { isDisplayableEmail } from "../../../../../common/utils/displayEmail"
-import { DealSendMailModal } from "./DealSendMailModal"
+import { DealSendMailModal, prefetchDealSendMailData } from "./DealSendMailModal"
 import { MailRecipientsModal } from "./MailRecipientsModal"
 import {
   deleteDealInvestorCommunicationMail,
@@ -155,6 +155,11 @@ export function InvestorCommunicationTab({
   const [bulkDeleteBusy, setBulkDeleteBusy] = useState(false)
 
   const getRowId = useCallback((row: InvestorCommunicationMailRow) => row.id, [])
+
+  useEffect(() => {
+    if (!dealId.trim() || viewOnly) return
+    prefetchDealSendMailData(dealId)
+  }, [dealId, viewOnly])
 
   useEffect(() => {
     if (mailData) {

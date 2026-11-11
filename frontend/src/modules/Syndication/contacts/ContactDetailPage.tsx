@@ -16,7 +16,7 @@ import {
   Users,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Link, useNavigate, useParams } from "react-router-dom"
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { RedactedPill } from "../../../common/components/redacted-pill/RedactedPill"
 import {
   displayEmail,
@@ -262,8 +262,14 @@ const CONTACT_DEAL_COLUMNS: DataTableColumn<ContactDealRow>[] = [
 
 function ContactDetailPage() {
   const { contactId = "" } = useParams<{ contactId: string }>()
+  const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const platformAdmin = isPlatformAdmin()
+  const organizationId = (searchParams.get("organizationId") ?? "").trim()
+  const backTo =
+    platformAdmin && organizationId
+      ? `/customers/${encodeURIComponent(organizationId)}/contacts`
+      : "/contacts"
   const [contact, setContact] = useState<ContactRow | null>(null)
   const [loading, setLoading] = useState(true)
   const [mainTab, setMainTab] = useState<MainTab>("activities")
@@ -285,7 +291,10 @@ function ContactDetailPage() {
     }
     setLoading(true)
     try {
-      const row = await fetchContact(id)
+      const row = await fetchContact(
+        id,
+        organizationId ? { organizationId } : undefined,
+      )
       setContact(row ? withPlatformContactTag(row) : row)
       if (!row) toast.error("Not found", "This contact could not be loaded.")
     } catch {
@@ -294,7 +303,7 @@ function ContactDetailPage() {
     } finally {
       setLoading(false)
     }
-  }, [contactId])
+  }, [contactId, organizationId])
 
   useEffect(() => {
     void load()
@@ -307,7 +316,7 @@ function ContactDetailPage() {
     let cancelled = false
     setDealsLoading(true)
     setDealsError("")
-    void fetchContactDeals(id)
+    void fetchContactDeals(id, organizationId ? { organizationId } : undefined)
       .then((rows) => {
         if (!cancelled) setContactDeals(rows)
       })
@@ -323,7 +332,7 @@ function ContactDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [platformAdmin, mainTab, contactId])
+  }, [platformAdmin, mainTab, contactId, organizationId])
 
   const activities = useMemo(
     () => (contact ? buildActivities(contact) : []),
@@ -372,7 +381,7 @@ function ContactDetailPage() {
       <section className="cd_page">
         <div className="cd_empty_state">
           <p>Contact not found.</p>
-          <Link to="/contacts" className="cd_back_link">
+          <Link to={backTo} className="cd_back_link">
             Back to contacts
           </Link>
         </div>
@@ -394,7 +403,7 @@ function ContactDetailPage() {
           <button
             type="button"
             className="cd_back_btn"
-            onClick={() => navigate("/contacts")}
+            onClick={() => navigate(backTo)}
           >
             <ChevronRight
               size={16}
@@ -421,7 +430,7 @@ function ContactDetailPage() {
                   role="menuitem"
                   onClick={() => {
                     setMoreOpen(false)
-                    navigate("/contacts")
+                    navigate(backTo)
                   }}
                 >
                   Back to list

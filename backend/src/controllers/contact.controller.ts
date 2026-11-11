@@ -15,6 +15,7 @@ import {
   getContactForViewer,
   listDealsForContactForViewer,
   getUserDisplayNameById,
+  getUserDisplayNamesByIds,
   insertContact,
   isSelfRegisteredInvestorContactRow,
   type ContactListFilters,
@@ -43,6 +44,7 @@ import { normalizeContactOfferingVisibility } from "../services/contact/contactO
 import { resolveDealViewerScope } from "../services/deal/dealAccess.service.js";
 import {
   deleteContactEmailTemplateForViewer,
+  getContactEmailTemplateForViewer,
   insertContactEmailTemplate,
   listContactEmailTemplatesForViewer,
   updateContactEmailTemplateForViewer,
@@ -341,18 +343,24 @@ function mapContactToJson(row: ContactRow) {
   };
 }
 
-async function mapContactEmailTemplateToJsonWithName(
+function mapContactEmailTemplateToJson(
   row: ContactEmailTemplateRow,
+  createdByDisplayName: string,
+  summary: boolean,
 ) {
-  const createdByDisplayName = (await getUserDisplayNameById(row.createdBy)).trim();
   return {
     id: row.id,
     organizationId: row.organizationId ?? null,
     organization_id: row.organizationId ?? null,
     name: row.name,
     subject: row.subject,
-    body: row.body,
-    attachment: row.attachment ?? null,
+    ...(summary
+      ? { contentLoaded: false as const }
+      : {
+          body: row.body,
+          attachment: row.attachment ?? null,
+          contentLoaded: true as const,
+        }),
     archived: row.archived,
     createdBy: createdByDisplayName || row.createdBy,
     createdByUserId: row.createdBy,
@@ -366,6 +374,13 @@ async function mapContactEmailTemplateToJsonWithName(
         ? row.updatedAt.toISOString()
         : String(row.updatedAt),
   };
+}
+
+async function mapContactEmailTemplateToJsonWithName(
+  row: ContactEmailTemplateRow,
+) {
+  const createdByDisplayName = (await getUserDisplayNameById(row.createdBy)).trim();
+  return mapContactEmailTemplateToJson(row, createdByDisplayName, false);
 }
 
 async function loadOrganizationNamesById(
@@ -2003,13 +2018,24 @@ export async function getContactEmailTemplates(
   }
   try {
     const requestedOrg = requestedOrganizationIdFromRequest(req);
+    const summaryRaw = req.query.summary;
+    const summary =
+      summaryRaw === "1" ||
+      summaryRaw === "true" ||
+      String(summaryRaw ?? "").toLowerCase() === "yes";
     const rows = await listContactEmailTemplatesForViewer(
       user.id,
       user.userRole,
       requestedOrg,
+      { summary },
     );
-    const templates = await Promise.all(
-      rows.map((r) => mapContactEmailTemplateToJsonWithName(r)),
+    const names = await getUserDisplayNamesByIds(rows.map((r) => r.createdBy));
+    const templates = rows.map((r) =>
+      mapContactEmailTemplateToJson(
+        r,
+        (names.get(r.createdBy) ?? "").trim(),
+        summary,
+      ),
     );
     res.status(200).json({
       templates,
@@ -2017,6 +2043,41 @@ export async function getContactEmailTemplates(
   } catch (err) {
     console.error("getContactEmailTemplates:", err);
     res.status(500).json({ message: "Could not load email templates" });
+  }
+}
+
+/** GET /contacts/email-templates/:templateId — body and attachment for one template. */
+export async function getContactEmailTemplate(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const user = await getValidJwtUser(req);
+  if (!user?.id) {
+    res.status(401).json({ message: "Authorization required" });
+    return;
+  }
+  const templateId = paramStr(req.params.templateId);
+  if (!templateId) {
+    res.status(400).json({ message: "Missing template id" });
+    return;
+  }
+  try {
+    const row = await getContactEmailTemplateForViewer({
+      viewerUserId: user.id,
+      viewerRole: user.userRole,
+      requestedOrganizationId: requestedOrganizationIdFromRequest(req),
+      templateId,
+    });
+    if (!row) {
+      res.status(404).json({ message: "Email template not found" });
+      return;
+    }
+    res.status(200).json({
+      template: await mapContactEmailTemplateToJsonWithName(row),
+    });
+  } catch (err) {
+    console.error("getContactEmailTemplate:", err);
+    res.status(500).json({ message: "Could not load email template" });
   }
 }
 

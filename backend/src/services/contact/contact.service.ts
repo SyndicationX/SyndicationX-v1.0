@@ -118,11 +118,43 @@ export async function getUserDisplayNameById(
     .where(eq(users.id, userId))
     .limit(1);
   if (!u) return "";
+  return displayNameFromUser(u);
+}
+
+function displayNameFromUser(u: {
+  email: string | null;
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+}): string {
   const fn = u.firstName?.trim() ?? "";
   const ln = u.lastName?.trim() ?? "";
   const full = [fn, ln].filter(Boolean).join(" ");
   if (full) return full;
   return u.email?.trim() || u.username?.trim() || "";
+}
+
+/** One query for template lists, instead of a lookup per row. */
+export async function getUserDisplayNamesByIds(
+  userIds: readonly string[],
+): Promise<Map<string, string>> {
+  const ids = [...new Set(userIds.map((id) => id.trim()).filter(Boolean))];
+  const names = new Map<string, string>();
+  if (ids.length === 0) return names;
+  const found = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      username: users.username,
+      firstName: users.firstName,
+      lastName: users.lastName,
+    })
+    .from(users)
+    .where(inArray(users.id, ids));
+  for (const row of found) {
+    names.set(row.id, displayNameFromUser(row));
+  }
+  return names;
 }
 
 /** Exporter profile for members export audit emails (user admin). */
@@ -1825,8 +1857,9 @@ function excludeForeignContactShadowedByOrganizationWhere(orgId: string): SQL {
 /**
  * All Contacts list:
  * - **platform_admin**: company CRM for the requested organization (Customers)
- *   or the active workspace. With no company selected the list is empty.
- *   Self-signups are not mixed in; they are served by {@link listPlatformVisibleContacts}.
+ *   or every company when no company is selected. Customers → All Contacts
+ *   has no separate Platform Contacts tab, so that company's self-signups
+ *   are included here. Company staff stay visible to a platform admin.
  * - Users tied to a company: contacts with **`organization_id` = viewer’s org**, plus **legacy**
  *   rows (`organization_id` null) whose `created_by` is anyone in that org.
  * - No company / org: only contacts they created themselves.
@@ -1849,16 +1882,19 @@ async function buildContactsScopeWhere(
   viewerUserId: string,
   viewerRole: string | null | undefined,
   requestedOrganizationId?: string | null,
+  options?: { syncRelatedContacts?: boolean },
 ): Promise<SQL | null> {
   const ctx = await getViewerContactScopeContext(
     viewerUserId,
     viewerRole,
     requestedOrganizationId,
   );
-  await ensureOutsideSponsorsAreOrganizationContacts(
-    ctx.organizationId,
-    viewerUserId,
-  );
+  if (options?.syncRelatedContacts !== false) {
+    await ensureOutsideSponsorsAreOrganizationContacts(
+      ctx.organizationId,
+      viewerUserId,
+    );
+  }
   const sponsorTeamSeesFullCrm = await viewerIsLeadOrAdminSponsorOnAnyDeal(
     viewerUserId,
     ctx.organizationId,
@@ -1911,8 +1947,6 @@ async function buildContactsScopeWhere(
       await syncDealInvestorsIntoAllOrganizationContacts(viewerUserId);
       return and(
         fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm),
-        excludeCompanyStaffFromContactsWhere(null),
-        excludeOutsideCoSponsorContactsWhere(null, referrerIds),
         excludePlatformSignupWhenCompanyCopyExistsWhere(),
       )!;
     }
@@ -1930,16 +1964,25 @@ async function buildContactsScopeWhere(
     const orgScope = legacyMemberContacts
       ? or(eq(contact.organizationId, orgId), legacyMemberContacts)!
       : eq(contact.organizationId, orgId);
+    const platformForOrg = and(
+      await platformContactsForOrganizationWhere(orgId),
+      or(
+        eq(contact.platformAdminOnly, true),
+        eq(contact.visibleToUsers, true),
+      )!,
+      visForList,
+    )!;
     const orgList = and(
       orgScope,
       excludePlatformAdminOnlyContactsWhere(),
       visForList,
-      excludeCompanyStaffFromContactsWhere(orgId),
     )!;
     return and(
-      or(orgList, contactsReferredByOrganizationMembersWhere(orgId))!,
-      excludeCompanyStaffFromContactsWhere(orgId),
-      excludeOutsideCoSponsorContactsWhere(orgId, referrerIds),
+      or(
+        orgList,
+        platformForOrg,
+        contactsReferredByOrganizationMembersWhere(orgId),
+      )!,
       excludeForeignContactShadowedByOrganizationWhere(orgId),
     )!;
   }
@@ -2242,9 +2285,23 @@ export type ContactListFilters = {
   offeringVisibility?: string;
 };
 
+/** Active tab is everyone who is not archived. Archived includes suspended contacts. */
+function contactDirectoryStatusWhere(status: string | undefined): SQL | null {
+  const value = String(status ?? "").trim().toLowerCase();
+  if (!value) return null;
+  if (value === "active") {
+    return sql`lower(trim(coalesce(${contact.status}, 'active'))) not in ('archived', 'suspended')`;
+  }
+  if (value === "archived" || value === "suspended") {
+    return sql`lower(trim(coalesce(${contact.status}, ''))) in ('archived', 'suspended')`;
+  }
+  return eq(contact.status, status!);
+}
+
 function contactListFilterWhere(filters: ContactListFilters): SQL[] {
   const parts: SQL[] = [];
-  if (filters.status) parts.push(eq(contact.status, filters.status));
+  const statusWhere = contactDirectoryStatusWhere(filters.status);
+  if (statusWhere) parts.push(statusWhere);
   if (filters.tag) {
     parts.push(jsonbArrayContainsIgnoreCase(contact.tags, filters.tag));
   }
@@ -2319,8 +2376,9 @@ export async function listContactsPageForViewer(params: {
   if (search) withoutStatus.push(search);
   withoutStatus.push(...contactListFilterWhere({ ...filters, status: undefined }));
 
-  const where = filters.status
-    ? and(...withoutStatus, eq(contact.status, filters.status))!
+  const statusWhere = contactDirectoryStatusWhere(filters.status);
+  const where = statusWhere
+    ? and(...withoutStatus, statusWhere)!
     : and(...withoutStatus)!;
 
   const [rows, counted] = await Promise.all([
@@ -2345,7 +2403,8 @@ export async function listContactsPageForViewer(params: {
   let archivedTotal = 0;
   for (const row of counted) {
     const n = Number(row.n ?? 0);
-    if (String(row.status ?? "").trim().toLowerCase() === "archived") {
+    const status = String(row.status ?? "").trim().toLowerCase();
+    if (status === "archived" || status === "suspended") {
       archivedTotal += n;
     } else {
       activeTotal += n;
@@ -2358,6 +2417,54 @@ export async function listContactsPageForViewer(params: {
       : activeTotal + archivedTotal;
 
   return { rows, total, activeTotal, archivedTotal };
+}
+
+/**
+ * CRM contacts a platform admin sees on Customers → organization → All Contacts.
+ * Same scope as that directory, without the deal-investor sync that runs when
+ * the directory itself is opened.
+ */
+export async function countVisibleCrmContactsByOrganization(params: {
+  viewerUserId: string;
+  viewerRole?: string | null;
+  organizationIds: string[];
+}): Promise<Map<string, number>> {
+  const ids = [
+    ...new Set(
+      params.organizationIds.map((id) => String(id ?? "").trim()).filter(Boolean),
+    ),
+  ];
+  const out = new Map<string, number>();
+  const queue = [...ids];
+
+  async function worker(): Promise<void> {
+    for (;;) {
+      const organizationId = queue.shift();
+      if (!organizationId) return;
+      const where = await buildContactsScopeWhere(
+        params.viewerUserId,
+        params.viewerRole,
+        organizationId,
+        { syncRelatedContacts: false },
+      );
+      if (!where) {
+        out.set(organizationId, 0);
+        continue;
+      }
+      const [row] = await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(contact)
+        .where(where);
+      out.set(organizationId, Number(row?.n ?? 0));
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(4, Math.max(ids.length, 1)) },
+    () => worker(),
+  );
+  await Promise.all(workers);
+  return out;
 }
 
 /**
@@ -3032,8 +3139,8 @@ function fillDealCountMapFromExecute(
 }
 
 /**
- * CRM contacts for All Contacts. Scoped to the viewer's active organization;
- * **platform_admin** sees that company CRM only (self-signups stay on Platform Contacts).
+ * CRM contacts for All Contacts. Scoped to the viewer's active organization.
+ * A platform admin viewing one company also sees that company's self-signups.
  */
 export async function listContactsForViewer(
   viewerUserId: string,

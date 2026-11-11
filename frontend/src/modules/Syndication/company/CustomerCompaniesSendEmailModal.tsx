@@ -11,7 +11,10 @@ import {
 } from "../../../common/features/send-mail"
 import { getApiV1Base } from "../../../common/utils/apiBaseUrl"
 import {
+  ensureEmailTemplateContent,
   loadEmailTemplates,
+  peekActiveEmailTemplateSummaries,
+  prefetchEmailTemplateContent,
   type EmailTemplateRow,
 } from "../contacts/emailTemplatesStorage"
 import {
@@ -83,6 +86,7 @@ export function CustomerCompaniesSendEmailModal({
 }: Props) {
   const navigate = useNavigate()
   const [templates, setTemplates] = useState<EmailTemplateRow[]>([])
+  const [templatesLoading, setTemplatesLoading] = useState(true)
   const [templateId, setTemplateId] = useState("")
   const [cc, setCc] = useState("")
   const [emails, setEmails] = useState<string[]>([])
@@ -126,17 +130,30 @@ export function CustomerCompaniesSendEmailModal({
     void (async () => {
       setLoadingEmails(true)
       setLoadError("")
-      try {
-        const [rows, recipients] = await Promise.all([
-          loadEmailTemplates(),
-          loadMemberEmails(companies),
-        ])
+      const cached = peekActiveEmailTemplateSummaries()
+      if (cached) {
+        setTemplates(cached)
+        setTemplateId((prev) =>
+          prev && cached.some((row) => row.id === prev) ? prev : (cached[0]?.id ?? ""),
+        )
+        prefetchEmailTemplateContent(cached[0])
+        setTemplatesLoading(false)
+      } else {
+        setTemplatesLoading(true)
+      }
+      void loadEmailTemplates({ summary: true }).then((rows) => {
         if (cancelled) return
         const active = rows.filter((row) => !row.archived)
         setTemplates(active)
         setTemplateId((prev) =>
           prev && active.some((row) => row.id === prev) ? prev : (active[0]?.id ?? ""),
         )
+        prefetchEmailTemplateContent(active[0])
+        setTemplatesLoading(false)
+      })
+      try {
+        const recipients = await loadMemberEmails(companies)
+        if (cancelled) return
         setEmails(recipients)
       } catch (err) {
         if (!cancelled) {
@@ -160,18 +177,24 @@ export function CustomerCompaniesSendEmailModal({
       toast.error("No email recipients", "These companies have no members with an email.")
       return
     }
-    setPreview({
-      templateId: template.id,
-      templateName: template.name,
-      templateArchived: Boolean(template.archived),
-      createdBy: template.createdBy,
-      createdAt: template.createdAt,
-      subject: template.subject,
-      bodyHtml: template.body,
-      toEmails: emails,
-      ccEmails: parseEmailInput(cc),
-      attachment: template.attachment,
-      startInEditMode: mode === "edit",
+    void ensureEmailTemplateContent(template).then((full) => {
+      if (!full) {
+        toast.error("Could not load template", "Try again.")
+        return
+      }
+      setPreview({
+        templateId: full.id,
+        templateName: full.name,
+        templateArchived: Boolean(full.archived),
+        createdBy: full.createdBy,
+        createdAt: full.createdAt,
+        subject: full.subject,
+        bodyHtml: full.body,
+        toEmails: emails,
+        ccEmails: parseEmailInput(cc),
+        attachment: full.attachment,
+        startInEditMode: mode === "edit",
+      })
     })
   }
 
@@ -182,12 +205,17 @@ export function CustomerCompaniesSendEmailModal({
     }
     setSending(true)
     try {
+      const full = await ensureEmailTemplateContent(template)
+      if (!full) {
+        toast.error("Could not load template", "Try again.")
+        return
+      }
       const result = await openSendMailDraft({
         to: emails,
         ccRaw: cc,
-        templateSubject: template.subject,
-        templateBodyHtml: template.body,
-        templateAttachment: template.attachment,
+        templateSubject: full.subject,
+        templateBodyHtml: full.body,
+        templateAttachment: full.attachment,
         senderEmail,
       })
       if (!result.ok) {
@@ -290,10 +318,12 @@ export function CustomerCompaniesSendEmailModal({
               className="um_field_select contacts_send_mail_template_select"
               value={templateId}
               onChange={(e) => setTemplateId(e.target.value)}
-              disabled={sending || loadingEmails}
+              disabled={sending || templatesLoading}
             >
               {templates.length === 0 ? (
-                <option value="">No active templates</option>
+                <option value="">
+                  {templatesLoading ? "Loading templates…" : "No active templates"}
+                </option>
               ) : null}
               {templates.map((row) => (
                 <option key={row.id} value={row.id}>
@@ -428,7 +458,7 @@ export function CustomerCompaniesSendEmailModal({
           setPreview((current) =>
             current ? { ...current, ...patch, startInEditMode: false } : null,
           )
-          void loadEmailTemplates().then((rows) => {
+          void loadEmailTemplates({ summary: true }).then((rows) => {
             setTemplates(rows.filter((row) => !row.archived))
           })
         }}

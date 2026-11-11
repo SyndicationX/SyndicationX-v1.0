@@ -18,6 +18,11 @@ export {
   recordInvestorBankAccountAudit,
 } from "./investorBankAccountRecords.service.js";
 export {
+  getDistributionInvestmentBankAccountDetails,
   listDistributionBankAccountSetup,
+  type DistributionBankAccountDetail,
+  type DistributionBankAccountDetails,
   type DistributionBankAccountSetupLine,
 } from "./distributionBankAccountSetup.service.js";
+export { viewerMayViewInvestorBankAccountDetails } from "./bankAccountDetailsAccess.service.js";
+export { sendBankAccountSetupRequestEmail } from "./bankAccountSetupRequestEmail.service.js";

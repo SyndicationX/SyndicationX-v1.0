@@ -100,20 +100,25 @@ export function DistributionClassesPanel({
   const [bankAccountSetup, setBankAccountSetup] = useState<
     DistributionBankAccountSetupLine[]
   >([])
+  const [canViewBankAccountDetails, setCanViewBankAccountDetails] =
+    useState(false)
 
   const loadPayouts = useCallback(async () => {
     if (!dealId || !distribution.id) {
       setPayouts([])
       setBankAccountSetup([])
+      setCanViewBankAccountDetails(false)
       return
     }
     try {
       const list = await fetchDistributionPayouts(dealId, distribution.id)
       setPayouts(list.payouts)
       setBankAccountSetup(list.bankAccountSetup)
+      setCanViewBankAccountDetails(list.canViewBankAccountDetails)
     } catch {
       setPayouts([])
       setBankAccountSetup([])
+      setCanViewBankAccountDetails(false)
     }
   }, [dealId, distribution.id])
 
@@ -368,6 +373,7 @@ export function DistributionClassesPanel({
               fundingReady={fundingReady}
               payouts={payouts}
               bankAccountSetup={bankAccountSetup}
+              canViewBankAccountDetails={canViewBankAccountDetails}
               onPayoutsChange={setPayouts}
               onBankAccountSetupChange={setBankAccountSetup}
               onSaved={onSaved}

@@ -31,6 +31,10 @@ import {
   sanitizePercentTypingInput,
 } from "../../utils/offeringMoneyFormat"
 import { AchPayoutConfirmModal } from "./AchPayoutConfirmModal"
+import {
+  BankAccountSetupDetailsModal,
+  type BankAccountSetupDetailsTarget,
+} from "./BankAccountSetupDetailsModal"
 import type { DistributionClassInvestorRow } from "./utils/distributionListDisplay"
 import "./distribution-details.css"
 
@@ -42,6 +46,7 @@ type DistributionClassInvestorsPanelProps = {
   fundingReady: boolean
   payouts: DistributionPayout[]
   bankAccountSetup: DistributionBankAccountSetupLine[]
+  canViewBankAccountDetails: boolean
   onPayoutsChange: (payouts: DistributionPayout[]) => void
   onBankAccountSetupChange: (lines: DistributionBankAccountSetupLine[]) => void
   onSaved: (
@@ -140,12 +145,19 @@ export function DistributionClassInvestorsPanel({
   fundingReady,
   payouts,
   bankAccountSetup,
+  canViewBankAccountDetails,
   onPayoutsChange,
   onBankAccountSetupChange,
   onSaved,
   onReload,
 }: DistributionClassInvestorsPanelProps) {
   const [query, setQuery] = useState("")
+  const [bankSetupDetailsTarget, setBankSetupDetailsTarget] =
+    useState<BankAccountSetupDetailsTarget | null>(null)
+  const closeBankSetupDetails = useCallback(
+    () => setBankSetupDetailsTarget(null),
+    [],
+  )
   const [pctDrafts, setPctDrafts] = useState<Record<string, string>>({})
   const [dealPctDrafts, setDealPctDrafts] = useState<Record<string, string>>(
     {},
@@ -691,6 +703,16 @@ export function DistributionClassInvestorsPanel({
               bankSetupByInvestmentId.get(row.id.trim().toLowerCase()) ??
               "not_set_up"
             }
+            onClick={
+              canViewBankAccountDetails
+                ? () =>
+                    setBankSetupDetailsTarget({
+                      investmentId: row.id,
+                      investorName: row.name,
+                    })
+                : undefined
+            }
+            ariaLabel={`View bank account setup for ${row.name}`}
           />
         ),
       },
@@ -787,6 +809,7 @@ export function DistributionClassInvestorsPanel({
       fundingReady,
       payoutByInvestmentId,
       bankSetupByInvestmentId,
+      canViewBankAccountDetails,
       canSendInvestorPayout,
       isInvestorPayoutLocked,
       requestSendInvestorAchPayout,
@@ -850,6 +873,12 @@ export function DistributionClassInvestorsPanel({
         initialSort={{ columnId: "payment", direction: "desc" }}
         stickyFirstColumn={false}
         forceHorizontalScroll
+      />
+      <BankAccountSetupDetailsModal
+        dealId={dealId}
+        distributionId={distributionId}
+        target={bankSetupDetailsTarget}
+        onClose={closeBankSetupDetails}
       />
       <AchPayoutConfirmModal
         open={achConfirm != null}

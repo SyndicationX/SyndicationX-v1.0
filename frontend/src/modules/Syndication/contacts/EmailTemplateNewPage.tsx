@@ -303,7 +303,10 @@ export default function EmailTemplateNewPage() {
             attachment,
           })
           if (!ok) {
-            toast.error("Could not save", "Template was not found.")
+            toast.error(
+              "Could not update template",
+              "Template was not found. It may have been removed.",
+            )
             return
           }
           toast.success("Template updated", trimmedName)
@@ -336,6 +339,13 @@ export default function EmailTemplateNewPage() {
           toast.success("Template saved", trimmedName)
         }
         navigate("/contacts/email-templates")
+      } catch (err) {
+        toast.error(
+          isEdit ? "Could not update template" : "Could not save template",
+          err instanceof Error && err.message.trim()
+            ? err.message
+            : "Please try again.",
+        )
       } finally {
         setSubmitting(false)
       }

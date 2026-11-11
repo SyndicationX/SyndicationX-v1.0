@@ -37,7 +37,7 @@ import {
   useState,
   type FormEvent,
 } from "react"
-import { useNavigate, useSearchParams } from "react-router-dom"
+import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom"
 import {
   DataTable,
   type DataTableColumn,
@@ -108,7 +108,10 @@ import {
 import { ExportContactsModal } from "./components/ExportContactsModal"
 import { ViewContactModal } from "./components/ViewContactModal"
 import {
+  ensureEmailTemplateContent,
   loadEmailTemplates,
+  peekActiveEmailTemplateSummaries,
+  prefetchEmailTemplateContent,
   type EmailTemplateRow,
 } from "./emailTemplatesStorage"
 import "../Deals/deals-list.css"
@@ -387,7 +390,6 @@ function accreditationBadge(status: string | null | undefined) {
   )
 }
 
-/* Used by hidden Contact tags and Owners columns (restore with those columns).
 function TagsCell({ items }: { items: string[] }) {
   if (!items.length)
     return <span className="um_status_muted">—</span>
@@ -401,7 +403,6 @@ function TagsCell({ items }: { items: string[] }) {
     </div>
   )
 }
-*/
 
 export type ContactsPageProps = {
   /** Customers → company: CRM directory for this organization only. */
@@ -451,6 +452,7 @@ function ContactsPage({
     "active" | "archived" | "platform"
   >("active")
   const [sendMailModalOpen, setSendMailModalOpen] = useState(false)
+  const [sendMailTemplatesLoading, setSendMailTemplatesLoading] = useState(false)
   const [emailTemplates, setEmailTemplates] = useState<EmailTemplateRow[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState("")
   const [sendMailCc, setSendMailCc] = useState("")
@@ -622,6 +624,14 @@ function ContactsPage({
 
   /** All Contacts is the organization CRM. Platform contacts stay on their tab. */
   const directoryRows = rows
+  const companyOutlet = useOutletContext<{
+    reportContactDirectoryCount?: (count: number) => void
+  } | null>()
+
+  useEffect(() => {
+    if (!embedded || loading) return
+    companyOutlet?.reportContactDirectoryCount?.(directoryRows.length)
+  }, [embedded, loading, directoryRows.length, companyOutlet])
 
   const contactsLoading = loading
 
@@ -1123,17 +1133,30 @@ function ContactsPage({
   )
 
   const openSendMailModal = useCallback(() => {
-    void (async () => {
-      const templates = (await loadEmailTemplates()).filter((t) => !t.archived)
+    const cached = peekActiveEmailTemplateSummaries()
+    if (cached) {
+      setEmailTemplates(cached)
+      setSelectedTemplateId((prev) =>
+        prev && cached.some((t) => t.id === prev) ? prev : (cached[0]?.id ?? ""),
+      )
+      prefetchEmailTemplateContent(cached[0])
+      setSendMailTemplatesLoading(false)
+    } else {
+      setSendMailTemplatesLoading(true)
+    }
+    setSendMailCc("")
+    setSendMailModalOpen(true)
+    void loadEmailTemplates({ summary: true }).then((rows) => {
+      const templates = rows.filter((t) => !t.archived)
       setEmailTemplates(templates)
       setSelectedTemplateId((prev) =>
         prev && templates.some((t) => t.id === prev)
           ? prev
           : (templates[0]?.id ?? ""),
       )
-      setSendMailCc("")
-      setSendMailModalOpen(true)
-    })()
+      prefetchEmailTemplateContent(templates[0])
+      setSendMailTemplatesLoading(false)
+    })
   }, [])
 
   const closeSendMailModal = useCallback(() => {
@@ -1163,18 +1186,24 @@ function ContactsPage({
         toast.error("No email recipients", "Selected contacts have no valid email.")
         return
       }
-      setSendMailEmailPreview({
-        templateId: template.id,
-        templateName: template.name,
-        templateArchived: Boolean(template.archived),
-        createdBy: template.createdBy,
-        createdAt: template.createdAt,
-        subject: template.subject,
-        bodyHtml: template.body,
-        toEmails: emails,
-        ccEmails: parseEmailInput(sendMailCc),
-        attachment: template.attachment,
-        startInEditMode: mode === "edit",
+      void ensureEmailTemplateContent(template).then((full) => {
+        if (!full) {
+          toast.error("Could not load template", "Try again.")
+          return
+        }
+        setSendMailEmailPreview({
+          templateId: full.id,
+          templateName: full.name,
+          templateArchived: Boolean(full.archived),
+          createdBy: full.createdBy,
+          createdAt: full.createdAt,
+          subject: full.subject,
+          bodyHtml: full.body,
+          toEmails: emails,
+          ccEmails: parseEmailInput(sendMailCc),
+          attachment: full.attachment,
+          startInEditMode: mode === "edit",
+        })
       })
     },
     [emailTemplates, selectedContacts, selectedTemplateId, sendMailCc],
@@ -1185,7 +1214,7 @@ function ContactsPage({
       setSendMailEmailPreview((p) =>
         p ? { ...p, ...patch, startInEditMode: false } : null,
       )
-      void loadEmailTemplates().then((rows) => {
+      void loadEmailTemplates({ summary: true }).then((rows) => {
         setEmailTemplates(rows.filter((t) => !t.archived))
       })
     },
@@ -1209,12 +1238,17 @@ function ContactsPage({
       toast.error("Template required", "Choose an email template first.")
       return
     }
+    const full = await ensureEmailTemplateContent(template)
+    if (!full) {
+      toast.error("Could not load template", "Try again.")
+      return
+    }
     const result = await openSendMailDraft({
       to: emails,
       ccRaw: sendMailCc,
-      templateSubject: template.subject,
-      templateBodyHtml: template.body,
-      templateAttachment: template.attachment,
+      templateSubject: full.subject,
+      templateBodyHtml: full.body,
+      templateAttachment: full.attachment,
       senderEmail,
     })
     if (!result.ok) {
@@ -1297,8 +1331,15 @@ function ContactsPage({
   }, [directoryRows, viewContactId])
 
   const openViewPanel = useCallback((row: ContactRow) => {
-    navigate(`/contacts/${encodeURIComponent(row.id)}`)
-  }, [navigate])
+    const id = encodeURIComponent(row.id)
+    const org = scopedOrganizationId.trim()
+    if (!org) {
+      navigate(`/contacts/${id}`)
+      return
+    }
+    const params = new URLSearchParams({ organizationId: org })
+    navigate(`/contacts/${id}?${params.toString()}`)
+  }, [navigate, scopedOrganizationId])
 
   const requestShowOfferingsChange = useCallback(
     (row: ContactRow, value: ContactOfferingVisibility | "") => {
@@ -2192,7 +2233,7 @@ function ContactsPage({
                     className="um_user_meta_username contacts_user_name_link"
                     onClick={(e) => {
                       e.stopPropagation()
-                      navigate(`/contacts/${encodeURIComponent(row.id)}`)
+                      openViewPanel(row)
                     }}
                   >
                     {primary}
@@ -2397,26 +2438,40 @@ function ContactsPage({
         cell: (row) => <TagsCell items={row.owners} />,
       },
       */
-      {
-        id: "organization",
-        header: "Organization/Owners",
-        sortValue: (row) =>
-          (row.organizations ?? [])
-            .map((company) => company.companyName)
-            .filter(Boolean)
-            .join(" ") ||
-          row.organizationName ||
-          row.addedByCompanyName ||
-          "",
-        thClassName: "contacts_th_organization",
-        tdClassName: "contacts_td_organization",
-        cell: (row) =>
-          dealStatsReadyIds.has(row.id) ? (
-            <ContactOrganizationsCell row={row} />
-          ) : (
-            <span className="um_status_muted">…</span>
-          ),
-      },
+      platformAdminCompanyFilter
+        ? {
+            id: "organization",
+            header: "Organization/Owners",
+            sortValue: (row) =>
+              (row.organizations ?? [])
+                .map((company) => company.companyName)
+                .filter(Boolean)
+                .join(" ") ||
+              row.organizationName ||
+              row.addedByCompanyName ||
+              "",
+            thClassName: "contacts_th_organization",
+            tdClassName: "contacts_td_organization",
+            cell: (row) =>
+              dealStatsReadyIds.has(row.id) ? (
+                <ContactOrganizationsCell row={row} />
+              ) : (
+                <span className="um_status_muted">…</span>
+              ),
+          }
+        : {
+            id: "owners",
+            header: "Owners",
+            sortValue: (row) => row.owners.join(" "),
+            thClassName: "contacts_th_organization",
+            tdClassName: "contacts_td_organization",
+            cell: (row) =>
+              dealStatsReadyIds.has(row.id) ? (
+                <TagsCell items={row.owners} />
+              ) : (
+                <span className="um_status_muted">…</span>
+              ),
+          },
       /* Hidden: Invited by column (restore by uncommenting)
       {
         id: "invitedBy",
@@ -2508,6 +2563,7 @@ function ContactsPage({
     [
       dealCountById,
       dealStatsReadyIds,
+      platformAdminCompanyFilter,
       allContactsInFilterSelected,
       contactsListTab,
       exportContactRow,
@@ -3643,7 +3699,11 @@ function ContactsPage({
                   onChange={(e) => setSelectedTemplateId(e.target.value)}
                 >
                   {emailTemplates.length === 0 ? (
-                    <option value="">No active templates</option>
+                    <option value="">
+                      {sendMailTemplatesLoading
+                        ? "Loading templates…"
+                        : "No active templates"}
+                    </option>
                   ) : null}
                   {emailTemplates.map((tpl) => (
                     <option key={tpl.id} value={tpl.id}>

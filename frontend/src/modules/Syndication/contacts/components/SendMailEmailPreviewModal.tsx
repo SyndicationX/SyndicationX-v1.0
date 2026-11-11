@@ -199,7 +199,14 @@ export function SendMailEmailPreviewModal({
 
     setSaveBusy(true)
     try {
-      await updateEmailTemplate(row)
+      const ok = await updateEmailTemplate(row)
+      if (!ok) {
+        toast.error(
+          "Save failed",
+          "Template was not found. It may have been removed.",
+        )
+        return
+      }
       toast.success("Template saved", "Your changes were stored.")
       onSaved?.({ subject: trimmedSubject, bodyHtml })
       setEditing(false)

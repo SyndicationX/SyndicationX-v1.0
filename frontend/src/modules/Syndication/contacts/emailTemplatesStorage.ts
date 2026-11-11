@@ -34,6 +34,11 @@ export type EmailTemplateRow = {
   archived?: boolean
   createdBy: string
   createdAt: string
+  /**
+   * False when the row is a dropdown summary (no body, no attachment bytes).
+   * Omitted or true means the body is already loaded.
+   */
+  contentLoaded?: boolean
 }
 
 function coerceRow(raw: Record<string, unknown>): EmailTemplateRow | null {
@@ -64,6 +69,7 @@ function coerceRow(raw: Record<string, unknown>): EmailTemplateRow | null {
     typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString()
   const archived =
     typeof raw.archived === "boolean" ? raw.archived : false
+  const contentLoaded = raw.contentLoaded !== false
   return {
     id,
     name,
@@ -73,7 +79,23 @@ function coerceRow(raw: Record<string, unknown>): EmailTemplateRow | null {
     archived,
     createdBy,
     createdAt,
+    contentLoaded,
   }
+}
+
+const EMAIL_TEMPLATE_SUMMARY_TTL_MS = 60_000
+let summaryCache: { at: number; rows: EmailTemplateRow[] } | null = null
+const detailCache = new Map<string, EmailTemplateRow>()
+
+function invalidateEmailTemplateCache(): void {
+  summaryCache = null
+  detailCache.clear()
+}
+
+export function peekActiveEmailTemplateSummaries(): EmailTemplateRow[] | null {
+  if (!summaryCache) return null
+  if (Date.now() - summaryCache.at > EMAIL_TEMPLATE_SUMMARY_TTL_MS) return null
+  return summaryCache.rows.filter((row) => !row.archived)
 }
 
 function authHeaders(): HeadersInit {
@@ -84,11 +106,23 @@ function normalizeEmailTemplateRow(raw: Record<string, unknown>): EmailTemplateR
   return coerceRow(raw)
 }
 
-export async function loadEmailTemplates(): Promise<EmailTemplateRow[]> {
+export async function loadEmailTemplates(options?: {
+  /** Names and subjects only. Body and attachments load on preview or send. */
+  summary?: boolean
+}): Promise<EmailTemplateRow[]> {
+  const summary = options?.summary === true
+  if (
+    summary &&
+    summaryCache &&
+    Date.now() - summaryCache.at < EMAIL_TEMPLATE_SUMMARY_TTL_MS
+  ) {
+    return summaryCache.rows
+  }
   const base = getApiV1Base()
   if (!base) return []
   try {
-    const res = await fetch(`${base}/contacts/email-templates`, {
+    const qs = summary ? "?summary=1" : ""
+    const res = await fetch(`${base}/contacts/email-templates${qs}`, {
       headers: { ...authHeaders() },
       credentials: "include",
       /** After create/edit, always read the latest templates from API. */
@@ -104,13 +138,54 @@ export async function loadEmailTemplates(): Promise<EmailTemplateRow[]> {
         if (row) out.push(row)
       }
     }
+    if (summary) summaryCache = { at: Date.now(), rows: out }
     return out
   } catch {
     return []
   }
 }
 
+/** Body and attachment for one template. Summaries stay in the dropdown cache. */
+export async function ensureEmailTemplateContent(
+  row: EmailTemplateRow,
+): Promise<EmailTemplateRow | null> {
+  if (row.contentLoaded !== false) return row
+  const cached = detailCache.get(row.id)
+  if (cached) return cached
+  const base = getApiV1Base()
+  if (!base) return null
+  try {
+    const res = await fetch(
+      `${base}/contacts/email-templates/${encodeURIComponent(row.id)}`,
+      {
+        headers: { ...authHeaders() },
+        credentials: "include",
+        cache: "no-store",
+      },
+    )
+    if (!res.ok) return null
+    const data = (await res.json().catch(() => ({}))) as { template?: unknown }
+    const template = data.template
+    if (!template || typeof template !== "object") return null
+    const full = normalizeEmailTemplateRow(template as Record<string, unknown>)
+    if (!full) return null
+    const loaded = { ...full, contentLoaded: true as const }
+    detailCache.set(row.id, loaded)
+    return loaded
+  } catch {
+    return null
+  }
+}
+
+export function prefetchEmailTemplateContent(
+  row: EmailTemplateRow | null | undefined,
+): void {
+  if (!row || row.contentLoaded !== false) return
+  void ensureEmailTemplateContent(row)
+}
+
 export async function appendEmailTemplate(row: EmailTemplateRow): Promise<void> {
+  invalidateEmailTemplateCache()
   const base = getApiV1Base()
   if (!base) throw new Error("API is not configured (VITE_BASE_URL).")
   const res = await fetch(`${base}/contacts/email-templates`, {
@@ -140,12 +215,22 @@ export async function appendEmailTemplate(row: EmailTemplateRow): Promise<void> 
 }
 
 export async function getEmailTemplateById(id: string): Promise<EmailTemplateRow | undefined> {
-  const rows = await loadEmailTemplates()
-  return rows.find((r) => r.id === id)
+  const row = await ensureEmailTemplateContent({
+    id,
+    name: "",
+    subject: "",
+    body: "",
+    attachment: null,
+    createdBy: "",
+    createdAt: "",
+    contentLoaded: false,
+  })
+  return row ?? undefined
 }
 
 /** Replaces the row with the same `id` if it exists. */
 export async function updateEmailTemplate(row: EmailTemplateRow): Promise<boolean> {
+  invalidateEmailTemplateCache()
   const base = getApiV1Base()
   if (!base) throw new Error("API is not configured (VITE_BASE_URL).")
   const res = await fetch(
@@ -180,6 +265,7 @@ export async function updateEmailTemplate(row: EmailTemplateRow): Promise<boolea
 }
 
 export async function deleteEmailTemplate(id: string): Promise<boolean> {
+  invalidateEmailTemplateCache()
   const base = getApiV1Base()
   if (!base || !id.trim()) return false
   try {

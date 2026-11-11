@@ -48,6 +48,8 @@ function coalesceCompanyCount(
 export type CustomerCompanyOutletContext = {
   companyDisplayName: string;
   companyId: string;
+  /** All Contacts directory length, so the tab matches the list on screen. */
+  reportContactDirectoryCount?: (count: number) => void;
 };
 
 export default function CustomerCompanyLayout() {
@@ -136,9 +138,15 @@ export default function CustomerCompanyLayout() {
   const companyDisplayName = companyName.trim() || "Company";
   const base = `/customers/${encodeURIComponent(idTrim)}`;
 
+  const reportContactDirectoryCount = useCallback((count: number) => {
+    if (!Number.isFinite(count) || count < 0) return;
+    setContactCount((current) => (current === count ? current : count));
+  }, []);
+
   const outletContext: CustomerCompanyOutletContext = {
     companyDisplayName,
     companyId: idTrim,
+    reportContactDirectoryCount,
   };
 
   return (

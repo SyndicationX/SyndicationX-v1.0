@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, type SQL } from "drizzle-orm";
 import { isPlatformAdminRole } from "../../constants/roles.js";
 import { db } from "../../database/db.js";
 import { users } from "../../schema/auth.schema/signin.js";
@@ -74,29 +74,56 @@ function buildOrgScopeWhere(orgId: string, viewerUserId: string) {
   )!;
 }
 
+const templateSummaryColumns = {
+  id: contactEmailTemplate.id,
+  organizationId: contactEmailTemplate.organizationId,
+  name: contactEmailTemplate.name,
+  subject: contactEmailTemplate.subject,
+  archived: contactEmailTemplate.archived,
+  createdBy: contactEmailTemplate.createdBy,
+  createdAt: contactEmailTemplate.createdAt,
+  updatedAt: contactEmailTemplate.updatedAt,
+};
+
+/**
+ * `summary` skips body HTML and attachment bytes. The send-mail dropdown only
+ * needs names until the user previews or sends one template.
+ */
+async function listTemplates(
+  where: SQL | undefined,
+  summary: boolean,
+): Promise<ContactEmailTemplateRow[]> {
+  if (summary) {
+    const base = db
+      .select(templateSummaryColumns)
+      .from(contactEmailTemplate);
+    const filtered = where ? base.where(where) : base;
+    const rows = await filtered.orderBy(desc(contactEmailTemplate.createdAt));
+    return rows.map((row) => ({ ...row, body: "", attachment: null }));
+  }
+  const base = db.select().from(contactEmailTemplate);
+  const filtered = where ? base.where(where) : base;
+  return filtered.orderBy(desc(contactEmailTemplate.createdAt));
+}
+
 export async function listContactEmailTemplatesForViewer(
   viewerUserId: string,
   viewerRole?: string | null,
   requestedOrganizationId?: string | null,
+  options?: { summary?: boolean },
 ): Promise<ContactEmailTemplateRow[]> {
+  const summary = options?.summary === true;
   const ctx = await getViewerScopeContext(
     viewerUserId,
     viewerRole,
     requestedOrganizationId,
   );
   if (isPlatformAdminRole(ctx.roleForScope)) {
-    return db
-      .select()
-      .from(contactEmailTemplate)
-      .orderBy(desc(contactEmailTemplate.createdAt));
+    return listTemplates(undefined, summary);
   }
 
   if (!ctx.organizationId) {
-    return db
-      .select()
-      .from(contactEmailTemplate)
-      .where(eq(contactEmailTemplate.createdBy, viewerUserId))
-      .orderBy(desc(contactEmailTemplate.createdAt));
+    return listTemplates(eq(contactEmailTemplate.createdBy, viewerUserId), summary);
   }
 
   const orgIds = await userIdsInOrganization(ctx.organizationId);
@@ -111,11 +138,25 @@ export async function listContactEmailTemplatesForViewer(
     ? or(buildOrgScopeWhere(ctx.organizationId, viewerUserId), legacyOrgScope)!
     : buildOrgScopeWhere(ctx.organizationId, viewerUserId);
 
-  return db
-    .select()
-    .from(contactEmailTemplate)
-    .where(scope)
-    .orderBy(desc(contactEmailTemplate.createdAt));
+  return listTemplates(scope, summary);
+}
+
+export async function getContactEmailTemplateForViewer(params: {
+  viewerUserId: string;
+  viewerRole?: string | null;
+  requestedOrganizationId?: string | null;
+  templateId: string;
+}): Promise<ContactEmailTemplateRow | null> {
+  const existing = await getContactEmailTemplateById(params.templateId);
+  if (!existing) return null;
+  const canAccess = await viewerCanAccessTemplate(
+    params.viewerUserId,
+    params.viewerRole,
+    existing,
+    params.requestedOrganizationId,
+  );
+  if (!canAccess) return null;
+  return existing;
 }
 
 async function getContactEmailTemplateById(

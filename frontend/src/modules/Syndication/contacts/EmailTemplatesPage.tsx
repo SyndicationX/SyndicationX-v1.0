@@ -71,6 +71,7 @@ type TemplatesListTab = "active" | "archived"
 function EmailTemplatesTemplatesTabContent() {
   const navigate = useNavigate()
   const [rows, setRows] = useState<EmailTemplateRow[]>([])
+  const [loading, setLoading] = useState(true)
   const [templatesListTab, setTemplatesListTab] =
     useState<TemplatesListTab>("active")
   const [searchQuery, setSearchQuery] = useState("")
@@ -132,6 +133,7 @@ function EmailTemplatesTemplatesTabContent() {
   }, [rowsForStatusTab, searchQuery])
 
   const templatesEmptyLabel = useMemo(() => {
+    if (loading) return "Loading email templates…"
     if (rows.length === 0)
       return "No templates yet. Click New Template to create one."
     if (filteredRows.length === 0) {
@@ -145,6 +147,7 @@ function EmailTemplatesTemplatesTabContent() {
     return "No templates match your search."
   }, [
     filteredRows.length,
+    loading,
     rows.length,
     rowsForStatusTab.length,
     templatesListTab,
@@ -172,9 +175,19 @@ function EmailTemplatesTemplatesTabContent() {
   }, [templatesListTab, clearSelection])
 
   useEffect(() => {
+    let cancelled = false
     void (async () => {
-      setRows(await loadEmailTemplates())
+      setLoading(true)
+      try {
+        const templates = await loadEmailTemplates()
+        if (!cancelled) setRows(templates)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     })()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const confirmBulkDelete = useCallback(
@@ -215,10 +228,19 @@ function EmailTemplatesTemplatesTabContent() {
 
   const toggleTemplateArchive = useCallback(async (row: EmailTemplateRow) => {
     const nextArchived = !row.archived
-    const ok = await updateEmailTemplate({
-      ...row,
-      archived: nextArchived,
-    })
+    let ok: boolean
+    try {
+      ok = await updateEmailTemplate({
+        ...row,
+        archived: nextArchived,
+      })
+    } catch (err) {
+      toast.error(
+        nextArchived ? "Could not archive template" : "Could not restore template",
+        err instanceof Error && err.message.trim() ? err.message : "Please try again.",
+      )
+      return
+    }
     if (!ok) {
       toast.error("Could not update template", "Template was not found.")
       return
@@ -240,7 +262,7 @@ function EmailTemplatesTemplatesTabContent() {
     try {
       const results = await Promise.all(
         toArchive.map((row) =>
-          updateEmailTemplate({ ...row, archived: true }),
+          updateEmailTemplate({ ...row, archived: true }).catch(() => false),
         ),
       )
       const succeededIds = new Set(
@@ -305,6 +327,16 @@ function EmailTemplatesTemplatesTabContent() {
             aria-label={`Select template ${row.name}`}
           />
         ),
+      },
+      {
+        id: "serial",
+        header: "S.No",
+        align: "center",
+        colWidth: "3.5rem",
+        thClassName: "um_th_serial",
+        tdClassName: "um_td_serial",
+        cell: (_row, rowIndex = 0) =>
+          (page - 1) * pageSize + rowIndex + 1,
       },
       {
         id: "name",
@@ -374,6 +406,8 @@ function EmailTemplatesTemplatesTabContent() {
     allSelected,
     filteredRows.length,
     goEditTemplate,
+    page,
+    pageSize,
     selectAllRef,
     selectedIds,
     toggleSelect,
@@ -486,14 +520,15 @@ function EmailTemplatesTemplatesTabContent() {
             </div>
             <DataTable<EmailTemplateRow>
               columns={columns}
-              rows={filteredRows}
+              rows={loading ? [] : filteredRows}
+              isLoading={loading}
               getRowKey={(r) => r.id}
               emptyLabel={templatesEmptyLabel}
               visualVariant="members"
               stickyFirstColumn
-              initialSort={{ columnId: "name", direction: "asc" }}
+              initialSort={{ columnId: "createdAt", direction: "desc" }}
               pagination={
-                filteredRows.length > 0
+                !loading && filteredRows.length > 0
                   ? {
                       page,
                       pageSize,

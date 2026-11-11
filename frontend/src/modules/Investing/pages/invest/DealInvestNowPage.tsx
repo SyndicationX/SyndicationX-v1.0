@@ -1520,6 +1520,12 @@ export function DealInvestNowPage() {
         }))
       }
       setEsignDocuments(mappedRows)
+      const currentRequestRows = fallbackSigId
+        ? mappedRows.filter((row) => row.signatureRequestId?.trim() === fallbackSigId)
+        : mappedRows
+      const currentRequestSigned =
+        currentRequestRows.length > 0 &&
+        currentRequestRows.every((row) => row.status === "signed")
       const profileCompleted =
         docs.esignCompleted ||
         (profileDocs.length > 0 && profileDocs.every((d) => d.status === "signed"))
@@ -1531,13 +1537,14 @@ export function DealInvestNowPage() {
                 (sendRes.alreadySent || Boolean(profileSignatureRequestId)),
             )
       const completed =
+        currentRequestSigned ||
         profileCompleted ||
         Boolean(
           sendRes.alreadyCompleted &&
             profileDocs.length > 0 &&
             profileDocs.every((d) => d.status === "signed"),
         )
-      setEsignPending(profilePending)
+      setEsignPending(completed ? false : profilePending)
       setEsignCompleted(completed)
       setEsignWorkflowLabel(investNowWorkflowLabelForProfileDocs(profileDocs))
       if (trackedInvestmentId) {

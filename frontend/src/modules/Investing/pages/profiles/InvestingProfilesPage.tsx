@@ -229,7 +229,11 @@ export default function InvestingProfilesPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const hideAddProfileDraftRow = location.pathname === "/investing/profiles/add"
-  const [activeTab, setActiveTab] = useState<ProfilesTab>("my-profiles")
+  const [activeTab, setActiveTab] = useState<ProfilesTab>(() =>
+    new URLSearchParams(location.search).get("tab") === "bank-accounts"
+      ? "bank-accounts"
+      : "my-profiles",
+  )
   const stripeReturnKeyRef = useRef<string | null>(null)
   const [addBenOpen, setAddBenOpen] = useState(false)
   const [addAddressOpen, setAddAddressOpen] = useState(false)

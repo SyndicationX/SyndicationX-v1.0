@@ -12,7 +12,10 @@ import {
 } from "../../services/payments/dealDistributionFunding.service.js";
 import {
   archiveInvestorBankAccount,
+  getDistributionInvestmentBankAccountDetails,
   listDistributionBankAccountSetup,
+  sendBankAccountSetupRequestEmail,
+  viewerMayViewInvestorBankAccountDetails,
 } from "../../services/bankAccounts/index.js";
 import {
   attachInvestorConnectBankToProfile,
@@ -31,7 +34,7 @@ async function requireSyndicationDealAccess(
   req: Request,
   dealId: string,
 ): Promise<
-  | { ok: true; userId: string }
+  | { ok: true; userId: string; userRole?: string }
   | { ok: false; status: number; message: string }
 > {
   const user = await getValidJwtUser(req);
@@ -48,7 +51,7 @@ async function requireSyndicationDealAccess(
   if (!(await viewerHasSyndicationDealWorkspaceAccess(deal, scope))) {
     return { ok: false, status: 403, message: "Forbidden" };
   }
-  return { ok: true, userId: user.id };
+  return { ok: true, userId: user.id, userRole: user.userRole };
 }
 
 /** POST /investing/profiles/:profileId/stripe-connect/onboarding */
@@ -266,7 +269,14 @@ export async function getDistributionPayouts(
     res.status(access.status).json({ message: access.message });
     return;
   }
-  const rows = await listDistributionPayouts({ dealId, distributionId });
+  const [rows, canViewBankAccountDetails] = await Promise.all([
+    listDistributionPayouts({ dealId, distributionId }),
+    viewerMayViewInvestorBankAccountDetails({
+      dealId,
+      userId: access.userId,
+      jwtUserRole: access.userRole,
+    }),
+  ]);
   let bankAccountSetup: { investmentId: string; status: "set_up" | "not_set_up" }[] =
     [];
   try {
@@ -279,6 +289,7 @@ export async function getDistributionPayouts(
   }
   res.status(200).json({
     bankAccountSetup,
+    canViewBankAccountDetails,
     payouts: rows.map((row) => ({
       id: row.id,
       investmentId: row.investmentId,
@@ -292,4 +303,89 @@ export async function getDistributionPayouts(
       updatedAt: row.updatedAt.toISOString(),
     })),
   });
+}
+
+/** GET /deals/:dealId/distributions/:distributionId/investments/:investmentId/bank-account-setup */
+export async function getDistributionInvestmentBankAccountSetup(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const dealId = param(req.params.dealId);
+  const distributionId = param(req.params.distributionId);
+  const investmentId = param(req.params.investmentId);
+  const access = await requireSyndicationDealAccess(req, dealId);
+  if (!access.ok) {
+    res.status(access.status).json({ message: access.message });
+    return;
+  }
+  const allowed = await viewerMayViewInvestorBankAccountDetails({
+    dealId,
+    userId: access.userId,
+    jwtUserRole: access.userRole,
+  });
+  if (!allowed) {
+    res.status(403).json({
+      message:
+        "Only the Lead Sponsor, Admin sponsor, or a platform admin can view bank account details.",
+    });
+    return;
+  }
+  try {
+    const details = await getDistributionInvestmentBankAccountDetails({
+      dealId,
+      distributionId,
+      investmentId,
+    });
+    if (!details) {
+      res.status(404).json({ message: "Investor not found on this distribution." });
+      return;
+    }
+    res.status(200).json(details);
+  } catch (err) {
+    console.error("getDistributionInvestmentBankAccountSetup:", err);
+    res.status(500).json({ message: "Could not load bank account details." });
+  }
+}
+
+/** POST /deals/:dealId/distributions/:distributionId/investments/:investmentId/bank-account-setup/request */
+export async function postDistributionInvestmentBankAccountSetupRequest(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const dealId = param(req.params.dealId);
+  const distributionId = param(req.params.distributionId);
+  const investmentId = param(req.params.investmentId);
+  const access = await requireSyndicationDealAccess(req, dealId);
+  if (!access.ok) {
+    res.status(access.status).json({ message: access.message });
+    return;
+  }
+  const allowed = await viewerMayViewInvestorBankAccountDetails({
+    dealId,
+    userId: access.userId,
+    jwtUserRole: access.userRole,
+  });
+  if (!allowed) {
+    res.status(403).json({
+      message:
+        "Only the Lead Sponsor, Admin sponsor, or a platform admin can request bank account setup.",
+    });
+    return;
+  }
+  try {
+    const result = await sendBankAccountSetupRequestEmail({
+      dealId,
+      distributionId,
+      investmentId,
+      senderUserId: access.userId,
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
+      return;
+    }
+    res.status(200).json(result);
+  } catch (err) {
+    console.error("postDistributionInvestmentBankAccountSetupRequest:", err);
+    res.status(500).json({ message: "Could not send the email." });
+  }
 }

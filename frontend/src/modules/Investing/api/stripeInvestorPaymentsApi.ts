@@ -336,10 +336,87 @@ export type DistributionBankAccountSetupLine = {
 export type DistributionPayoutBundle = {
   payouts: DistributionPayout[]
   bankAccountSetup: DistributionBankAccountSetupLine[]
+  /** Lead Sponsor, Admin sponsor, or platform admin on this deal. */
+  canViewBankAccountDetails: boolean
 }
 
 export function emptyDistributionPayoutBundle(): DistributionPayoutBundle {
-  return { payouts: [], bankAccountSetup: [] }
+  return { payouts: [], bankAccountSetup: [], canViewBankAccountDetails: false }
+}
+
+export type DistributionBankAccountDetail = {
+  source: "stripe_connect" | "saved_profile"
+  bankName: string | null
+  accountHolderName: string | null
+  accountNumberMasked: string | null
+  routingNumberMasked: string | null
+  accountType: string | null
+  connectStatus: string | null
+  payoutsEnabled: boolean
+  detailsPresent: boolean
+}
+
+export type DistributionBankAccountDetails = {
+  investmentId: string
+  status: BankAccountSetupStatus
+  investorProfileName: string | null
+  /** The one account this deal's distribution line pays to, if any. */
+  account: DistributionBankAccountDetail | null
+}
+
+function strOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null
+}
+
+/** Emails the investor a link to add bank details in Investing. */
+export async function requestDistributionInvestmentBankAccountSetup(
+  dealId: string,
+  distributionId: string,
+  investmentId: string,
+): Promise<{ sentTo: string }> {
+  const base = baseOrThrow()
+  const res = await fetch(
+    `${base}/deals/${encodeURIComponent(dealId)}/distributions/${encodeURIComponent(distributionId)}/investments/${encodeURIComponent(investmentId)}/bank-account-setup/request`,
+    { method: "POST", headers: portalAuthHeaders(), credentials: "include" },
+  )
+  const data = await jsonOrError(res)
+  return { sentTo: String(data.sentTo ?? "").trim() }
+}
+
+export async function fetchDistributionInvestmentBankAccountDetails(
+  dealId: string,
+  distributionId: string,
+  investmentId: string,
+): Promise<DistributionBankAccountDetails> {
+  const base = baseOrThrow()
+  const res = await fetch(
+    `${base}/deals/${encodeURIComponent(dealId)}/distributions/${encodeURIComponent(distributionId)}/investments/${encodeURIComponent(investmentId)}/bank-account-setup`,
+    { headers: portalAuthHeaders(), credentials: "include" },
+  )
+  const data = await jsonOrError(res)
+  const row =
+    data.account && typeof data.account === "object"
+      ? (data.account as Record<string, unknown>)
+      : null
+  return {
+    investmentId: String(data.investmentId ?? investmentId),
+    status: data.status === "set_up" ? "set_up" : "not_set_up",
+    investorProfileName: strOrNull(data.investorProfileName),
+    account: row
+      ? {
+          source:
+            row.source === "saved_profile" ? "saved_profile" : "stripe_connect",
+          bankName: strOrNull(row.bankName),
+          accountHolderName: strOrNull(row.accountHolderName),
+          accountNumberMasked: strOrNull(row.accountNumberMasked),
+          routingNumberMasked: strOrNull(row.routingNumberMasked),
+          accountType: strOrNull(row.accountType),
+          connectStatus: strOrNull(row.connectStatus),
+          payoutsEnabled: Boolean(row.payoutsEnabled),
+          detailsPresent: Boolean(row.detailsPresent),
+        }
+      : null,
+  }
 }
 
 function parseBankAccountSetup(
@@ -374,6 +451,7 @@ export async function fetchDistributionPayouts(
       ? (data.payouts as DistributionPayout[])
       : [],
     bankAccountSetup: parseBankAccountSetup(data.bankAccountSetup),
+    canViewBankAccountDetails: data.canViewBankAccountDetails === true,
   }
 }
 

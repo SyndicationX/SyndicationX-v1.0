@@ -36,6 +36,7 @@ import {
 } from "../../../../../common/utils/displayEmail"
 import { fetchDistributionPayouts } from "@/modules/Investing/api/stripeInvestorPaymentsApi"
 import { BankAccountSetupBadge } from "../distributions/BankAccountSetupBadge"
+import { BankAccountSetupDetailsModal } from "../distributions/BankAccountSetupDetailsModal"
 import { fetchDealInvestors } from "../../api/dealsApi"
 import { fetchDistributionSetup } from "../../distribution-setup/api/distributionSetupApi"
 import {
@@ -364,6 +365,13 @@ export function DealInvestorViewModal({
     useState<InvestorViewSectionTab>(defaultTab)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyRows, setHistoryRows] = useState<InvestorDistHistoryRow[]>([])
+  const [canViewBankAccountDetails, setCanViewBankAccountDetails] =
+    useState(false)
+  const [bankSetupDetails, setBankSetupDetails] = useState<{
+    distributionId: string
+    investmentId: string
+  } | null>(null)
+  const closeBankSetupDetails = useCallback(() => setBankSetupDetails(null), [])
   const scrollRef = useRef<HTMLDivElement>(null)
   const sectionRefs = useRef<
     Partial<Record<InvestorViewSectionTab, HTMLElement | null>>
@@ -428,6 +436,8 @@ export function DealInvestorViewModal({
         ]
         const payoutByDist = new Map<string, string>()
         const setupByDist = new Map<string, "set_up" | "not_set_up">()
+        const setupInvestmentByDist = new Map<string, string>()
+        let mayViewBankDetails = false
         await Promise.all(
           distIds.map(async (distId) => {
             try {
@@ -439,9 +449,15 @@ export function DealInvestorViewModal({
                 payoutMatchesInvestor(matchKeys, p.investmentId),
               )
               payoutByDist.set(distId, hit?.status?.trim() || "not sent")
+              if (list.canViewBankAccountDetails) mayViewBankDetails = true
               const setups = list.bankAccountSetup.filter((line) =>
                 payoutMatchesInvestor(matchKeys, line.investmentId),
               )
+              const setupLine =
+                setups.find((line) => line.status !== "set_up") ?? setups[0]
+              if (setupLine) {
+                setupInvestmentByDist.set(distId, setupLine.investmentId)
+              }
               setupByDist.set(
                 distId,
                 setups.length > 0 &&
@@ -456,17 +472,23 @@ export function DealInvestorViewModal({
           }),
         )
         if (cancelled) return
+        setCanViewBankAccountDetails(mayViewBankDetails)
         setHistoryRows(
           history.map((h) => ({
             ...h,
             achStatus: payoutByDist.get(h.distributionId) ?? h.achStatus,
             bankAccountSetup:
               setupByDist.get(h.distributionId) ?? h.bankAccountSetup,
+            bankAccountSetupInvestmentId:
+              setupInvestmentByDist.get(h.distributionId) ?? null,
           })),
         )
       })
       .catch(() => {
-        if (!cancelled) setHistoryRows([])
+        if (!cancelled) {
+          setHistoryRows([])
+          setCanViewBankAccountDetails(false)
+        }
       })
       .finally(() => {
         if (!cancelled) setHistoryLoading(false)
@@ -556,7 +578,24 @@ export function DealInvestorViewModal({
         header: "Bank account setup",
         colWidth: "9rem",
         sortValue: (r) => r.bankAccountSetup,
-        cell: (r) => <BankAccountSetupBadge status={r.bankAccountSetup} />,
+        cell: (r) => {
+          const investmentId = r.bankAccountSetupInvestmentId
+          return (
+            <BankAccountSetupBadge
+              status={r.bankAccountSetup}
+              onClick={
+                canViewBankAccountDetails && investmentId && r.distributionId
+                  ? () =>
+                      setBankSetupDetails({
+                        distributionId: r.distributionId,
+                        investmentId,
+                      })
+                  : undefined
+              }
+              ariaLabel={`View bank account setup for ${r.distributionName}`}
+            />
+          )
+        },
       },
       {
         id: "achStatus",
@@ -594,7 +633,7 @@ export function DealInvestorViewModal({
         cell: (r) => <TableCompactAmountCell amount={r.payment} />,
       },
     ],
-    [dealIdTrimmed],
+    [dealIdTrimmed, canViewBankAccountDetails],
   )
 
   const totalDistributed = useMemo(
@@ -1024,6 +1063,19 @@ export function DealInvestorViewModal({
           </div>
         </div>
       </div>
+      <BankAccountSetupDetailsModal
+        dealId={dealIdTrimmed}
+        distributionId={bankSetupDetails?.distributionId ?? ""}
+        target={
+          bankSetupDetails
+            ? {
+                investmentId: bankSetupDetails.investmentId,
+                investorName: dealInvestorProfileDisplayName(row) || "Investor",
+              }
+            : null
+        }
+        onClose={closeBankSetupDetails}
+      />
     </div>,
     document.body,
   )

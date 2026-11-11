@@ -44,7 +44,10 @@ import {
   isDisplayableEmail,
 } from "../../../common/utils/displayEmail"
 import {
+  ensureEmailTemplateContent,
   loadEmailTemplates,
+  peekActiveEmailTemplateSummaries,
+  prefetchEmailTemplateContent,
   type EmailTemplateRow,
 } from "../contacts/emailTemplatesStorage"
 import { decodeJwtPayload } from "../../auth/utils/decode-jwt-payload"
@@ -425,6 +428,7 @@ export default function CompanyMembersPage() {
     () => new Set(),
   )
   const [sendMailModalOpen, setSendMailModalOpen] = useState(false)
+  const [sendMailTemplatesLoading, setSendMailTemplatesLoading] = useState(false)
   const [sendMailConfirmOpen, setSendMailConfirmOpen] = useState(false)
   const [sendMailSending, setSendMailSending] = useState(false)
   const [emailTemplates, setEmailTemplates] = useState<EmailTemplateRow[]>([])
@@ -1005,18 +1009,31 @@ export default function CompanyMembersPage() {
   }, [])
 
   const openSendMailModal = useCallback(() => {
-    void (async () => {
-      const templates = (await loadEmailTemplates()).filter((t) => !t.archived)
+    const cached = peekActiveEmailTemplateSummaries()
+    if (cached) {
+      setEmailTemplates(cached)
+      setSelectedTemplateId((prev) =>
+        prev && cached.some((t) => t.id === prev) ? prev : (cached[0]?.id ?? ""),
+      )
+      prefetchEmailTemplateContent(cached[0])
+      setSendMailTemplatesLoading(false)
+    } else {
+      setSendMailTemplatesLoading(true)
+    }
+    setSendMailCc("")
+    setSendMailConfirmOpen(false)
+    setSendMailModalOpen(true)
+    void loadEmailTemplates({ summary: true }).then((rows) => {
+      const templates = rows.filter((t) => !t.archived)
       setEmailTemplates(templates)
       setSelectedTemplateId((prev) =>
         prev && templates.some((t) => t.id === prev)
           ? prev
           : (templates[0]?.id ?? ""),
       )
-      setSendMailCc("")
-      setSendMailConfirmOpen(false)
-      setSendMailModalOpen(true)
-    })()
+      prefetchEmailTemplateContent(templates[0])
+      setSendMailTemplatesLoading(false)
+    })
   }, [])
 
   useEffect(() => {
@@ -1084,18 +1101,24 @@ export default function CompanyMembersPage() {
         toast.error("No email recipients", "Selected members have no valid email.")
         return
       }
-      setSendMailEmailPreview({
-        templateId: template.id,
-        templateName: template.name,
-        templateArchived: Boolean(template.archived),
-        createdBy: template.createdBy,
-        createdAt: template.createdAt,
-        subject: template.subject,
-        bodyHtml: template.body,
-        toEmails: emails,
-        ccEmails: parseEmailInput(sendMailCc),
-        attachment: template.attachment,
-        startInEditMode: mode === "edit",
+      void ensureEmailTemplateContent(template).then((full) => {
+        if (!full) {
+          toast.error("Could not load template", "Try again.")
+          return
+        }
+        setSendMailEmailPreview({
+          templateId: full.id,
+          templateName: full.name,
+          templateArchived: Boolean(full.archived),
+          createdBy: full.createdBy,
+          createdAt: full.createdAt,
+          subject: full.subject,
+          bodyHtml: full.body,
+          toEmails: emails,
+          ccEmails: parseEmailInput(sendMailCc),
+          attachment: full.attachment,
+          startInEditMode: mode === "edit",
+        })
       })
     },
     [emailTemplates, selectedMemberRows, selectedTemplateId, sendMailCc],
@@ -1106,7 +1129,7 @@ export default function CompanyMembersPage() {
       setSendMailEmailPreview((p) =>
         p ? { ...p, ...patch, startInEditMode: false } : null,
       )
-      void loadEmailTemplates().then((rows) => {
+      void loadEmailTemplates({ summary: true }).then((rows) => {
         setEmailTemplates(rows.filter((t) => !t.archived))
       })
     },
@@ -1121,12 +1144,17 @@ export default function CompanyMembersPage() {
     }
     setSendMailSending(true)
     try {
+      const full = await ensureEmailTemplateContent(template)
+      if (!full) {
+        toast.error("Could not load template", "Try again.")
+        return
+      }
       const result = await openSendMailDraft({
         to: selectedRecipientEmails,
         ccRaw: sendMailCc,
-        templateSubject: template.subject,
-        templateBodyHtml: template.body,
-        templateAttachment: template.attachment,
+        templateSubject: full.subject,
+        templateBodyHtml: full.body,
+        templateAttachment: full.attachment,
         senderEmail,
       })
       if (!result.ok) {
@@ -1939,7 +1967,11 @@ export default function CompanyMembersPage() {
                   onChange={(e) => setSelectedTemplateId(e.target.value)}
                 >
                   {emailTemplates.length === 0 ? (
-                    <option value="">No active templates</option>
+                    <option value="">
+                      {sendMailTemplatesLoading
+                        ? "Loading templates…"
+                        : "No active templates"}
+                    </option>
                   ) : null}
                   {emailTemplates.map((tpl) => (
                     <option key={tpl.id} value={tpl.id}>

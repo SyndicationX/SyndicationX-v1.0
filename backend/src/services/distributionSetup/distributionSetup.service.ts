@@ -1045,12 +1045,14 @@ async function viewerPaymentsForPrior(
   prior: PriorDistributionRecord,
   matchKeys: Awaited<ReturnType<typeof listViewerInvestmentMatchKeys>>,
 ): Promise<InvestorPaymentLine[]> {
-  const stored = filterPaymentsForViewer(
-    await ensureInvestorPaymentsOnPrior(dealId, prior),
-    matchKeys,
-  );
-  if (stored.length > 0) return stored;
-  // Snapshot missing identity (email/contact) — rebuild from current investments.
+  // A saved payment list is the distribution record. Investors who are not on
+  // it were not paid — do not rebuild the run and assign them a capital share.
+  if (prior.investorPayments?.length) {
+    return filterPaymentsForViewer(
+      serializeInvestorPaymentLines(prior.investorPayments),
+      matchKeys,
+    );
+  }
   const amount = Number(String(prior.amount).replace(/[^0-9.-]/g, ""));
   if (!(amount > 0)) return [];
   return filterPaymentsForViewer(

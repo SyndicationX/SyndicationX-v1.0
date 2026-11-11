@@ -112,7 +112,10 @@ import { RadioPillGroup } from "../../../common/components/radio-pill-group/Radi
 import { TabsScrollStrip } from "../../../common/components/tabs-scroll-strip/TabsScrollStrip";
 import { DealsCreateDropdownSelect } from "../Deals/components/DealsCreateDropdownSelect";
 import {
+  ensureEmailTemplateContent,
   loadEmailTemplates,
+  peekActiveEmailTemplateSummaries,
+  prefetchEmailTemplateContent,
   type EmailTemplateRow,
 } from "../contacts/emailTemplatesStorage";
 import "../../../common/components/data-table/data-table.css";
@@ -626,6 +629,7 @@ export default function UserManagementPage({
     () => new Set(),
   );
   const [sendMailModalOpen, setSendMailModalOpen] = useState(false);
+  const [sendMailTemplatesLoading, setSendMailTemplatesLoading] = useState(false);
   const [emailTemplates, setEmailTemplates] = useState<EmailTemplateRow[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [sendMailCc, setSendMailCc] = useState("");
@@ -1092,17 +1096,30 @@ export default function UserManagementPage({
   }
 
   const openSendMailModal = useCallback(() => {
-    void (async () => {
-      const templates = (await loadEmailTemplates()).filter((t) => !t.archived);
+    const cached = peekActiveEmailTemplateSummaries();
+    if (cached) {
+      setEmailTemplates(cached);
+      setSelectedTemplateId((prev) =>
+        prev && cached.some((t) => t.id === prev) ? prev : (cached[0]?.id ?? ""),
+      );
+      prefetchEmailTemplateContent(cached[0]);
+      setSendMailTemplatesLoading(false);
+    } else {
+      setSendMailTemplatesLoading(true);
+    }
+    setSendMailCc("");
+    setSendMailModalOpen(true);
+    void loadEmailTemplates({ summary: true }).then((rows) => {
+      const templates = rows.filter((t) => !t.archived);
       setEmailTemplates(templates);
       setSelectedTemplateId((prev) =>
         prev && templates.some((t) => t.id === prev)
           ? prev
           : (templates[0]?.id ?? ""),
       );
-      setSendMailCc("");
-      setSendMailModalOpen(true);
-    })();
+      prefetchEmailTemplateContent(templates[0]);
+      setSendMailTemplatesLoading(false);
+    });
   }, []);
 
   const closeSendMailModal = useCallback(() => {
@@ -1132,18 +1149,24 @@ export default function UserManagementPage({
         toast.error("No email recipients", "Selected members have no valid email.");
         return;
       }
-      setSendMailEmailPreview({
-        templateId: template.id,
-        templateName: template.name,
-        templateArchived: Boolean(template.archived),
-        createdBy: template.createdBy,
-        createdAt: template.createdAt,
-        subject: template.subject,
-        bodyHtml: template.body,
-        toEmails: emails,
-        ccEmails: parseEmailInput(sendMailCc),
-        attachment: template.attachment,
-        startInEditMode: mode === "edit",
+      void ensureEmailTemplateContent(template).then((full) => {
+        if (!full) {
+          toast.error("Could not load template", "Try again.");
+          return;
+        }
+        setSendMailEmailPreview({
+          templateId: full.id,
+          templateName: full.name,
+          templateArchived: Boolean(full.archived),
+          createdBy: full.createdBy,
+          createdAt: full.createdAt,
+          subject: full.subject,
+          bodyHtml: full.body,
+          toEmails: emails,
+          ccEmails: parseEmailInput(sendMailCc),
+          attachment: full.attachment,
+          startInEditMode: mode === "edit",
+        });
       });
     },
     [emailTemplates, selectedMemberRows, selectedTemplateId, sendMailCc],
@@ -1154,7 +1177,7 @@ export default function UserManagementPage({
       setSendMailEmailPreview((p) =>
         p ? { ...p, ...patch, startInEditMode: false } : null,
       );
-      void loadEmailTemplates().then((rows) => {
+      void loadEmailTemplates({ summary: true }).then((rows) => {
         setEmailTemplates(rows.filter((t) => !t.archived));
       });
     },
@@ -1178,12 +1201,17 @@ export default function UserManagementPage({
       toast.error("Template required", "Choose an email template first.");
       return;
     }
+    const full = await ensureEmailTemplateContent(template);
+    if (!full) {
+      toast.error("Could not load template", "Try again.");
+      return;
+    }
     const result = await openSendMailDraft({
       to: emails,
       ccRaw: sendMailCc,
-      templateSubject: template.subject,
-      templateBodyHtml: template.body,
-      templateAttachment: template.attachment,
+      templateSubject: full.subject,
+      templateBodyHtml: full.body,
+      templateAttachment: full.attachment,
       senderEmail,
     });
     if (!result.ok) {
@@ -2798,7 +2826,11 @@ export default function UserManagementPage({
                   onChange={(e) => setSelectedTemplateId(e.target.value)}
                 >
                   {emailTemplates.length === 0 ? (
-                    <option value="">No active templates</option>
+                    <option value="">
+                      {sendMailTemplatesLoading
+                        ? "Loading templates…"
+                        : "No active templates"}
+                    </option>
                   ) : null}
                   {emailTemplates.map((tpl) => (
                     <option key={tpl.id} value={tpl.id}>

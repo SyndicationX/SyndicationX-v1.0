@@ -56,7 +56,7 @@ export function bankDetailsArePresent(input: {
   );
 }
 
-export function resolveBankAccountSetupStatus(params: {
+type ResolveBankAccountSetupParams = {
   accounts: BankAccountPresence[];
   /**
    * When a distribution line is tied to one bank account, only that account
@@ -65,21 +65,32 @@ export function resolveBankAccountSetupStatus(params: {
   associatedAccountId?: string | null;
   /** Limit the investor-level check to accounts used by this profile. */
   profileId?: string | null;
-}): BankAccountSetupStatus {
+};
+
+/** The bank account that makes a line Set Up, or null when Not Set Up. */
+export function resolveBankAccountForSetup(
+  params: ResolveBankAccountSetupParams,
+): BankAccountPresence | null {
   const eligible = params.accounts.filter(isEligibleActiveBankAccount);
   const associated = String(params.associatedAccountId ?? "").trim();
   if (associated) {
     const match = eligible.find((account) => account.id.trim() === associated);
-    if (match) return "set_up";
+    if (match) return match;
   }
 
   const profileId = String(params.profileId ?? "").trim();
   if (profileId) {
-    const onProfile = eligible.filter((account) =>
+    const onProfile = eligible.find((account) =>
       (account.profileIds ?? []).some((id) => id === profileId),
     );
-    if (onProfile.length > 0) return "set_up";
+    if (onProfile) return onProfile;
   }
   // Banks saved on this investor's other profiles.
-  return eligible.length > 0 ? "set_up" : "not_set_up";
+  return eligible[0] ?? null;
+}
+
+export function resolveBankAccountSetupStatus(
+  params: ResolveBankAccountSetupParams,
+): BankAccountSetupStatus {
+  return resolveBankAccountForSetup(params) ? "set_up" : "not_set_up";
 }

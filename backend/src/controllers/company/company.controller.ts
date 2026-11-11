@@ -18,7 +18,10 @@ import {
 import { userCanAccessCompanyWorkspace } from "../../services/company/companyWorkspaceSettings.service.js";
 import { db } from "../../database/db.js";
 import { companies, users } from "../../schema/schema.js";
-import { getUserContactsExportAuditFields } from "../../services/contact/contact.service.js";
+import {
+  countVisibleCrmContactsByOrganization,
+  getUserContactsExportAuditFields,
+} from "../../services/contact/contact.service.js";
 import { sanitizeExportedLinesForNotify } from "../../services/workspace/exportNotifySanitize.js";
 import { sendWorkspaceExportAuditNotification } from "../../services/workspace/workspaceExportAudit.service.js";
 
@@ -73,6 +76,16 @@ export async function getCompanies(req: Request, res: Response): Promise<void> {
       }
     }
     const rows = await listCompanies();
+    if (actor && isPlatformAdminRole(actorRoleFromRow(actor, user))) {
+      const contactCounts = await countVisibleCrmContactsByOrganization({
+        viewerUserId: user.id,
+        viewerRole: actorRoleFromRow(actor, user),
+        organizationIds: rows.map((row) => row.id),
+      });
+      for (const row of rows) {
+        row.contactCount = contactCounts.get(row.id) ?? 0;
+      }
+    }
     const logCompanies =
       process.env.LOG_COMPANIES_RESPONSE === "1" ||
       process.env.LOG_COMPANIES_RESPONSE === "true";

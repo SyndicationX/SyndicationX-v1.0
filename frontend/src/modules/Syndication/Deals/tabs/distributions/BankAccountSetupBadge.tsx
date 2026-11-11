@@ -5,16 +5,36 @@ const TITLE =
 
 export function BankAccountSetupBadge({
   status,
+  onClick,
+  ariaLabel,
 }: {
   status: BankAccountSetupStatus | undefined
+  /** Opens bank account setup details. Omit for viewers without access. */
+  onClick?: () => void
+  ariaLabel?: string
 }) {
   const setUp = status === "set_up"
+  const className = `deal_dist_ach_badge deal_dist_ach_badge--${setUp ? "success" : "neutral"}`
+  const label = setUp ? "Set Up" : "Not Set Up"
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className={`${className} deal_dist_bank_setup_badge_btn`}
+        title={`${TITLE} Click to view bank account setup details.`}
+        aria-label={ariaLabel}
+        onClick={(e) => {
+          e.stopPropagation()
+          onClick()
+        }}
+      >
+        {label}
+      </button>
+    )
+  }
   return (
-    <span
-      className={`deal_dist_ach_badge deal_dist_ach_badge--${setUp ? "success" : "neutral"}`}
-      title={TITLE}
-    >
-      {setUp ? "Set Up" : "Not Set Up"}
+    <span className={className} title={TITLE}>
+      {label}
     </span>
   )
 }

@@ -47,10 +47,11 @@ function homePathAfterSignIn(): string {
   return isPlatformAdmin() ? "/metrics" : "/dashboard";
 }
 
-/** Deal, invest-now, and eSign links should reopen that page after sign-in. */
+/** Deal, invest-now, eSign, and bank-setup links should reopen that page after sign-in. */
 function isLinkedSignInReturn(path: string | null): boolean {
   if (!path) return false;
   if (/\/esign(?:\/|$|\?)/i.test(path)) return true;
+  if (/^\/investing\/profiles(?:[?#]|$)/i.test(path)) return true;
   return /^\/deals\/[^/?#]+/i.test(path);
 }
 
