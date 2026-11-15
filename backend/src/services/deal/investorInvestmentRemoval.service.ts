@@ -223,6 +223,49 @@ async function syncLpCommitmentToOpenInvestments(
     );
 }
 
+/** Remove Investor drops the roster row once no open investment remains. */
+async function retireLpInvestorWhenNoOpenInvestment(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  dealId: string,
+  contactId: string,
+  actorUserId: string,
+  reason: string,
+): Promise<void> {
+  const contact = contactId.trim();
+  if (!contact) return;
+  const rows = await tx
+    .select()
+    .from(dealInvestment)
+    .where(
+      and(
+        eq(dealInvestment.dealId, dealId),
+        sql`lower(${dealInvestment.contactId}) = ${contact.toLowerCase()}`,
+      ),
+    );
+  const hasOpenInvestment = rows.some(
+    (row) =>
+      !isRetiredDealInvestment(row) && isLpInvestorRole(row.investor_role),
+  );
+  if (hasOpenInvestment) return;
+  const now = new Date();
+  await tx
+    .update(dealLpInvestor)
+    .set({
+      removedAt: now,
+      removedByUserId: actorUserId,
+      removalReason: reason,
+      committed_amount: "0",
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(dealLpInvestor.dealId, dealId),
+        sql`lower(${dealLpInvestor.contactMemberId}) = ${contact.toLowerCase()}`,
+        isNull(dealLpInvestor.removedAt),
+      ),
+    );
+}
+
 async function applyMutation(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   dealId: string,
@@ -512,11 +555,23 @@ export async function removeInvestorOrInvestment(params: {
             for (const mutation of plan.mutations) {
               await applyMutation(tx, dealId, plan, mutation);
             }
-            if (plan.action === "remove_investment") {
+            if (
+              plan.action === "remove_investment" ||
+              plan.action === "remove_investor"
+            ) {
               await syncLpCommitmentToOpenInvestments(
                 tx,
                 dealId,
                 plan.removedContactId,
+              );
+            }
+            if (plan.action === "remove_investor") {
+              await retireLpInvestorWhenNoOpenInvestment(
+                tx,
+                dealId,
+                plan.removedContactId,
+                plan.actorUserId,
+                plan.reason,
               );
             }
           },

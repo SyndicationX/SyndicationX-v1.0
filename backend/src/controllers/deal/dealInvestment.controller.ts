@@ -39,6 +39,7 @@ import {
   insertDealInvestment,
   isLpInvestorRole,
   listDealInvestmentsByDealId,
+  markDealInvestmentFundApproved,
   mapDealInvestmentsToInvestorApi,
   resolveInvestorClassForDealInvestment,
   recordFundApprovedAtHistory,
@@ -61,7 +62,7 @@ import {
   sendNewLeadSponsorInvitationIfAssigned,
 } from "../../services/deal/dealMemberInvitationEmail.service.js";
 import { viewerCanApproveDealFundOnDeal } from "../../services/deal/dealMemberScope.service.js";
-import { dealInvestmentEsignIsFullyCompleted } from "../../constants/deal-investor-esign-status.js";
+import { dealInvestmentReadyForFundApproval } from "../../constants/deal-investor-esign-status.js";
 import { logSocDealInvestmentWrite } from "../../audit/index.js";
 import { assertExtraCompanyUserAllowedForAdd } from "../../services/billing/dealExtraCompanyUser.service.js";
 import { EXTRA_COMPANY_USER_PAYMENT_REQUIRED } from "../../config/stripe.config.js";
@@ -105,6 +106,11 @@ function parseExtras(raw: unknown): string[] {
 
 function isAutosaveBody(b: Record<string, unknown>): boolean {
   const v = bodyString(b.autosave);
+  return v === "true" || v === "1" || v.toLowerCase() === "yes";
+}
+
+function isFundApprovalOnlyBody(b: Record<string, unknown>): boolean {
+  const v = bodyString(b.fund_approval_only ?? b.fundApprovalOnly);
   return v === "true" || v === "1" || v.toLowerCase() === "yes";
 }
 
@@ -545,7 +551,7 @@ export async function putDealInvestment(
     if (!commitmentAmount.trim()) {
       commitmentAmount = "0";
     }
-  } else {
+  } else if (!isFundApprovalOnlyBody(b)) {
     if (!contactId.trim()) {
       res.status(400).json({ message: "Member (contact) is required" });
       return;
@@ -567,6 +573,88 @@ export async function putDealInvestment(
       res.status(404).json({ message: "Deal not found" });
       return;
     }
+
+    const existing = await getDealInvestmentById(dealId, investmentId);
+    if (!existing) {
+      res.status(404).json({ message: "Investment not found" });
+      return;
+    }
+
+    if (isFundApprovalOnlyBody(b)) {
+      if (
+        !(await viewerCanApproveDealFundOnDeal({
+          dealId,
+          userId: user.id,
+          userRole: user.userRole,
+        }))
+      ) {
+        res.status(403).json({ message: FUND_APPROVAL_FORBIDDEN_MESSAGE });
+        return;
+      }
+      if (existing.fundApproved) {
+        const [investor] = await mapDealInvestmentsToInvestorApi([existing]);
+        res.status(200).json({ message: "Investment updated", investor });
+        return;
+      }
+      if (
+        !dealInvestmentReadyForFundApproval({
+          esignStatusJson: existing.esignStatusJson,
+          docSignedDate: existing.docSignedDate,
+          profileId: existing.profileId,
+        })
+      ) {
+        res.status(400).json({ message: FUND_APPROVAL_REQUIRES_ESIGN_MESSAGE });
+        return;
+      }
+      const fundApprovedAt = new Date();
+      const extras = Array.isArray(existing.extraContributionAmounts)
+        ? existing.extraContributionAmounts.map((x) => String(x))
+        : [];
+      const nextStatus = status.trim() || "Funding instructions sent";
+      const row = await markDealInvestmentFundApproved({
+        dealId,
+        investmentId,
+        status: nextStatus,
+        fundApprovedBy: user.id,
+        fundApprovedAt,
+        fundApprovedAtHistory: recordFundApprovedAtHistory({
+          history: existing.fundApprovedAtHistory,
+          previousDate: existing.fundApprovedAt ?? null,
+          nextDate: fundApprovedAt,
+          source: "approved",
+        }),
+        commitmentAmount: existing.commitmentAmount ?? "",
+        extraContributionAmounts: extras,
+      });
+      if (!row) {
+        res.status(404).json({ message: "Investment not found" });
+        return;
+      }
+      const contactIdForNotice = String(existing.contactId ?? "").trim();
+      if (
+        contactIdForNotice &&
+        contactIdForNotice !== DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER
+      ) {
+        await sendDealFundApprovedNotification({
+          dealId,
+          contactId: contactIdForNotice,
+          contactDisplayName: String(existing.contactDisplayName ?? "").trim(),
+        });
+      }
+      const [investor] = await mapDealInvestmentsToInvestorApi([row]);
+      logSocDealInvestmentWrite({
+        operation: "update",
+        actorUserId: user.id,
+        dealId,
+        investmentId: row.id,
+        fundApproved: true,
+        fundApprovalChanged: true,
+        subscriptionDocumentAttached: Boolean(existing.documentStoragePath),
+      });
+      res.status(200).json({ message: "Investment updated", investor });
+      return;
+    }
+
     if (
       !isPlatformAdminRole(user.userRole) &&
       (isLeadSponsorRoleLabel(investor_role) ||
@@ -587,12 +675,6 @@ export async function putDealInvestment(
       return;
     }
     const resolvedInvestorClass = classResolution.storedInvestorClass;
-
-    const existing = await getDealInvestmentById(dealId, investmentId);
-    if (!existing) {
-      res.status(404).json({ message: "Investment not found" });
-      return;
-    }
 
     const currentContactIsLeadSponsor = await dealMemberContactIsLeadSponsor(
       dealId,
@@ -651,7 +733,7 @@ export async function putDealInvestment(
         return;
       }
       if (
-        !dealInvestmentEsignIsFullyCompleted({
+        !dealInvestmentReadyForFundApproval({
           esignStatusJson: existing.esignStatusJson,
           docSignedDate: existing.docSignedDate,
           profileId: existing.profileId,
@@ -1039,7 +1121,7 @@ export async function postDealInvestment(
       const docSignedDate = bodyString(b.docSignedDate ?? b.doc_signed_date);
       const profileId = bodyString(b.profileId ?? b.profile_id);
       if (
-        !dealInvestmentEsignIsFullyCompleted({
+        !dealInvestmentReadyForFundApproval({
           esignStatusJson: esignStatusJson || null,
           docSignedDate: docSignedDate || null,
           profileId: profileId || null,

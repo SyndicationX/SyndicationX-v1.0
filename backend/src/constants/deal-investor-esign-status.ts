@@ -691,6 +691,29 @@ export function dealInvestmentEsignIsFullyCompleted(params: {
   return doc === "completed";
 }
 
+/**
+ * Investors-tab Approve fund rule: this profile’s current packet is signed or
+ * completed. An older unfinished packet on the same row does not block approval.
+ */
+export function dealInvestmentReadyForFundApproval(params: {
+  esignStatusJson?: string | null;
+  docSignedDate?: string | null;
+  profileId?: string | null;
+}): boolean {
+  const categoryId = esignCategoryFromCommitmentProfileId(params.profileId);
+  const bundle = parseEsignStatusBundle(params.esignStatusJson);
+  if (bundle && bundle.sends.length > 0) {
+    const workflow = pickWorkflowSendForColumn(bundle.sends, categoryId);
+    if (workflow?.completedAt?.trim() || workflow?.signedAt?.trim()) return true;
+  }
+
+  const api = parseEsignStatusJson(params.esignStatusJson, categoryId);
+  if (api?.completedAt?.trim() || api?.signedAt?.trim()) return true;
+
+  const doc = String(params.docSignedDate ?? "").trim().toLowerCase();
+  return doc === "completed" || doc === "signed";
+}
+
 export function appendEsignSendToBundle(
   bundle: StoredDealInvestorEsignBundle,
   params: {

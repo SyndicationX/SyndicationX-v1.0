@@ -433,9 +433,11 @@ export async function mergeDealLpRosterIntoFullInvestorRows(
 }
 
 /**
- * Investors tab list: every `deal_investment` row on this deal (one API line per
+ * Investors tab list: open `deal_investment` rows on this deal (one API line per
  * investment / commitment), plus `deal_lp_investor` contacts that have no
- * investment row yet.
+ * investment row yet. Remove Investment keeps that row and clears its amount.
+ * Remove Investor unlinks the row. Unlinked rows stay in this query only so
+ * the investor is not added back from the LP roster.
  *
  * Does **not** collapse multiple investments for the same contact into one line —
  * each commitment is listed separately with its own amount.
@@ -461,7 +463,7 @@ export async function listMergedLpInvestorsForDeal(
   const [allInvestments, roster, classes] = await Promise.all([
     listDealInvestmentsByDealId(dealId, {
       lpInvestorsOnly: false,
-      includeStatusRemoved: true,
+      includeRemoved: true,
     }),
     db
       .select()
@@ -517,8 +519,23 @@ export async function listMergedLpInvestorsForDeal(
   const rows: DealInvestmentRow[] = [];
   const coveredCanonical = new Set<string>();
   const positiveLpCanonical = new Set<string>();
+  /**
+   * Remove Investor unlinks the row. Once every investment for that contact is
+   * unlinked or otherwise gone, do not put them back from the LP roster.
+   * Remove Investment only retires the investment, so the investor stays.
+   */
+  const unlinkedCanonical = new Set<string>();
+  const openCanonical = new Set<string>();
   for (const inv of investments) {
-    if (inv.investorUnlinkedAt) continue;
+    const canonical = canonicalOf(inv.contactId ?? "");
+    if (!canonical) continue;
+    if (inv.investorUnlinkedAt) unlinkedCanonical.add(canonical);
+    else if (!isRetiredDealInvestment(inv)) openCanonical.add(canonical);
+  }
+  for (const canonical of openCanonical) unlinkedCanonical.delete(canonical);
+
+  for (const inv of investments) {
+    if (isRetiredDealInvestment(inv)) continue;
     if (!isLpInvestorRole(inv.investor_role)) continue;
     if (committedNumericFromDealInvestmentRow(inv) <= 0) continue;
     const canonical = canonicalOf(inv.contactId ?? "");
@@ -526,26 +543,35 @@ export async function listMergedLpInvestorsForDeal(
   }
 
   for (const inv of investments) {
+    if (inv.investorUnlinkedAt) continue;
+    const amountCleared = isRetiredDealInvestment(inv);
     const k = normalizeContactKey(inv.contactId ?? "");
     const canonical = k ? canonicalOf(k) : "";
+    if (amountCleared && canonical && unlinkedCanonical.has(canonical)) {
+      continue;
+    }
     const role = inv.investor_role ?? "";
     if (rowIsGeneralPartnerForRoster(role, inv.investorClass, classes)) {
       continue;
     }
     const onLpRoster = Boolean(canonical && rosterByCanonical.has(canonical));
-    if (inv.investorUnlinkedAt) continue;
     const lpRole = isLpInvestorRole(role);
     const sponsorRole = isDealMembersSponsorRole(role);
-    const committed = committedNumericFromDealInvestmentRow(inv);
+    const committed = amountCleared
+      ? 0
+      : committedNumericFromDealInvestmentRow(inv);
     const invested = Boolean(canonical && positiveLpCanonical.has(canonical));
     // The invite / sponsor shell stays off this list once the same person has invested.
     const inviteShell =
-      committed <= 0 && (invested || (sponsorRole && onLpRoster));
+      !amountCleared &&
+      committed <= 0 &&
+      (invested || (sponsorRole && onLpRoster));
 
-    // LP commitments always show. Lead/Admin/Co only when they are also investors.
-    const include =
-      !inviteShell &&
-      (lpRole || onLpRoster || (sponsorRole && committed > 0));
+    // A removed investment stays, with its amount cleared. Lead/Admin/Co only when they are also investors.
+    const include = amountCleared
+      ? lpRole || onLpRoster || sponsorRole
+      : !inviteShell &&
+        (lpRole || onLpRoster || (sponsorRole && committed > 0));
 
     if (!include) continue;
 
@@ -555,6 +581,7 @@ export async function listMergedLpInvestorsForDeal(
 
   for (const [canonical, m] of rosterByCanonical) {
     if (coveredCanonical.has(canonical)) continue;
+    if (unlinkedCanonical.has(canonical)) continue;
     if (rowIsGeneralPartnerForRoster(m.role, m.investorClass, classes)) {
       continue;
     }

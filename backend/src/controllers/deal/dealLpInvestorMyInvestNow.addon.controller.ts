@@ -8,9 +8,6 @@ import { requestedOrganizationIdFromRequest } from "../../services/org/orgResolu
 import { resolveLpViewerEmailNorm } from "../../services/deal/dealLpViewerIdentity.service.js";
 import { getAddDealFormById } from "../../services/deal/dealForm.service.js";
 import { reconcileAssigningDealUsersForDeal } from "../../services/deal/assigningDealUser.service.js";
-import {
-  getLpInvestorsTabPayload,
-} from "../../services/deal/dealLpInvestor.service.js";
 import { applyMyInvestNowCommitmentAddon } from "../../services/deal/dealLpInvestorMyInvestNowCommitment.addon.service.js";
 import { readMyInvestNowCommitment } from "../../services/deal/dealLpInvestorMyInvestNowCommitment.read.service.js";
 import { evaluateLpInvestNowEligibility } from "../../services/deal/dealLpInvestNowEligibility.service.js";
@@ -206,40 +203,60 @@ export async function patchDealLpInvestorMyInvestNowAddon(
       return;
     }
 
-    await reconcileAssigningDealUsersForDeal(dealId.trim(), user.id);
-    try {
-      await clearInvestorDealRemoval(user.id, dealId.trim());
-    } catch (clearErr) {
-      console.warn(
-        "patchDealLpInvestorMyInvestNowAddon: clear investor deal removal",
-        clearErr,
-      );
-    }
+    const savedInvestmentId = result.investmentId;
+    res.status(200).json({
+      message: "Committed amount saved",
+      investmentId: savedInvestmentId,
+    });
 
-    const payload = await getLpInvestorsTabPayload(dealId.trim(), user.id);
-    const savedRow = await readMyInvestNowCommitment({
-      dealId: dealId.trim(),
+    /**
+     * Roster rebuild, access reconcile, and mail used to run before this
+     * response. The browser aborts the save at 30s, so those stay off the
+     * request that the investor is waiting on.
+     */
+    const trimmedDealId = dealId.trim();
+    const viewerUserId = user.id;
+    const softCommitted =
+      statusPatch?.trim().toLowerCase() === "soft committed";
+    const commitmentRead = {
+      dealId: trimmedDealId,
       viewerEmailNorm: emailNorm,
-      viewerUserId: user.id,
-      investmentId: result.investmentId || investmentIdRaw || undefined,
+      viewerUserId,
+      investmentId: savedInvestmentId || investmentIdRaw || undefined,
       userInvestorProfileId: hasUserInvestorProfileIdKey
         ? userInvestorProfileRaw
         : undefined,
       profileId: profileRaw,
-    });
-    const savedAmount = savedRow.ok
-      ? Number(savedRow.committedAmount.replace(/[$,\s]/g, ""))
-      : 0;
-    if (
-      statusPatch?.trim().toLowerCase() === "soft committed" &&
-      savedRow.ok &&
-      Number.isFinite(savedAmount) &&
-      savedAmount > 0
-    ) {
+    };
+    void (async () => {
       try {
+        await reconcileAssigningDealUsersForDeal(trimmedDealId, viewerUserId);
+      } catch (reconcileErr) {
+        console.warn(
+          "patchDealLpInvestorMyInvestNowAddon: reconcile assigning users",
+          reconcileErr,
+        );
+      }
+      try {
+        await clearInvestorDealRemoval(viewerUserId, trimmedDealId);
+      } catch (clearErr) {
+        console.warn(
+          "patchDealLpInvestorMyInvestNowAddon: clear investor deal removal",
+          clearErr,
+        );
+      }
+      if (!softCommitted) return;
+      try {
+        const savedRow = await readMyInvestNowCommitment(commitmentRead);
+        const savedAmount = savedRow.ok
+          ? Number(savedRow.committedAmount.replace(/[$,\s]/g, ""))
+          : 0;
+        if (!savedRow.ok || !Number.isFinite(savedAmount) || savedAmount <= 0) {
+          return;
+        }
         const notification = await sendInvestmentCommitmentNotifications({
-          dealId: dealId.trim(),
-          viewerUserId: user.id,
+          dealId: trimmedDealId,
+          viewerUserId,
           viewerEmailNorm: emailNorm,
           investmentId: savedRow.investmentId,
           commitmentKind: "soft",
@@ -251,19 +268,12 @@ export async function patchDealLpInvestorMyInvestNowAddon(
           );
         }
       } catch (emailErr) {
-        // The commitment is already saved; a mail transport failure must not
-        // turn the successful save into an API failure.
         console.warn(
           "patchDealLpInvestorMyInvestNowAddon: soft commitment email",
           emailErr,
         );
       }
-    }
-    res.status(200).json({
-      message: "Committed amount saved",
-      investorsPayload: payload,
-      investmentId: savedRow.ok ? savedRow.investmentId : null,
-    });
+    })();
   } catch (err) {
     console.error("patchDealLpInvestorMyInvestNowAddon:", err);
     res.status(500).json({ message: "Could not save committed amount" });

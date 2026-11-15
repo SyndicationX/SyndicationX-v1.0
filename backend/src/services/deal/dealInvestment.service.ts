@@ -3356,6 +3356,54 @@ export async function updateDealInvestment(params: {
   return row ?? null;
 }
 
+/**
+ * Sponsor Approve fund: set the funded flag and status only.
+ * Does not rewrite class, role, contact, or commitment.
+ */
+export async function markDealInvestmentFundApproved(params: {
+  dealId: string;
+  investmentId: string;
+  status: string;
+  fundApprovedBy: string;
+  fundApprovedAt: Date;
+  fundApprovedAtHistory: FundApprovedAtHistoryEntry[];
+  commitmentAmount: string;
+  extraContributionAmounts: string[];
+}): Promise<DealInvestmentRow | null> {
+  const [row] = await db
+    .update(dealInvestment)
+    .set({
+      fundApproved: true,
+      fundApprovedBy: params.fundApprovedBy.trim() || null,
+      fundApprovedAt: params.fundApprovedAt,
+      fundApprovedAtHistory: params.fundApprovedAtHistory,
+      fundApprovedCommitmentSnapshot: fundApprovedSnapshotStoredFromInput({
+        offeringId: "",
+        contactId: "",
+        contactDisplayName: "",
+        profileId: "",
+        investor_role: "",
+        fundApproved: true,
+        status: params.status,
+        investorClass: "",
+        docSignedDate: null,
+        commitmentAmount: params.commitmentAmount,
+        extraContributionAmounts: params.extraContributionAmounts,
+        documentStoragePath: null,
+      }),
+      status: params.status,
+      isDraft: false,
+    })
+    .where(
+      and(
+        eq(dealInvestment.dealId, params.dealId),
+        eq(dealInvestment.id, params.investmentId),
+      ),
+    )
+    .returning();
+  return row ?? null;
+}
+
 const DEAL_ID_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

@@ -186,8 +186,11 @@ describe("Invest Now investment on a sponsor deal", () => {
       assert.equal(original.rows[0]?.removed_at ?? null, null);
 
       const sponsorAfter = await listMergedLpInvestorsForDeal(seed.deal_id);
-      const removedRow = sponsorAfter.find((row) => row.id === created.id);
-      assert.equal(removedRow?.status, REMOVED_INVESTMENT_STATUS);
+      assert.equal(
+        sponsorAfter.some((row) => row.id === created.id),
+        true,
+        "Remove Investment should keep the row on the Investors tab.",
+      );
       assert.equal(
         sponsorAfter.some(
           (row) =>
