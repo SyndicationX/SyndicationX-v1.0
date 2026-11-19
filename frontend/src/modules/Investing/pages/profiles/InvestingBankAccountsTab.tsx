@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Eye, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react"
+import { Eye, Landmark, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react"
 import {
   DataTable,
   type DataTableColumn,
@@ -92,6 +92,8 @@ export function savedProfileBankTableRows(
       accountType: string
       profileIds: string[]
       names: string[]
+      stripeConnected: boolean
+      stripePending: boolean
     }
   >()
   for (const profile of profiles) {
@@ -106,9 +108,14 @@ export function savedProfileBankTableRows(
     const fingerprint = `${routing}|${account}|${bankName.toLowerCase()}`
     const existing = groups.get(fingerprint)
     const name = profile.profileName.trim() || "Profile"
+    const stripeConnected = Boolean(profile.stripeBank?.payoutsEnabled)
+    const stripePending =
+      !stripeConnected && Boolean(profile.stripeBank?.hasAccount)
     if (existing) {
       existing.profileIds.push(profile.id)
       existing.names.push(name)
+      existing.stripeConnected = existing.stripeConnected || stripeConnected
+      existing.stripePending = existing.stripePending || stripePending
     } else {
       groups.set(fingerprint, {
         bankName,
@@ -117,16 +124,27 @@ export function savedProfileBankTableRows(
         accountType,
         profileIds: [profile.id],
         names: [name],
+        stripeConnected,
+        stripePending,
       })
     }
   }
   return [...groups.values()].map((group, index) => {
     const accountId = `${PROFILE_BANK_RECORD_PREFIX}${group.profileIds[0]}`
     const bankName = group.bankName || "Bank account"
+    const statusLabel = group.stripeConnected
+      ? "Stripe connected"
+      : group.stripePending
+        ? "Stripe pending"
+        : "On file"
     return {
       accountId,
-      status: "on_file",
-      payoutsEnabled: false,
+      status: group.stripeConnected
+        ? "ready"
+        : group.stripePending
+          ? "pending"
+          : "on_file",
+      payoutsEnabled: group.stripeConnected,
       bankAccount: {
         bankName,
         last4: bankDigits(group.account).slice(-4) || null,
@@ -143,7 +161,7 @@ export function savedProfileBankTableRows(
       routingLabel: group.routing || "—",
       accountTypeLabel: accountTypeLabel(group.accountType),
       holderLabel: "—",
-      statusLabel: "On file",
+      statusLabel,
       profilesLabel: group.names.join(", "),
     }
   })
@@ -340,6 +358,7 @@ export function bankAccountDetailsColumns(handlers: {
   onView: (row: BankAccountTableRow) => void
   onEdit: (row: BankAccountTableRow) => void
   onDelete: (row: BankAccountTableRow) => void
+  onConnectStripe?: (row: BankAccountTableRow) => void
 }): DataTableColumn<BankAccountTableRow>[] {
   return [
     {
@@ -389,11 +408,10 @@ export function bankAccountDetailsColumns(handlers: {
       sortValue: (r) => r.accountTypeLabel.toLowerCase(),
       cell: (r) => r.accountTypeLabel,
     },
-    /* Status column hidden — restore with the block below.
     {
       id: "status",
       header: "Status",
-      colWidth: "7.5rem",
+      colWidth: "9.5rem",
       sortValue: (r) => r.statusLabel.toLowerCase(),
       cell: (r) => (
         <span
@@ -404,7 +422,7 @@ export function bankAccountDetailsColumns(handlers: {
                 ? "ready"
                 : r.status === "restricted"
                   ? "danger"
-                  : r.accountId
+                  : r.status === "pending"
                     ? "pending"
                     : "neutral"
           }`}
@@ -413,7 +431,28 @@ export function bankAccountDetailsColumns(handlers: {
         </span>
       ),
     },
-    */
+    {
+      id: "stripe",
+      header: "Stripe",
+      align: "center",
+      colWidth: "11rem",
+      cell: (r) =>
+        r.payoutsEnabled || !handlers.onConnectStripe ? (
+          <span className="investing_bank_stripe_done">
+            {r.payoutsEnabled ? "Connected" : "—"}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="um_btn_secondary investing_bank_connect_btn"
+            disabled={handlers.setupBusy}
+            onClick={() => handlers.onConnectStripe?.(r)}
+          >
+            <Landmark size={14} aria-hidden />
+            {r.status === "pending" ? "Continue Stripe" : "Connect to Stripe"}
+          </button>
+        ),
+    },
     {
       id: "actions",
       header: "Actions",
@@ -442,6 +481,7 @@ export function InvestingBankAccountsTab({
   onViewBank,
   onEditBank,
   onDeleteBank,
+  onConnectStripe,
 }: {
   rows: BankAccountTableRow[]
   loading?: boolean
@@ -450,6 +490,7 @@ export function InvestingBankAccountsTab({
   onViewBank: (row: BankAccountTableRow) => void
   onEditBank: (row: BankAccountTableRow) => void
   onDeleteBank: (row: BankAccountTableRow) => void
+  onConnectStripe?: (row: BankAccountTableRow) => void
 }) {
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(1)
@@ -494,8 +535,9 @@ export function InvestingBankAccountsTab({
         onView: onViewBank,
         onEdit: onEditBank,
         onDelete: onDeleteBank,
+        onConnectStripe,
       }),
-    [onDeleteBank, onEditBank, onViewBank, setupBusy],
+    [onConnectStripe, onDeleteBank, onEditBank, onViewBank, setupBusy],
   )
 
   return (
@@ -503,8 +545,9 @@ export function InvestingBankAccountsTab({
       <div className="um_members_header_block contacts_inner_header">
         <div className="contacts_toolbar_filters_row">
           <p className="investing_bank_tab_lead">
-            Bank accounts saved on your investor profiles. Account numbers show
-            the last four digits only.
+            Bank accounts saved on your investor profiles. On file means the
+            numbers are saved here. Connect to Stripe before a distribution
+            can be paid. Account numbers show the last four digits only.
           </p>
           <button
             type="button"

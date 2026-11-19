@@ -25,6 +25,7 @@ import {
 } from "react"
 import { createPortal } from "react-dom"
 import { isLeadSponsorRole } from "../../../constants/investor-profile"
+import { displayInvestorCommittedAmount } from "../../../utils/offeringMoneyFormat"
 import type { DealInvestorRow } from "../../../types/deal-investors.types"
 
 export const LEAD_SPONSOR_REQUIRED_MESSAGE =
@@ -41,6 +42,19 @@ import {
 import "../../../../usermanagement/user_management.css"
 import "../../../components/open-investment-esign-required-modal.css"
 import "./deal-member-row-actions.css"
+
+function moneyAmount(raw: string | undefined): number {
+  const n = Number(String(raw ?? "").replace(/[^0-9.-]/g, ""))
+  return Number.isFinite(n) ? n : 0
+}
+
+/** Committed or funded dollars on this row. Zero and blank count as none. */
+function rowHasInvestedAmount(row: DealInvestorRow): boolean {
+  return (
+    moneyAmount(displayInvestorCommittedAmount(row)) > 0 ||
+    moneyAmount(row.amountReceived) > 0
+  )
+}
 
 /** Menu-sized variant of the add/edit modal’s “notify the member” hint. */
 export const INVITATION_EMAILS_BLOCKED_ACTION_TITLE =
@@ -104,7 +118,7 @@ export interface DealMemberRowActionsProps {
   approveFundDisabledTitle?: string
   /** Open the row for reading only. Hides edit, invite, eSign, and delete. */
   viewOnly?: boolean
-  /** Lead and admin sponsors cannot remove a co-sponsor's investor. */
+  /** Hide Remove. Co-sponsors cannot remove an investment, investor, or member. */
   removeHidden?: boolean
   /**
    * Lead sponsor: reassign this investor's sponsor to someone in the same
@@ -371,6 +385,7 @@ export function DealMemberRowActions({
         investorName={memberLabel}
         busy={deleteBusy}
         error={deleteError}
+        removeInvestmentDisabled={!rowHasInvestedAmount(row)}
         onClose={() => {
           if (deleteBusy) return
           setDeleteConfirmOpen(false)
@@ -809,18 +824,13 @@ export function DealMemberRowActions({
                         : "Send invitation email"}
                   </button>
                 </li>
-                {removeHidden && !actionsLimitedToView ? null : (
+                {removeHidden ? null : (
                 <li role="none">
                   <button
                     type="button"
-                    className={`um_kebab_menuitem deals_kebab_menuitem_danger${
-                      actionsLimitedToView ? " um_kebab_menuitem_disabled" : ""
-                    }`}
+                    className="um_kebab_menuitem deals_kebab_menuitem_danger"
                     role="menuitem"
-                    disabled={actionsLimitedToView}
-                    title={actionsLimitedToView ? actionsLimitedToViewTitle : undefined}
                     onClick={() => {
-                      if (actionsLimitedToView) return
                       void runDelete()
                     }}
                   >

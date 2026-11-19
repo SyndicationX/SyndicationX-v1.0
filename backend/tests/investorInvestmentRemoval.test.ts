@@ -217,6 +217,28 @@ describe("investor and investment removal", () => {
     assert.equal(planned.status, 400);
   });
 
+  it("removes the roster row when the investor has no investment", () => {
+    const planned = planInvestorRemoval({
+      action: "remove_investment",
+      reason: "a1",
+      confirmed: true,
+      actorUserId: "sponsor-1",
+      removedName: "Mock User",
+      removedRole: "LP Investor",
+      target: { kind: "lp", id: "lp-1" },
+      investments: [],
+      lp: lp("contact-a"),
+      member: null,
+      investmentIdsWithMoney: [],
+    });
+    assert.equal(planned.ok, true);
+    if (!planned.ok) return;
+    assert.deepEqual(
+      planned.plan.mutations.map((item) => item.type),
+      ["soft_delete_lp"],
+    );
+  });
+
   it("keeps the investor when that was the only investment", () => {
     const selected = investment({
       id: "inv-a",

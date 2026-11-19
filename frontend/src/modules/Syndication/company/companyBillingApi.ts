@@ -59,6 +59,7 @@ export type CompanyBillingInvoice = {
   billingScope?: "deal" | "extra_company_user" | null
   comment?: string | null
   paidByName?: string | null
+  paidByEmail?: string | null
 }
 
 export type CompanyBillingPaymentMethod = {

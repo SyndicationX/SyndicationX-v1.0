@@ -2565,6 +2565,21 @@ export async function syncCompanyDealSaasSubscriptions(
               seatBand: mapped.seatBand ?? defaults.seatBand,
             });
           }
+          const subCustomer =
+            typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
+          if (
+            subCustomer &&
+            subCustomer === defaults.customerId &&
+            !sub.cancel_at_period_end &&
+            (sub.status === "active" || sub.status === "trialing")
+          ) {
+            // A deal subscription left on the company customer would renew
+            // on the company card. Stop that renewal. The lead sponsor pays
+            // the next period with the card on this deal.
+            await stripe.subscriptions.update(existingId, {
+              cancel_at_period_end: true,
+            });
+          }
           const fresh = await stripe.subscriptions.retrieve(existingId);
           await applyStripeSubscriptionToDeal(String(deal.id), fresh);
           continue;

@@ -1090,10 +1090,7 @@ export function DealInvestNowPage() {
   )
 
   const trackInvestmentRowAfterSave = useCallback(
-    (
-      _investors: { investors: DealInvestorRow[] },
-      savedInvestmentId?: string | null,
-    ) => {
+    (savedInvestmentId?: string | null) => {
       const explicit = savedInvestmentId?.trim()
       if (explicit) {
         investNowInvestmentIdRef.current = explicit
@@ -1160,7 +1157,7 @@ export function DealInvestNowPage() {
       )
       setSubmitting(false)
       if (!res.ok) return res.message
-      trackInvestmentRowAfterSave(res.investorsPayload, res.investmentId)
+      trackInvestmentRowAfterSave(res.investmentId)
       return null
     },
     [

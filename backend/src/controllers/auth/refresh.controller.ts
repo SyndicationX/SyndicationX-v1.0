@@ -25,7 +25,10 @@ export async function postRefreshTokens(
 
   const result = await refreshAuthTokens(refreshToken, req);
   if (!result.ok) {
-    res.status(result.status).json({ message: result.message });
+    res.status(result.status).json({
+      message: result.message,
+      ...(result.code ? { code: result.code } : {}),
+    });
     return;
   }
 

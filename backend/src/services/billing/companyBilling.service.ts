@@ -759,6 +759,9 @@ export function stripeCustomerIdOf(
 export const SAVED_CARD_USE_NEW_METHOD_MESSAGE =
   "This saved card can't be used for this deal. Select Pay with new method. You can enter the same card there.";
 
+export const DEAL_COMPANY_CARD_MESSAGE =
+  "Deal payments use the lead sponsor's card on this deal. The company card is not charged.";
+
 export type SavedDealPaymentDecision =
   | { action: "charge"; customerId: string; paymentMethodId: string }
   | { action: "attach"; customerId: string; paymentMethodId: string }
@@ -775,9 +778,19 @@ export function decideSavedDealPayment(params: {
   paymentMethodId: string;
   /** Company customer and every deal payer customer for this company. */
   ownedCustomerIds?: string[];
+  /** Organization Stripe customer. Its cards are never charged for a deal. */
+  organizationCustomerId?: string;
 }): SavedDealPaymentDecision {
   const payerCustomerId = params.payerCustomerId.trim();
   const attachedCustomerId = params.attachedCustomerId.trim();
+  const organizationCustomerId = params.organizationCustomerId?.trim() ?? "";
+  if (
+    organizationCustomerId &&
+    attachedCustomerId &&
+    attachedCustomerId === organizationCustomerId
+  ) {
+    return { action: "reject", message: DEAL_COMPANY_CARD_MESSAGE };
+  }
   const owned = new Set(
     (params.ownedCustomerIds ?? [])
       .map((id) => id.trim())
@@ -852,14 +865,6 @@ async function customerForSavedDealPayment(params: {
   const organizationCustomerId = await organizationStripeCustomerId(
     params.companyId,
   );
-  if (
-    organizationCustomerId &&
-    attachedCustomerId === organizationCustomerId
-  ) {
-    throw new Error(
-      "Organization cards are not used to pay a deal. Use your own card.",
-    );
-  }
   const actorId = normalizeCompanyId(params.actorUserId);
   let actorCustomerId = "";
   if (actorId) {
@@ -874,6 +879,7 @@ async function customerForSavedDealPayment(params: {
     payerCustomerId,
     attachedCustomerId,
     paymentMethodId: params.paymentMethodId,
+    organizationCustomerId,
     ownedCustomerIds: [
       ...(await dealPayerStripeCustomerIds(params.companyId)),
       actorCustomerId,
@@ -2696,8 +2702,9 @@ export type BillingInvoiceRow = {
   dealName: string | null;
   billingScope?: "deal" | "extra_company_user" | null;
   comment?: string | null;
-  /** Portal user who started the deal payment, when Stripe metadata has one. */
+  /** Person shown on the deal payment. Lead sponsor when the invoice has no payer. */
   paidByName?: string | null;
+  paidByEmail?: string | null;
 };
 
 function payerUserIdFromStripeInvoice(inv: Stripe.Invoice): string | null {
@@ -2707,9 +2714,11 @@ function payerUserIdFromStripeInvoice(inv: Stripe.Invoice): string | null {
   return normalizeCompanyId(String(parentMeta?.payerUserId ?? ""));
 }
 
+type BillingPayerLabel = { name: string; email: string };
+
 async function billingUserDisplayNames(
   userIds: Array<string | null | undefined>,
-): Promise<Map<string, string>> {
+): Promise<Map<string, BillingPayerLabel>> {
   const ids = [
     ...new Set(
       userIds
@@ -2717,7 +2726,7 @@ async function billingUserDisplayNames(
         .filter((id): id is string => Boolean(id)),
     ),
   ];
-  const names = new Map<string, string>();
+  const names = new Map<string, BillingPayerLabel>();
   if (ids.length === 0) return names;
   const rows = await db
     .select({
@@ -2734,11 +2743,11 @@ async function billingUserDisplayNames(
       .map((part) => String(part ?? "").trim())
       .filter(Boolean)
       .join(" ");
-    const label =
-      full ||
-      String(row.username ?? "").trim() ||
-      String(row.email ?? "").trim();
-    if (label) names.set(String(row.id).toLowerCase(), label);
+    const email = String(row.email ?? "").trim();
+    const name = full || String(row.username ?? "").trim() || email;
+    if (name || email) {
+      names.set(String(row.id).toLowerCase(), { name, email });
+    }
   }
   return names;
 }
@@ -3091,6 +3100,7 @@ export async function upsertBillingInvoiceFromStripe(params: {
     paidAt,
     invoiceDate,
     dueDate,
+    payerUserId: payerUserIdFromStripeInvoice(inv),
     updatedAt: new Date(),
   };
 
@@ -3120,6 +3130,7 @@ export async function upsertBillingInvoiceFromStripe(params: {
         ...(params.markPaid || paidAt ? { paidAt: values.paidAt } : {}),
         invoiceDate: values.invoiceDate,
         dueDate: values.dueDate,
+        ...(values.payerUserId ? { payerUserId: values.payerUserId } : {}),
         updatedAt: values.updatedAt,
       },
     });
@@ -3248,6 +3259,25 @@ export async function listCompanyStripeInvoices(
     options?.dealIds ?? null,
   );
   const dealNames = await mapCompanyDealNames(cid, options?.dealIds ?? null);
+  const historicalDealBySub = new Map<string, string>();
+  const historicalSubs = await pool.query<{
+    stripe_subscription_id: string;
+    deal_id: string;
+  }>(
+    `SELECT stripe_subscription_id, payload->>'dealId' AS deal_id
+     FROM company_billing_events
+     WHERE company_id = $1::uuid
+       AND stripe_subscription_id IS NOT NULL
+       AND coalesce(payload->>'dealId', '') <> ''`,
+    [cid],
+  );
+  for (const row of historicalSubs.rows) {
+    const subId = String(row.stripe_subscription_id ?? "").trim();
+    const dealId = normalizeCompanyId(row.deal_id);
+    if (subId && dealId && !historicalDealBySub.has(subId)) {
+      historicalDealBySub.set(subId, dealId);
+    }
+  }
   const scoped = Array.isArray(options?.dealIds);
   if (scoped && (options?.dealIds?.length ?? 0) === 0) {
     return { ok: true, invoices: [] };
@@ -3256,14 +3286,24 @@ export async function listCompanyStripeInvoices(
     ? new Set((options?.dealIds ?? []).map((id) => id.toLowerCase()))
     : null;
 
-  const invoices: BillingInvoiceRow[] = [];
   const payerUserIdByInvoiceId = new Map<string, string>();
+  const payerOnSubscription = new Map<string, string>();
+  for (const row of rows) {
+    const sub = row.stripeSubscriptionId?.trim() ?? "";
+    const storedPayer = normalizeCompanyId(String(row.payerUserId ?? ""));
+    if (sub && storedPayer && !payerOnSubscription.has(sub)) {
+      payerOnSubscription.set(sub, storedPayer);
+    }
+  }
+  const invoices: BillingInvoiceRow[] = [];
   for (const row of rows) {
     const sub = row.stripeSubscriptionId?.trim() ?? "";
     const deal = sub ? dealBySub.get(sub) : undefined;
     const extras = extrasByInvoice.get(row.stripeInvoiceId);
     const metaDealId = extras?.dealId ?? null;
-    const dealId = deal?.dealId ?? metaDealId;
+    const dealId = normalizeCompanyId(
+      deal?.dealId ?? historicalDealBySub.get(sub) ?? metaDealId ?? "",
+    );
     if (scoped && (!dealId || (allowedDealIds && !allowedDealIds.has(dealId)))) {
       continue;
     }
@@ -3275,6 +3315,8 @@ export async function listCompanyStripeInvoices(
     const payerUserId =
       payerByInvoiceId.get(row.stripeInvoiceId) ||
       (sub ? payerBySubscriptionId.get(sub) : undefined) ||
+      normalizeCompanyId(String(row.payerUserId ?? "")) ||
+      (sub ? payerOnSubscription.get(sub) : undefined) ||
       null;
     if (payerUserId) payerUserIdByInvoiceId.set(row.stripeInvoiceId, payerUserId);
     invoices.push({
@@ -3309,9 +3351,9 @@ export async function listCompanyStripeInvoices(
   ]);
   for (const invoice of invoices) {
     const payerUserId = payerUserIdByInvoiceId.get(invoice.id);
-    invoice.paidByName = payerUserId
-      ? paidByNames.get(payerUserId) ?? null
-      : null;
+    const payer = payerUserId ? paidByNames.get(payerUserId) : undefined;
+    invoice.paidByName = payer?.name || null;
+    invoice.paidByEmail = payer?.email || null;
   }
 
   const customerId = company.stripeCustomerId?.trim();

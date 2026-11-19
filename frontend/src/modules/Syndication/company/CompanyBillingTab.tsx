@@ -3016,7 +3016,8 @@ function DealMrrPaymentHistory({
     start: inv.periodStart || inv.invoiceDate,
     end: inv.periodEnd || inv.dueDate || inv.invoiceDate,
     plan: billingPlanLabel(inv.planId || dealPlanId(deal)),
-    paidBy: inv.paidByName?.trim() || "—",
+    paidByName: inv.paidByName?.trim() || "",
+    paidByEmail: inv.paidByEmail?.trim() || "",
     amount: inv.amount,
   }));
 
@@ -3069,8 +3070,25 @@ function DealMrrPaymentHistory({
                   </td>
                   <td>{row.end ? formatDealListDateDisplay(row.end) : "—"}</td>
                   <td>{row.plan}</td>
-                  <td className="cp_billing_mrr_payer" title={row.paidBy}>
-                    {row.paidBy}
+                  <td className="cp_billing_mrr_payer">
+                    {row.paidByName || row.paidByEmail ? (
+                      <>
+                        {row.paidByName ? (
+                          <span className="cp_billing_mrr_payer_name">
+                            {row.paidByName}
+                          </span>
+                        ) : null}
+                        {row.paidByEmail &&
+                        row.paidByEmail.toLowerCase() !==
+                          row.paidByName.toLowerCase() ? (
+                          <span className="cp_billing_mrr_payer_email">
+                            {row.paidByEmail}
+                          </span>
+                        ) : null}
+                      </>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td className="cp_billing_mrr_amount">{row.amount}</td>
                 </tr>

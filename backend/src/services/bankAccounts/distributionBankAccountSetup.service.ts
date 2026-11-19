@@ -21,7 +21,9 @@ import {
   isEligibleActiveBankAccount,
   resolveBankAccountForSetup,
   resolveBankAccountSetupStatus,
+  stripeBankConnection,
   type BankAccountSetupStatus,
+  type StripeBankConnection,
 } from "./bankAccountSetup.js";
 
 const UUID_RE =
@@ -30,6 +32,7 @@ const UUID_RE =
 export type DistributionBankAccountSetupLine = {
   investmentId: string;
   status: BankAccountSetupStatus;
+  stripeConnection: StripeBankConnection;
 };
 
 function uuid(value: string): string | null {
@@ -106,6 +109,8 @@ export async function listDistributionBankAccountSetup(params: {
         id: dealInvestment.id,
         profileId: dealInvestment.userInvestorProfileId,
         investorUserId: userInvestorProfiles.userId,
+        stripeAccountId: userInvestorProfiles.stripeConnectAccountId,
+        stripePayoutsEnabled: userInvestorProfiles.stripeConnectPayoutsEnabled,
       })
       .from(dealInvestment)
       .leftJoin(
@@ -159,6 +164,10 @@ export async function listDistributionBankAccountSetup(params: {
         associatedAccountId,
         profileId,
       }),
+      stripeConnection: stripeBankConnection({
+        accountId: investment?.stripeAccountId,
+        payoutsEnabled: investment?.stripePayoutsEnabled,
+      }),
     };
   });
 }
@@ -179,6 +188,7 @@ export type DistributionBankAccountDetail = {
 export type DistributionBankAccountDetails = {
   investmentId: string;
   status: BankAccountSetupStatus;
+  stripeConnection: StripeBankConnection;
   investorProfileName: string | null;
   /** The one account this deal's distribution line pays to, if any. */
   account: DistributionBankAccountDetail | null;
@@ -249,6 +259,7 @@ export async function getDistributionInvestmentBankAccountDetails(params: {
     return {
       investmentId,
       status: "not_set_up",
+      stripeConnection: "not_connected",
       investorProfileName: null,
       account: null,
     };
@@ -279,6 +290,7 @@ export async function getDistributionInvestmentBankAccountDetails(params: {
             profileName: userInvestorProfiles.profileName,
             status: userInvestorProfiles.stripeConnectStatus,
             payoutsEnabled: userInvestorProfiles.stripeConnectPayoutsEnabled,
+            connectAccountId: userInvestorProfiles.stripeConnectAccountId,
             distributionMethod: userInvestorProfiles.distributionMethod,
             achRoutingNumber: userInvestorProfiles.achRoutingNumber,
             achAccountNumber: userInvestorProfiles.achAccountNumber,
@@ -348,6 +360,10 @@ export async function getDistributionInvestmentBankAccountDetails(params: {
   return {
     investmentId,
     status: used ? "set_up" : "not_set_up",
+    stripeConnection: stripeBankConnection({
+      accountId: lineProfile?.connectAccountId,
+      payoutsEnabled: lineProfile?.payoutsEnabled,
+    }),
     investorProfileName:
       lineProfile?.profileName?.trim() ||
       sourceProfile?.profileName?.trim() ||

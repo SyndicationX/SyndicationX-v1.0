@@ -2,6 +2,7 @@ export {
   bankDetailsArePresent,
   isEligibleActiveBankAccount,
   resolveBankAccountSetupStatus,
+  stripeBankConnection,
   savedProfileBankDetailsPresent,
   type BankAccountPresence,
   type BankAccountSetupStatus,

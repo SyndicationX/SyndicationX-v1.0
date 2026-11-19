@@ -292,6 +292,12 @@ export type ProfileBookSnapshot = {
     profileWizardState: unknown | null;
     /** Distribution / bank columns (also merged into `profileWizardState` on read). */
     distributionBank: InvestorProfileDistributionBankApi;
+    /** Stripe Connect state for this profile. Account ids are not returned. */
+    stripeBank: {
+      hasAccount: boolean;
+      payoutsEnabled: boolean;
+      status: string;
+    };
   }>;
   beneficiaries: Array<{
     id: string;
@@ -657,6 +663,11 @@ function mapProfileRow(
       : null,
     profileWizardState: mergeDistributionBankIntoWizardState(row.formSnapshot, row),
     distributionBank: distributionBankForApi(row),
+    stripeBank: {
+      hasAccount: Boolean(row.stripeConnectAccountId?.trim()),
+      payoutsEnabled: row.stripeConnectPayoutsEnabled,
+      status: row.stripeConnectStatus,
+    },
   };
 }
 

@@ -344,6 +344,8 @@ interface DealMembersTabProps {
   invitationMailBlocked?: boolean
   /** Another organization's deal: roster is readable, management is hidden. */
   viewOnly?: boolean
+  /** Co-sponsors cannot remove a member, investor, or investment. */
+  removeHidden?: boolean
   /** Investor-company viewers see only the lead sponsor under General Partners. */
   leadSponsorOnly?: boolean
 }
@@ -366,6 +368,7 @@ export function DealMembersTab({
   invitationMailSendingByRowId,
   invitationMailBlocked = false,
   viewOnly = false,
+  removeHidden = false,
   leadSponsorOnly = false,
 }: DealMembersTabProps) {
   const navigate = useNavigate()
@@ -862,6 +865,7 @@ export function DealMembersTab({
             }
             orgStyleRemoveConfirm={rosterKind === "deal_members"}
             viewOnly={viewOnly}
+            removeHidden={removeHidden}
           />
         </div>
       ),
@@ -1297,6 +1301,8 @@ export function DealMembersTab({
     handleViewMember,
     invitationMailSendingByRowId,
     invitationMailBlocked,
+    viewOnly,
+    removeHidden,
   ])
 
   function handleExportDealMembers(selected: DealInvestorRow[]) {

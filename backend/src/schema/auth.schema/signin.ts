@@ -45,6 +45,11 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
+  /**
+   * Sessions issued before this time are signed out. Set when role, company,
+   * or status changes.
+   */
+  sessionInvalidAfter: timestamp("session_invalid_after", { withTimezone: true }),
   inviteExpiresAt: timestamp("invite_expires_at", { withTimezone: true }),
   /** Portal user who sent the organization invite. Null for self-serve signups. */
   invitedByUserId: uuid("invited_by_user_id").references(

@@ -66,6 +66,18 @@ function normalizeDistributionBank(raw: unknown): InvestorProfileDistributionBan
   }
 }
 
+function normalizeStripeBank(
+  raw: unknown,
+): InvestorProfileListRow["stripeBank"] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+  const row = raw as Record<string, unknown>
+  return {
+    hasAccount: Boolean(row.hasAccount ?? row.has_account),
+    payoutsEnabled: Boolean(row.payoutsEnabled ?? row.payouts_enabled),
+    status: String(row.status ?? "not_started").trim() || "not_started",
+  }
+}
+
 /** Coerce a profile row from JSON (snake or camel) into `InvestorProfileListRow` shape. */
 export function normalizeInvestorProfileListRow(
   raw: unknown,
@@ -106,6 +118,7 @@ export function normalizeInvestorProfileListRow(
         : null,
     profileWizardState: r.profileWizardState ?? r.profile_wizard_state ?? r.form_snapshot,
     distributionBank: normalizeDistributionBank(r.distributionBank ?? r.distribution_bank),
+    stripeBank: normalizeStripeBank(r.stripeBank ?? r.stripe_bank),
   }
 }
 

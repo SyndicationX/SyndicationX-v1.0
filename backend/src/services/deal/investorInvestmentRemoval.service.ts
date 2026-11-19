@@ -20,18 +20,12 @@ import {
   isDealCompanyUserStoredRole,
   isLpInvestorRole,
   isRetiredDealInvestment,
-  loadRosterAddedByMaps,
-  mapContactIdsToCanonicalCommitmentKeys,
-  resolveInvestorRowAddedByUserId,
 } from "./dealInvestment.service.js";
 import {
   LEAD_SPONSOR_REQUIRED_MESSAGE,
   leadSponsorContactKeysForDeal,
 } from "./dealMember.service.js";
-import {
-  listCoSponsorPortalUserIdsOnDeal,
-  resolveViewerDealMemberRoleOnDeal,
-} from "./dealMemberScope.service.js";
+import { resolveViewerDealMemberRoleOnDeal } from "./dealMemberScope.service.js";
 import {
   blocksLastLeadSponsorRemoval,
   planInvestorRemoval,
@@ -91,47 +85,16 @@ function toMember(row: typeof dealMember.$inferSelect): RemovalMember {
   };
 }
 
-const CO_SPONSOR_INVESTOR_REMOVAL_MESSAGE =
-  "Lead and admin sponsors cannot remove an investor added by a co-sponsor.";
+export const CO_SPONSOR_REMOVAL_FORBIDDEN_MESSAGE =
+  "Co-sponsors cannot remove an investment or investor.";
 
-/**
- * Lead and admin sponsors keep the full roster, but a co-sponsor's investors
- * stay with that co-sponsor. `added_by` is the Sponsor name on the investor.
- */
-async function leadOrAdminRemovingCoSponsorInvestor(params: {
-  dealId: string;
-  actorUserId: string;
-  contactId: string;
-  rowId: string;
-}): Promise<boolean> {
-  const role = await resolveViewerDealMemberRoleOnDeal(
-    params.dealId,
-    params.actorUserId,
-  );
-  if (role !== "lead_sponsor" && role !== "admin_sponsor") return false;
-  const contactId = params.contactId.trim();
-  const rowId = params.rowId.trim();
-  if (!contactId && !rowId) return false;
-  const [maps, coSponsorIds] = await Promise.all([
-    loadRosterAddedByMaps(params.dealId),
-    listCoSponsorPortalUserIdsOnDeal(params.dealId),
-  ]);
-  const rawToCanonical = await mapContactIdsToCanonicalCommitmentKeys([
-    contactId,
-    ...maps.byContactKey.keys(),
-  ]);
-  const addedBy = resolveInvestorRowAddedByUserId(
-    { id: rowId, contactId },
-    maps.byContactKey,
-    maps.byLpRowId,
-    rawToCanonical,
-    maps.lpContactKeys,
-  );
-  if (!addedBy) return false;
-  const coSponsors = new Set(
-    coSponsorIds.map((id) => id.trim().toLowerCase()).filter(Boolean),
-  );
-  return coSponsors.has(addedBy.trim().toLowerCase());
+/** A co-sponsor cannot remove any investment, investor, or roster row on the deal. */
+export async function coSponsorBlockedFromDealRemoval(
+  dealId: string,
+  actorUserId: string,
+): Promise<boolean> {
+  const role = await resolveViewerDealMemberRoleOnDeal(dealId, actorUserId);
+  return role === "co_sponsor";
 }
 
 async function actorName(userId: string): Promise<string> {
@@ -454,17 +417,11 @@ export async function removeInvestorOrInvestment(params: {
         ? [investment, ...contactInvestments]
         : contactInvestments;
 
-    const coSponsorOwned = await leadOrAdminRemovingCoSponsorInvestor({
-      dealId,
-      actorUserId,
-      contactId,
-      rowId: lpRow?.id ?? rowId,
-    });
-    if (coSponsorOwned) {
+    if (await coSponsorBlockedFromDealRemoval(dealId, actorUserId)) {
       return {
         ok: false,
         status: 403,
-        message: CO_SPONSOR_INVESTOR_REMOVAL_MESSAGE,
+        message: CO_SPONSOR_REMOVAL_FORBIDDEN_MESSAGE,
       };
     }
 

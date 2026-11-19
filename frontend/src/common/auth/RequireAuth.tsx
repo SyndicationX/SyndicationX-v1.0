@@ -1,9 +1,18 @@
 import { useEffect } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
-import { ensureValidAccessToken, handleAuthSessionExpired } from "./portalFetch";
+import { getApiV1Base } from "../utils/apiBaseUrl";
+import {
+  ensureValidAccessToken,
+  handleAuthSessionExpired,
+  PORTAL_NO_REFRESH_HEADER,
+  PORTAL_SKIP_ACTIVITY_HEADER,
+} from "./portalFetch";
 import { parseSafeNextPath } from "./parseSafeNextPath";
 import { AUTH_RETURN_NEXT_KEY, SESSION_BEARER_KEY } from "./sessionKeys";
 import { useIdleLogout } from "./useIdleLogout";
+
+/** How often to notice a revoked session after an admin changes access. */
+const ACCESS_SESSION_CHECK_MS = 2_000;
 
 function IdleSessionGuard() {
   useIdleLogout();
@@ -24,6 +33,24 @@ function AuthBootstrap() {
       cancelled = true;
     };
   }, [location.key]);
+
+  useEffect(() => {
+    const base = getApiV1Base();
+    if (!base) return;
+    const checkSession = () => {
+      if (!sessionStorage.getItem(SESSION_BEARER_KEY)) return;
+      void fetch(`${base}/auth/me`, {
+        method: "GET",
+        headers: {
+          [PORTAL_SKIP_ACTIVITY_HEADER]: "1",
+          [PORTAL_NO_REFRESH_HEADER]: "1",
+        },
+      });
+    };
+    checkSession();
+    const timer = window.setInterval(checkSession, ACCESS_SESSION_CHECK_MS);
+    return () => window.clearInterval(timer);
+  }, []);
   return null;
 }
 

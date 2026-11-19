@@ -10,7 +10,11 @@ import {
   resolveDealViewerScope,
   viewerInvestorCompanyLimitedDeal,
 } from "../../services/deal/dealAccess.service.js";
-import { removeInvestorOrInvestment } from "../../services/deal/investorInvestmentRemoval.service.js";
+import {
+  coSponsorBlockedFromDealRemoval,
+  CO_SPONSOR_REMOVAL_FORBIDDEN_MESSAGE,
+  removeInvestorOrInvestment,
+} from "../../services/deal/investorInvestmentRemoval.service.js";
 import { parseRemovalRequest } from "../../services/deal/investorInvestmentRemoval.plan.js";
 import {
   deleteDealMemberRosterEntry,
@@ -1022,6 +1026,10 @@ export async function deleteDealMember(
     );
     if (!(await assertDealIdInViewerScope(dealId, scope))) {
       res.status(404).json({ message: "Deal not found" });
+      return;
+    }
+    if (await coSponsorBlockedFromDealRemoval(dealId, user.id)) {
+      res.status(403).json({ message: CO_SPONSOR_REMOVAL_FORBIDDEN_MESSAGE });
       return;
     }
     const scopeRaw = req.query.scope;

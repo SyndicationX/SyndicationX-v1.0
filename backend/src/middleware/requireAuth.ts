@@ -1,8 +1,17 @@
 import type { NextFunction, Request, Response } from "express";
-import { getValidJwtUser, type JwtUserPayload } from "./jwtUser.js";
+import {
+  ACCESS_UPDATED_AUTH_CODE,
+  ACCESS_UPDATED_AUTH_MESSAGE,
+} from "../services/auth/token.service.js";
+import {
+  getValidJwtUser,
+  type JwtUserPayload,
+  type RequestWithPortalAuth,
+} from "./jwtUser.js";
 
 export type AuthenticatedRequest = Request & {
   portalUser?: JwtUserPayload;
+  portalAuthFailure?: "access_updated";
 };
 
 /**
@@ -15,6 +24,13 @@ export async function requireAuth(
 ): Promise<void> {
   const user = await getValidJwtUser(req);
   if (!user?.id) {
+    if ((req as RequestWithPortalAuth).portalAuthFailure === "access_updated") {
+      res.status(401).json({
+        code: ACCESS_UPDATED_AUTH_CODE,
+        message: ACCESS_UPDATED_AUTH_MESSAGE,
+      });
+      return;
+    }
     res.status(401).json({ message: "Authorization required" });
     return;
   }

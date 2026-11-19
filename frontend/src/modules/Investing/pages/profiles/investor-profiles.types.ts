@@ -35,6 +35,12 @@ export type InvestorProfileListRow = {
   profileWizardState?: unknown | null
   /** Dedicated DB columns for distribution / ACH bank (synced on save). */
   distributionBank?: InvestorProfileDistributionBank
+  /** Stripe Connect state. A saved account number is not a Stripe connection. */
+  stripeBank?: {
+    hasAccount: boolean
+    payoutsEnabled: boolean
+    status: string
+  }
 }
 
 export type NewInvestorProfilePayload = {

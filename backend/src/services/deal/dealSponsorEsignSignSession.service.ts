@@ -487,9 +487,9 @@ export async function getDealSponsorEsignSignSession(params: {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         if (
-          !portalReadyForSponsor &&
-          (message.includes("WAITING_FOR_PRIOR_SIGNER") ||
-            message.toLowerCase().includes("investor must sign"))
+          message.includes("WAITING_FOR_PRIOR_SIGNER") ||
+          message.toLowerCase().includes("investor must sign") ||
+          message.toLowerCase().includes("must sign first")
         ) {
           return {
             ok: false,

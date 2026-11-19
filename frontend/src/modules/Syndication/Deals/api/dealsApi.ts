@@ -5702,7 +5702,7 @@ function appendDealInvestmentMultipartFields(
   fd: FormData,
   values: AddInvestmentFormValues,
   documentFile: File | null,
-  options?: { autosave?: boolean },
+  options?: { autosave?: boolean; fundApprovalOnly?: boolean },
 ): void {
   fd.append("offering_id", values.offeringId)
   fd.append("contact_id", values.contactId)
@@ -5740,6 +5740,7 @@ function appendDealInvestmentMultipartFields(
     )
   }
   if (options?.autosave) fd.append("autosave", "true")
+  if (options?.fundApprovalOnly) fd.append("fund_approval_only", "true")
 }
 
 /**
@@ -5834,7 +5835,7 @@ export async function putDealInvestment(
   investmentId: string,
   values: AddInvestmentFormValues,
   documentFile: File | null,
-  options?: { autosave?: boolean },
+  options?: { autosave?: boolean; fundApprovalOnly?: boolean },
 ): Promise<PostDealInvestmentResult> {
   const base = getApiV1Base()
   if (!base) return { ok: true, mode: "client" }

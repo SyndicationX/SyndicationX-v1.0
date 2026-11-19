@@ -220,13 +220,29 @@ export function planInvestorRemoval(
 
   if (parsed.action === "remove_investment") {
     if (!selected) {
-      return {
-        ok: false,
-        status: 400,
-        message:
-          "Choose the investment row to remove. Other investments for this investor stay on the deal.",
-      };
-    }
+      if (input.investments.length > 0) {
+        return {
+          ok: false,
+          status: 400,
+          message:
+            "Choose the investment row to remove. Other investments for this investor stay on the deal.",
+        };
+      }
+      if (!input.lp || input.lp.removedAt) {
+        return {
+          ok: false,
+          status: input.lp?.removedAt ? 409 : 404,
+          message: input.lp?.removedAt
+            ? "This investor was already removed."
+            : "Investor or investment not found.",
+        };
+      }
+      mutations.push({
+        type: "soft_delete_lp",
+        id: input.lp.id,
+        previous: input.lp.previous,
+      });
+    } else
     if (investmentWasRemoved(selected)) {
       mutations.push({
         type: "release_investment_commitment",

@@ -39,6 +39,8 @@ export const companyBillingInvoices = pgTable(
     /** Last Stripe payment failure message, if any. */
     paymentFailureMessage: text("payment_failure_message"),
     paymentFailedAt: timestamp("payment_failed_at", { withTimezone: true }),
+    /** Portal user who started this payment. Not the deal's lead sponsor unless they paid. */
+    payerUserId: uuid("payer_user_id"),
     paidAt: timestamp("paid_at", { withTimezone: true }),
     invoiceDate: timestamp("invoice_date", { withTimezone: true }),
     dueDate: timestamp("due_date", { withTimezone: true }),

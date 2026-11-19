@@ -813,6 +813,20 @@
       "when": 1896190000000,
       "tag": "0116_deal_investment_fund_approved_at_history",
       "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1896200000000,
+      "tag": "0117_user_session_invalid_after",
+      "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "7",
+      "when": 1896210000000,
+      "tag": "0118_invoice_payer_user",
+      "breakpoints": true
     }
   ]
 }

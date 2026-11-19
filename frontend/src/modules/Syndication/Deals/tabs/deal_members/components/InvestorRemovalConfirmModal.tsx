@@ -11,12 +11,15 @@ export function InvestorRemovalConfirmModal({
   investorName,
   busy,
   error,
+  removeInvestmentDisabled = false,
   onClose,
   onConfirm,
 }: {
   investorName: string
   busy: boolean
   error: string
+  /** No committed or funded amount on this row. */
+  removeInvestmentDisabled?: boolean
   onClose: () => void
   onConfirm: (removal: { action: InvestorRemovalAction; reason: string }) => void
 }) {
@@ -101,9 +104,16 @@ export function InvestorRemovalConfirmModal({
               <button
                 type="button"
                 className="um_btn_danger"
-                disabled={!canSubmit}
-                title="Remove only this investment. The investor stays on the deal."
-                onClick={() => submit("remove_investment")}
+                disabled={!canSubmit || removeInvestmentDisabled}
+                title={
+                  removeInvestmentDisabled
+                    ? "No amount is invested on this row."
+                    : "Remove only this investment. The investor stays on the deal."
+                }
+                onClick={() => {
+                  if (removeInvestmentDisabled) return
+                  submit("remove_investment")
+                }}
               >
                 <Landmark size={16} strokeWidth={2} aria-hidden />
                 {busy ? "Removing…" : "Remove Investment"}

@@ -203,6 +203,21 @@ button.investing_profile_bank_select_trigger {
   border-color: color-mix(in srgb, #8b5cf6 32%, transparent);
 }
 
+.investing_bank_connect_btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2rem;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.investing_bank_stripe_done {
+  color: var(--portal-text-muted, #64748b);
+  font-size: 0.8125rem;
+}
+
 .investing_table_muted {
   color: var(--portal-text-muted, #94a3b8);
 }

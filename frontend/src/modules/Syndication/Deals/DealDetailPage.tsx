@@ -1006,8 +1006,8 @@ export function DealDetailPage() {
             ? "Investment removed"
             : "Investor removed",
           removal.action === "remove_investment"
-            ? "That investment was removed. The investor and any other investment on this deal were left in place."
-            : "This investor was removed from the selected investment. Their account and other investments were left in place.",
+            ? "That investment amount was removed. This row stays on the Investors tab."
+            : "This investor was removed from the Investors tab for that investment. Any other investment on the deal stays.",
         )
         setDealMembersRefreshKey((k) => k + 1)
         void dealInvestorsTabRef.current?.refetchInvestors()
@@ -1328,6 +1328,7 @@ export function DealDetailPage() {
                   })
                 }}
                 viewOnly={syndicationViewOnly}
+                removeHidden={viewerDealMemberRole === "co_sponsor"}
                 leadSponsorOnly={investorCompanyLimited}
               />
             ) : null}

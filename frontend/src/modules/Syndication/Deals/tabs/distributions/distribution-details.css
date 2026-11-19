@@ -356,6 +356,13 @@
   text-transform: capitalize;
 }
 
+.deal_dist_bank_setup_stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+}
+
 .deal_dist_ach_badge--neutral {
   color: #6b7280;
   background: color-mix(in srgb, #9ca3af 12%, transparent);

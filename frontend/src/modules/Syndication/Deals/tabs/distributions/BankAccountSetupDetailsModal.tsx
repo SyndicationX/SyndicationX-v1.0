@@ -15,7 +15,10 @@ import {
   type DistributionBankAccountDetail,
   type DistributionBankAccountDetails,
 } from "@/modules/Investing/api/stripeInvestorPaymentsApi"
-import { BankAccountSetupBadge } from "./BankAccountSetupBadge"
+import {
+  BankAccountSetupBadge,
+  StripeConnectionBadge,
+} from "./BankAccountSetupBadge"
 import "./distribution-details.css"
 
 export type BankAccountSetupDetailsTarget = {
@@ -236,6 +239,10 @@ export function BankAccountSetupDetailsModal({
               <div className="deal_dist_bank_setup_status">
                 <span>Setup status</span>
                 <BankAccountSetupBadge status={details.status} />
+              </div>
+              <div className="deal_dist_bank_setup_status">
+                <span>Stripe setup status</span>
+                <StripeConnectionBadge connection={details.stripeConnection} />
               </div>
               {rows.length > 0 ? (
                 <dl className="deal_dist_ach_confirm_summary">

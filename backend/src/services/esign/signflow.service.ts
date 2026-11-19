@@ -284,6 +284,56 @@ export async function getSignFlowDocument(
   return doc;
 }
 
+function investorSignatureFieldsFilled(
+  doc: SignFlowDocument,
+  recipientId: string,
+): boolean {
+  const fields = (doc.fields ?? []).filter((field) => {
+    if (String(field.recipientId ?? "").trim() !== recipientId) return false;
+    const type = String(field.type ?? "").trim().toLowerCase();
+    return type === "signature" || type === "initials" || type === "initial";
+  });
+  if (fields.length === 0) return false;
+  const required = fields.filter((field) => field.required !== false);
+  const check = required.length > 0 ? required : fields;
+  return check.every((field) => Boolean(String(field.value ?? "").trim()));
+}
+
+/**
+ * SignFlow only opens a sequential sponsor session after a completed investor
+ * signing session. Filled signature fields do not create that session when the
+ * investor left before Complete Signing was stored. Record it from the ink
+ * already on the document so the sponsor can open the same packet.
+ */
+async function recordCompletedInvestorSessionsFromFilledFields(
+  documentId: string,
+): Promise<void> {
+  const doc = await getSignFlowDocument(documentId);
+  const buyers = (doc.recipients ?? []).filter(
+    (recipient) =>
+      matchSignFlowPartyRole(recipient, "investor") &&
+      !signFlowRecipientHasSigned(recipient),
+  );
+  for (const buyer of buyers) {
+    const recipientId = buyer.id?.trim();
+    if (!recipientId || !investorSignatureFieldsFilled(doc, recipientId)) continue;
+    const email = String(buyer.email ?? "").trim();
+    const session = await createSignFlowEmbedSigningSession({
+      documentId,
+      recipientId,
+      ...(email ? { recipientEmail: email } : {}),
+    });
+    await signflowRequest(
+      `/signing/sessions/${encodeURIComponent(session.token)}/complete`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+  }
+}
+
 /**
  * Reconcile SignFlow signing_sessions with investor field values so sponsor
  * counter-sign can open after the portal recorded investor completion.
@@ -298,8 +348,14 @@ export async function ensureSignFlowInvestorPhaseRecorded(
       `/documents/${encodeURIComponent(id)}/embed/ensure-investor-phase`,
       { method: "POST" },
     );
+    return;
   } catch (err) {
     console.warn("ensureSignFlowInvestorPhaseRecorded:", err);
+  }
+  try {
+    await recordCompletedInvestorSessionsFromFilledFields(id);
+  } catch (err) {
+    console.warn("recordCompletedInvestorSessionsFromFilledFields:", err);
   }
 }
 

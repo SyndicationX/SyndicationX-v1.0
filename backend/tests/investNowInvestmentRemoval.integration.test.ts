@@ -9,10 +9,7 @@ import {
   resolveInvestorRowAddedByUserId,
 } from "../src/services/deal/dealInvestment.service.js";
 import { listMergedLpInvestorsForDeal } from "../src/services/deal/dealLpInvestor.service.js";
-import {
-  listCoSponsorPortalUserIdsOnDeal,
-  resolveViewerDealMemberRoleOnDeal,
-} from "../src/services/deal/dealMemberScope.service.js";
+import { resolveViewerDealMemberRoleOnDeal } from "../src/services/deal/dealMemberScope.service.js";
 import { REMOVED_INVESTMENT_STATUS } from "../src/services/deal/investorInvestmentRemoval.plan.js";
 import { removeInvestorOrInvestment } from "../src/services/deal/investorInvestmentRemoval.service.js";
 
@@ -84,17 +81,11 @@ describe("Invest Now investment on a sponsor deal", () => {
       );
       const userId = user.rows[0]?.id ?? "";
       if (!userId) continue;
-      const [role, coSponsorIds] = await Promise.all([
-        resolveViewerDealMemberRoleOnDeal(candidate.deal_id, userId),
-        listCoSponsorPortalUserIdsOnDeal(candidate.deal_id),
-      ]);
-      const coSponsors = new Set(
-        coSponsorIds.map((id) => id.trim().toLowerCase()),
+      const role = await resolveViewerDealMemberRoleOnDeal(
+        candidate.deal_id,
+        userId,
       );
-      const leadBlocked =
-        (role === "lead_sponsor" || role === "admin_sponsor") &&
-        coSponsors.has(userId.trim().toLowerCase());
-      if (leadBlocked) continue;
+      if (role === "co_sponsor") continue;
       seed = candidate;
       actorId = userId;
       break;

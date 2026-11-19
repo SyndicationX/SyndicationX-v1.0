@@ -1,15 +1,13 @@
 import { ensureValidAccessToken } from "../../../../common/auth/portalFetch"
 import { portalAuthHeaders } from "../../../../common/auth/portalAuthHeaders"
 import { getApiV1Base } from "../../../../common/utils/apiBaseUrl"
-import type { DealInvestorsPayload } from "../types/deal-investors.types"
-import { fetchDealInvestors } from "./dealsApi"
 
 function authHeaders(): HeadersInit {
   return portalAuthHeaders({ omitActiveOrganization: true })
 }
 
 export type PatchMyLpDealInvestNowCommitmentResult =
-  | { ok: true; investorsPayload: DealInvestorsPayload; investmentId: string | null }
+  | { ok: true; investmentId: string | null }
   | { ok: false; message: string; duplicateProfile?: boolean }
 
 export type MyLpDealInvestNowCommitmentPayload = {
@@ -259,9 +257,6 @@ export async function patchMyLpDealInvestNowCommitment(
         duplicateProfile: code === "duplicate_profile_for_deal",
       }
     }
-    const investorsPayload = await fetchDealInvestors(did, {
-      lpInvestorsOnly: true,
-    })
     const investmentId =
       typeof data.investmentId === "string"
         ? data.investmentId.trim()
@@ -270,7 +265,6 @@ export async function patchMyLpDealInvestNowCommitment(
           : null
     return {
       ok: true,
-      investorsPayload,
       investmentId: investmentId || null,
     }
   } catch (e) {

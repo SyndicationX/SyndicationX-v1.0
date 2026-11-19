@@ -1,4 +1,5 @@
 import { portalAuthHeaders } from "@/common/auth/portalAuthHeaders"
+import { PORTAL_TIMEOUT_HEADER } from "@/common/utils/requestTimeout"
 import { getApiV1Base } from "@/common/utils/apiBaseUrl"
 
 function baseOrThrow(): string {
@@ -328,9 +329,13 @@ export type DistributionPayout = {
 /** Presence of bank details only. Not verification and not ACH enablement. */
 export type BankAccountSetupStatus = "set_up" | "not_set_up"
 
+/** Stripe Connect state for the profile linked to a distribution line. */
+export type StripeBankConnection = "connected" | "pending" | "not_connected"
+
 export type DistributionBankAccountSetupLine = {
   investmentId: string
   status: BankAccountSetupStatus
+  stripeConnection: StripeBankConnection
 }
 
 export type DistributionPayoutBundle = {
@@ -359,6 +364,7 @@ export type DistributionBankAccountDetail = {
 export type DistributionBankAccountDetails = {
   investmentId: string
   status: BankAccountSetupStatus
+  stripeConnection: StripeBankConnection
   investorProfileName: string | null
   /** The one account this deal's distribution line pays to, if any. */
   account: DistributionBankAccountDetail | null
@@ -401,6 +407,7 @@ export async function fetchDistributionInvestmentBankAccountDetails(
   return {
     investmentId: String(data.investmentId ?? investmentId),
     status: data.status === "set_up" ? "set_up" : "not_set_up",
+    stripeConnection: parseStripeBankConnection(data.stripeConnection),
     investorProfileName: strOrNull(data.investorProfileName),
     account: row
       ? {
@@ -432,8 +439,20 @@ function parseBankAccountSetup(
     if (!investmentId) return []
     const status: BankAccountSetupStatus =
       row.status === "set_up" ? "set_up" : "not_set_up"
-    return [{ investmentId, status }]
+    return [
+      {
+        investmentId,
+        status,
+        stripeConnection: parseStripeBankConnection(row.stripeConnection),
+      },
+    ]
   })
+}
+
+function parseStripeBankConnection(value: unknown): StripeBankConnection {
+  return value === "connected" || value === "pending"
+    ? value
+    : "not_connected"
 }
 
 export async function fetchDistributionPayouts(
@@ -483,6 +502,9 @@ export async function executeDistributionAchPayouts(
       headers: {
         ...portalAuthHeaders(),
         "Content-Type": "application/json",
+        // Stripe debit + transfer + ACH can run past the normal 30s write budget.
+        // Aborting here shows a timeout while the payment may still complete.
+        [PORTAL_TIMEOUT_HEADER]: "0",
       },
       credentials: "include",
       body: JSON.stringify(

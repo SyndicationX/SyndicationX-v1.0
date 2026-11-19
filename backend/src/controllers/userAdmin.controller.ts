@@ -460,17 +460,21 @@ export async function patchUser(req: Request, res: Response): Promise<void> {
   const patch: {
     role?: string;
     userStatus?: string;
-    organizationId?: string;
+    organizationId?: string | null;
   } = {};
   if (typeof body.role === "string") patch.role = body.role;
   if (typeof body.userStatus === "string") patch.userStatus = body.userStatus;
-  const orgRaw =
-    typeof body.organizationId === "string"
-      ? body.organizationId.trim()
-      : typeof body.companyId === "string"
-        ? body.companyId.trim()
-        : "";
-  if (orgRaw) patch.organizationId = orgRaw;
+  if (body.organizationId === null || body.companyId === null) {
+    patch.organizationId = null;
+  } else {
+    const orgRaw =
+      typeof body.organizationId === "string"
+        ? body.organizationId.trim()
+        : typeof body.companyId === "string"
+          ? body.companyId.trim()
+          : "";
+    if (orgRaw) patch.organizationId = orgRaw;
+  }
 
   const reasonRaw =
     typeof body.reason === "string" ? body.reason.trim() : "";

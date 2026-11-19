@@ -274,6 +274,7 @@ export default function InvestingProfilesPage() {
   )
   const [bankDeleteBusy, setBankDeleteBusy] = useState(false)
   const [bankFormProfileId, setBankFormProfileId] = useState<string | null>(null)
+  const [stripeConnectBusy, setStripeConnectBusy] = useState(false)
 
   const reloadProfileBook = useCallback(async () => {
     try {
@@ -893,6 +894,37 @@ export default function InvestingProfilesPage() {
     return undefined
   }, [])
 
+  const connectProfileToStripe = useCallback(
+    async (profileId: string) => {
+      if (!profileId || stripeConnectBusy) return
+      setStripeConnectBusy(true)
+      try {
+        const link = await startStripeConnectRecipientOnboarding(profileId)
+        window.location.assign(link.url)
+      } catch (err) {
+        toast.error(
+          "Could not connect to Stripe",
+          err instanceof Error ? err.message : "Please try again.",
+        )
+        setStripeConnectBusy(false)
+      }
+    },
+    [stripeConnectBusy],
+  )
+
+  const connectBankToStripe = useCallback(
+    async (row: BankAccountTableRow) => {
+      const profileId =
+        row.profileIds.find((id) => {
+          const profile = profiles.find((item) => item.id === id)
+          return !profile?.stripeBank?.payoutsEnabled
+        }) ?? row.profileIds[0]
+      if (!profileId) return
+      await connectProfileToStripe(profileId)
+    },
+    [connectProfileToStripe, profiles],
+  )
+
   const profileColumns: DataTableColumn<InvestorProfileListRow>[] = useMemo(
     () => [
       {
@@ -1023,6 +1055,17 @@ export default function InvestingProfilesPage() {
               )
             }}
             onExport={() => exportInvestorProfileRow(row)}
+            onSetupPayouts={
+              row.id === ADD_PROFILE_DRAFT_ROW_ID ||
+              row.stripeBank?.payoutsEnabled
+                ? undefined
+                : () => void connectProfileToStripe(row.id)
+            }
+            bankSetupLabel={
+              row.stripeBank?.hasAccount
+                ? "Continue Stripe"
+                : "Connect to Stripe"
+            }
           />
         ),
       },
@@ -1034,6 +1077,7 @@ export default function InvestingProfilesPage() {
       navigate,
       openProfileView,
       profileResumeHref,
+      connectProfileToStripe,
     ],
   )
 
@@ -1428,7 +1472,7 @@ export default function InvestingProfilesPage() {
         <InvestingBankAccountsTab
           rows={bankAccountRows}
           loading={bookLoading}
-          setupBusy={bankDeleteBusy}
+          setupBusy={bankDeleteBusy || stripeConnectBusy}
           onAddBank={() => {
             const active = profiles.filter((row) => !row.archived && !row.isDraft)
             const covered = new Set(bankAccountRows.flatMap((row) => row.profileIds))
@@ -1445,6 +1489,7 @@ export default function InvestingProfilesPage() {
           onViewBank={setBankViewRow}
           onEditBank={(row) => editBankAccount(row)}
           onDeleteBank={setBankDeleteRow}
+          onConnectStripe={(row) => void connectBankToStripe(row)}
         />
       ) : null}
 

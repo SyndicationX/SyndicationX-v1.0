@@ -4,6 +4,17 @@
  */
 export type BankAccountSetupStatus = "set_up" | "not_set_up";
 
+/** Whether the investment's investor profile can receive ACH through Stripe. */
+export type StripeBankConnection = "connected" | "pending" | "not_connected";
+
+export function stripeBankConnection(input: {
+  accountId?: string | null;
+  payoutsEnabled?: boolean | null;
+}): StripeBankConnection {
+  if (!String(input.accountId ?? "").trim()) return "not_connected";
+  return input.payoutsEnabled ? "connected" : "pending";
+}
+
 export type BankAccountPresence = {
   /** Stable bank-account record id (Connect account id). */
   id: string;

@@ -323,9 +323,10 @@ export async function fetchContactsResult(options?: {
   try {
     const params = new URLSearchParams()
     const allOrganizations = options?.allOrganizations === true
+    const explicitOrg = options?.organizationId?.trim() || ""
     const oid = allOrganizations
       ? ""
-      : options?.organizationId?.trim() || organizationIdQueryParam() || ""
+      : explicitOrg || organizationIdQueryParam() || ""
     if (oid) params.set("organizationId", oid)
     if (options?.sort === "name") params.set("sort", "name")
     if (options?.lean) params.set("lean", "1")
@@ -333,7 +334,9 @@ export async function fetchContactsResult(options?: {
     const res = await fetch(`${base}/contacts${q ? `?${q}` : ""}`, {
       headers: {
         ...authHeaders(
-          allOrganizations ? { omitActiveOrganization: true } : undefined,
+          allOrganizations || explicitOrg
+            ? { omitActiveOrganization: true }
+            : undefined,
         ),
       },
       credentials: "include",

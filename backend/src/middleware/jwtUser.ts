@@ -1,7 +1,7 @@
 import type { Request } from "express";
 import jwt from "jsonwebtoken";
 import { getJwtSecret } from "../config/auth.js";
-import { isAccessTokenActive } from "../services/auth/token.service.js";
+import { getAccessTokenState } from "../services/auth/token.service.js";
 
 export type JwtUserPayload = {
   id?: string;
@@ -9,6 +9,11 @@ export type JwtUserPayload = {
   userRole?: string;
   jti?: string;
   typ?: string;
+};
+
+export type RequestWithPortalAuth = Request & {
+  portalUser?: JwtUserPayload;
+  portalAuthFailure?: "access_updated";
 };
 
 export function bearerToken(req: Request): string | null {
@@ -41,9 +46,7 @@ export function getJwtUser(req: Request): JwtUserPayload | null {
 export async function getValidJwtUser(
   req: Request,
 ): Promise<JwtUserPayload | null> {
-  const authenticated = (
-    req as Request & { portalUser?: JwtUserPayload }
-  ).portalUser;
+  const authenticated = (req as RequestWithPortalAuth).portalUser;
   if (authenticated?.id) return authenticated;
 
   const token = bearerToken(req);
@@ -58,8 +61,12 @@ export async function getValidJwtUser(
   const jti = String(payload.jti ?? "").trim();
   if (!jti) return null;
 
-  const active = await isAccessTokenActive(jti);
-  if (!active) return null;
+  const state = await getAccessTokenState(jti);
+  if (state === "access_updated") {
+    (req as RequestWithPortalAuth).portalAuthFailure = "access_updated";
+    return null;
+  }
+  if (state !== "active") return null;
 
   return payload;
 }

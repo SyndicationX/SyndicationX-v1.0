@@ -3,6 +3,7 @@ import {
   SESSION_REFRESH_KEY,
 } from "./sessionKeys"
 import { getApiV1Base } from "../utils/apiBaseUrl"
+import { markAccessUpdatedSignOutNotice } from "./idleSession"
 
 export function getStoredAccessToken(): string | null {
   if (typeof sessionStorage === "undefined") return null
@@ -53,8 +54,18 @@ export async function refreshAuthTokens(): Promise<boolean> {
       accessToken?: string
       refreshToken?: string
       token?: string
+      code?: string
+      message?: string
     }
-    if (!res.ok) return false
+    if (!res.ok) {
+      if (
+        data.code === "access_updated" ||
+        /access was updated/i.test(String(data.message ?? ""))
+      ) {
+        markAccessUpdatedSignOutNotice()
+      }
+      return false
+    }
 
     const access =
       typeof data.accessToken === "string"

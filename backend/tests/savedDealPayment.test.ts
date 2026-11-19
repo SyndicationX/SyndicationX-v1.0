@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import type Stripe from "stripe";
 import {
   SAVED_CARD_USE_NEW_METHOD_MESSAGE,
+  DEAL_COMPANY_CARD_MESSAGE,
   decideSavedDealPayment,
   paymentMethodForExistingSubscription,
   stripeCustomerIdOf,
@@ -33,6 +34,7 @@ const SAVED_PAYMENTS = [
     paymentMethodId: "pm_massive_1234",
     cardCustomer: "cus_UvupSLIMRa30Zp",
     dealPayer: "cus_VOikLBJpvDmGOh",
+    organizationCustomerId: "cus_UvupSLIMRa30Zp",
   },
   {
     company: "Massive Capital",
@@ -41,6 +43,7 @@ const SAVED_PAYMENTS = [
     paymentMethodId: "pm_massive_6647",
     cardCustomer: "cus_UvupSLIMRa30Zp",
     dealPayer: "cus_VOikLBJpvDmGOh",
+    organizationCustomerId: "cus_UvupSLIMRa30Zp",
   },
   {
     company: "Czechmex Properties, LLC",
@@ -55,12 +58,22 @@ const SAVED_PAYMENTS = [
 describe("every saved payment in the database", () => {
   for (const saved of SAVED_PAYMENTS) {
     it(`charges ${saved.company} ${saved.brand} ${saved.last4} once on the customer that holds it`, () => {
+      const organizationCustomerId =
+        "organizationCustomerId" in saved ? saved.organizationCustomerId : "";
       const decision = decideSavedDealPayment({
         payerCustomerId: saved.dealPayer,
         attachedCustomerId: saved.cardCustomer,
         paymentMethodId: saved.paymentMethodId,
+        organizationCustomerId,
         ownedCustomerIds: [saved.cardCustomer, saved.dealPayer],
       });
+      if (organizationCustomerId && saved.cardCustomer === organizationCustomerId) {
+        assert.deepEqual(decision, {
+          action: "reject",
+          message: DEAL_COMPANY_CARD_MESSAGE,
+        });
+        return;
+      }
       assert.deepEqual(decision, {
         action: "charge",
         customerId: saved.cardCustomer,

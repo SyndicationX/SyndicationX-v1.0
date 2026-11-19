@@ -378,6 +378,14 @@ async function viewerMayUseOrganizationForContacts(
   userId: string,
   organizationId: string,
 ): Promise<boolean> {
+  const [viewer] = await db
+    .select({ role: users.role })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  // Platform admins are not members of customer companies. Customers → Contacts
+  // still writes into the company they have open.
+  if (isPlatformAdminRole(viewer?.role)) return true;
   if (await userHasAccessToOrganization(userId, organizationId)) return true;
   if (await viewerIsLeadOrAdminSponsorOnAnyDeal(userId, organizationId)) {
     return true;
@@ -1856,10 +1864,9 @@ function excludeForeignContactShadowedByOrganizationWhere(orgId: string): SQL {
 
 /**
  * All Contacts list:
- * - **platform_admin**: company CRM for the requested organization (Customers)
- *   or every company when no company is selected. Customers → All Contacts
- *   has no separate Platform Contacts tab, so that company's self-signups
- *   are included here. Company staff stay visible to a platform admin.
+ * - **platform_admin**: every company when no company is selected. Customers →
+ *   one organization uses that company's own directory (the same contacts
+ *   its company admin sees), not every portal user.
  * - Users tied to a company: contacts with **`organization_id` = viewer’s org**, plus **legacy**
  *   rows (`organization_id` null) whose `created_by` is anyone in that org.
  * - No company / org: only contacts they created themselves.
@@ -1895,6 +1902,38 @@ async function buildContactsScopeWhere(
       viewerUserId,
     );
   }
+  const requestedOrgForAdmin = normalizeOrganizationUuid(requestedOrganizationId);
+  if (isPlatformAdminRole(ctx.roleForScope) && !requestedOrgForAdmin) {
+    await syncDealInvestorsIntoAllOrganizationContacts(viewerUserId);
+    return and(
+      fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm),
+      excludePlatformSignupWhenCompanyCopyExistsWhere(),
+    )!;
+  }
+  if (isPlatformAdminRole(ctx.roleForScope) && requestedOrgForAdmin) {
+    const orgId = ctx.organizationId;
+    if (!orgId) return null;
+    const memberIds = await userIdsInOrganization(orgId);
+    const legacyMemberContacts =
+      memberIds.length > 0
+        ? and(
+            isNull(contact.organizationId),
+            inArray(contact.createdBy, memberIds),
+          )!
+        : null;
+    const orgScope = legacyMemberContacts
+      ? or(eq(contact.organizationId, orgId), legacyMemberContacts)!
+      : eq(contact.organizationId, orgId);
+    return and(
+      or(orgScope, contactsCreatedByOrganizationMembersWhere(orgId))!,
+      fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm),
+      excludePlatformAdminOnlyContactsWhere(),
+      excludeCompanyStaffFromContactsWhere(orgId),
+      excludeOutsideCoSponsorContactsWhere(orgId, memberIds),
+      excludeForeignContactShadowedByOrganizationWhere(orgId),
+    )!;
+  }
+
   const sponsorTeamSeesFullCrm = await viewerIsLeadOrAdminSponsorOnAnyDeal(
     viewerUserId,
     ctx.organizationId,
@@ -1938,54 +1977,6 @@ async function buildContactsScopeWhere(
     : visOrAssociated;
 
   const orgId = ctx.organizationId;
-
-  if (isPlatformAdminRole(ctx.roleForScope)) {
-    const requestedOrg = normalizeOrganizationUuid(requestedOrganizationId);
-    // All Contacts is every company. A company id is only applied when a
-    // caller asks for one company, such as Customers → Contacts.
-    if (!requestedOrg) {
-      await syncDealInvestorsIntoAllOrganizationContacts(viewerUserId);
-      return and(
-        fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm),
-        excludePlatformSignupWhenCompanyCopyExistsWhere(),
-      )!;
-    }
-    if (!orgId) {
-      return null;
-    }
-    const memberIds = await userIdsInOrganization(orgId);
-    const legacyMemberContacts =
-      memberIds.length > 0
-        ? and(
-            isNull(contact.organizationId),
-            inArray(contact.createdBy, memberIds),
-          )!
-        : null;
-    const orgScope = legacyMemberContacts
-      ? or(eq(contact.organizationId, orgId), legacyMemberContacts)!
-      : eq(contact.organizationId, orgId);
-    const platformForOrg = and(
-      await platformContactsForOrganizationWhere(orgId),
-      or(
-        eq(contact.platformAdminOnly, true),
-        eq(contact.visibleToUsers, true),
-      )!,
-      visForList,
-    )!;
-    const orgList = and(
-      orgScope,
-      excludePlatformAdminOnlyContactsWhere(),
-      visForList,
-    )!;
-    return and(
-      or(
-        orgList,
-        platformForOrg,
-        contactsReferredByOrganizationMembersWhere(orgId),
-      )!,
-      excludeForeignContactShadowedByOrganizationWhere(orgId),
-    )!;
-  }
 
   if (!orgId) {
     const creatorIds = referrerIds;

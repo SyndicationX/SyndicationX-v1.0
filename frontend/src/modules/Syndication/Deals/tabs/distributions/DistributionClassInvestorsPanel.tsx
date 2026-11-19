@@ -237,6 +237,8 @@ export function DistributionClassInvestorsPanel({
   const canSendInvestorPayout = useCallback(
     (investorId: string, payment: number) => {
       if (!(payment > 0)) return false
+      const bank = bankSetupByInvestmentId.get(investorId.trim().toLowerCase())
+      if (bank?.stripeConnection !== "connected") return false
       const payout = payoutByInvestmentId.get(investorId)
       if (!payout) return true
       const status = payout.status.trim().toLowerCase()
@@ -247,7 +249,7 @@ export function DistributionClassInvestorsPanel({
         status === "pending"
       )
     },
-    [payoutByInvestmentId],
+    [bankSetupByInvestmentId, payoutByInvestmentId],
   )
 
   const isInvestorPayoutLocked = useCallback(
@@ -695,13 +697,13 @@ export function DistributionClassInvestorsPanel({
         thClassName: "deal_dist_th_ach deals_th_align_center",
         tdClassName: "deal_dist_td_ach",
         sortValue: (row) =>
-          bankSetupByInvestmentId.get(row.id.trim().toLowerCase()) ??
+          bankSetupByInvestmentId.get(row.id.trim().toLowerCase())?.status ??
           "not_set_up",
         cell: (row) => (
           <BankAccountSetupBadge
             status={
-              bankSetupByInvestmentId.get(row.id.trim().toLowerCase()) ??
-              "not_set_up"
+              bankSetupByInvestmentId.get(row.id.trim().toLowerCase())
+                ?.status ?? "not_set_up"
             }
             onClick={
               canViewBankAccountDetails
@@ -754,6 +756,11 @@ export function DistributionClassInvestorsPanel({
         tdClassName: "deal_dist_td_actions",
         cell: (row) => {
           const sending = sendingInvestorId === row.id
+          const bankView = bankSetupByInvestmentId.get(
+            row.id.trim().toLowerCase(),
+          )
+          const bankSetUp = bankView?.status === "set_up"
+          const stripeConnected = bankView?.stripeConnection === "connected"
           const canSend = canSendInvestorPayout(row.id, row.payment)
           const payout = payoutByInvestmentId.get(row.id)
           const label =
@@ -776,11 +783,15 @@ export function DistributionClassInvestorsPanel({
               title={
                 !fundingReady
                   ? "Lead sponsor must add this deal's bank account on Distributions → Bank account first"
-                  : canSend
-                    ? `Send ACH payment to ${row.name}`
-                    : payout
-                      ? `ACH already ${payout.status}`
-                      : "Payment amount must be greater than zero"
+                  : !stripeConnected
+                    ? bankSetUp
+                      ? "Connect this investor's bank to Stripe before sending a payment"
+                      : "Bank account is not set up for this investor"
+                    : canSend
+                      ? `Send ACH payment to ${row.name}`
+                      : payout
+                        ? `ACH already ${payout.status}`
+                        : "Payment amount must be greater than zero"
               }
               aria-label={`${label} for ${row.name}`}
               onClick={() => requestSendInvestorAchPayout(row)}

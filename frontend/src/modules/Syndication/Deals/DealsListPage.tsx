@@ -2,6 +2,7 @@ import {
   Archive,
   Ban,
   Briefcase,
+  Eye,
   CircleDot,
   Download,
   FilePenLine,
@@ -90,7 +91,11 @@ import "./tabs/deal_members/add-investment/add_deal_modal.css"
 import "./deal-investors-tab.css"
 import "./deals-list.css"
 
-type DealsListTab = "deals" | "archives"
+type DealsListTab = "deals" | "view_only" | "archives"
+
+function isViewOnlyDeal(row: DealListRow): boolean {
+  return row.viewerCanManageDeal === false
+}
 
 function DealTableColumnHeader({
   label,
@@ -418,15 +423,22 @@ export function DealsListPage({
     return buildCreateDealDraftListRow()
   }, [createDealDraftTick])
 
-  const { activeDealsCount, archivedDealsCount } = useMemo(() => {
-    let active = 0
-    let archived = 0
-    for (const r of rows) {
-      if (r.archived) archived++
-      else active++
-    }
-    return { activeDealsCount: active, archivedDealsCount: archived }
-  }, [rows])
+  const { activeDealsCount, viewOnlyDealsCount, archivedDealsCount } =
+    useMemo(() => {
+      let active = 0
+      let viewOnly = 0
+      let archived = 0
+      for (const r of rows) {
+        if (r.archived) archived++
+        else if (isViewOnlyDeal(r)) viewOnly++
+        else active++
+      }
+      return {
+        activeDealsCount: active,
+        viewOnlyDealsCount: viewOnly,
+        archivedDealsCount: archived,
+      }
+    }, [rows])
 
   useEffect(() => {
     if (!embedded || !onTabCountsChange) return
@@ -448,9 +460,11 @@ export function DealsListPage({
         showArchived ? Boolean(r.archived) : !r.archived,
       )
     }
-    return rows.filter((r) =>
-      activeTab === "archives" ? Boolean(r.archived) : !r.archived,
-    )
+    return rows.filter((r) => {
+      if (r.archived) return activeTab === "archives"
+      if (isViewOnlyDeal(r)) return activeTab === "view_only"
+      return activeTab === "deals"
+    })
   }, [rows, activeTab, dealsListContext, investingArchiveView])
 
   const filtered = useMemo(() => {
@@ -476,7 +490,11 @@ export function DealsListPage({
 
   useEffect(() => {
     const id =
-      activeTab === "deals" ? "deals-tab-deals" : "deals-tab-archives"
+      activeTab === "deals"
+        ? "deals-tab-deals"
+        : activeTab === "view_only"
+          ? "deals-tab-view-only"
+          : "deals-tab-archives"
     const el = document.getElementById(id)
     if (!el) return
     el.scrollIntoView({
@@ -1042,7 +1060,9 @@ export function DealsListPage({
         : "No deal to display."
       : activeTab === "archives"
         ? "No archived deals."
-        : "No deal to display."
+        : activeTab === "view_only"
+          ? "No view-only deals."
+          : "No deal to display."
 
   const dealsListTablePanel = (
     <div
@@ -1060,7 +1080,9 @@ export function DealsListPage({
           ? undefined
           : activeTab === "deals"
             ? "deals-tab-deals"
-            : "deals-tab-archives"
+            : activeTab === "view_only"
+              ? "deals-tab-view-only"
+              : "deals-tab-archives"
       }
       className={`um_panel um_members_tab_panel deals_list_table_panel deals_list_card_surface deal_inv_table_panel${loading ? " deals_list_table_panel_loading" : ""}`}
       aria-busy={loading}
@@ -1214,6 +1236,30 @@ export function DealsListPage({
                 />
                 <span className="deals_tabs_label um_segmented_tab_label">Deals</span>
                 <span className="deals_tabs_count">({formatCount(activeDealsCount)})</span>
+              </button>
+              <button
+                type="button"
+                id="deals-tab-view-only"
+                role="tab"
+                aria-selected={activeTab === "view_only"}
+                aria-controls="deals-list-tabpanel"
+                className={`um_members_tab deals_tabs_tab um_segmented_tab${
+                  activeTab === "view_only" ? " um_members_tab_active" : ""
+                }`}
+                onClick={() => setActiveTab("view_only")}
+              >
+                <Eye
+                  className="deals_tabs_icon um_segmented_tab_icon"
+                  size={16}
+                  strokeWidth={2}
+                  aria-hidden
+                />
+                <span className="deals_tabs_label um_segmented_tab_label">
+                  View-only access
+                </span>
+                <span className="deals_tabs_count">
+                  ({formatCount(viewOnlyDealsCount)})
+                </span>
               </button>
               <button
                 type="button"

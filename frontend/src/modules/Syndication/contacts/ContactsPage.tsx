@@ -622,8 +622,18 @@ function ContactsPage({
     })
   }, [rows, dbCatalogListNames])
 
-  /** All Contacts is the organization CRM. Platform contacts stay on their tab. */
-  const directoryRows = rows
+  /**
+   * Customers → company → All Contacts. Keep rows for that company even if a
+   * response also contains another organization's CRM.
+   */
+  const directoryRows = useMemo(() => {
+    if (!scopedOrganizationId) return rows
+    const want = scopedOrganizationId.trim().toLowerCase()
+    return rows.filter((row) => {
+      const org = String(row.organizationId ?? "").trim().toLowerCase()
+      return org === want
+    })
+  }, [rows, scopedOrganizationId])
   const companyOutlet = useOutletContext<{
     reportContactDirectoryCount?: (count: number) => void
   } | null>()

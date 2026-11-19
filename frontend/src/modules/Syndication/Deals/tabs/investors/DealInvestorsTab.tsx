@@ -740,7 +740,9 @@ function DealInvestorsPopulated({
           status: INVESTMENT_STATUS_APPROVE_FUND,
           fundApproved: true,
         };
-        const res = await putDealInvestment(dealId, row.id, values, null);
+        const res = await putDealInvestment(dealId, row.id, values, null, {
+          fundApprovalOnly: true,
+        });
         if (!res.ok) {
           toast.error("Could not approve fund", res.message);
           return;
@@ -1714,6 +1716,7 @@ function DealInvestorsPopulated({
                 void onSendInvitationMail?.(r);
               }}
               viewOnly={viewOnly}
+              removeHidden={viewerDealMemberRole === "co_sponsor"}
               actionsLimitedToView={
                 (viewerDealMemberRole === "lead_sponsor" ||
                   viewerDealMemberRole === "admin_sponsor") &&

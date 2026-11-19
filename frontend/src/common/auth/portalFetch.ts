@@ -12,11 +12,17 @@ import {
 } from "../utils/requestTimeout"
 import {
   clearLastSessionActivity,
-  markIdleSessionTimeoutNotice,
+  markAccessUpdatedSignOutNotice,
   touchSessionActivity,
 } from "./idleSession"
 import { portalAuthHeaders, ACTIVE_ORGANIZATION_HEADER, PORTAL_OMIT_ACTIVE_ORG_HEADER } from "./portalAuthHeaders"
 import { clearPortalSessionStorage } from "./sessionKeys"
+
+/** Client-only: a session check must not count as user activity. */
+export const PORTAL_SKIP_ACTIVITY_HEADER = "x-portal-skip-activity"
+
+/** Client-only: a 401 ends the session instead of exchanging the refresh token. */
+export const PORTAL_NO_REFRESH_HEADER = "x-portal-no-refresh"
 
 let refreshInFlight: Promise<boolean> | null = null
 let nativeFetch: typeof fetch = (...args) => fetch(...args)
@@ -53,7 +59,27 @@ export async function tryRefreshAccessTokenOnce(): Promise<boolean> {
   return refreshInFlight
 }
 
-export function handleAuthSessionExpired(): void {
+function responseSaysAccessUpdated(data: {
+  code?: unknown
+  message?: unknown
+}): boolean {
+  if (String(data.code ?? "") === "access_updated") return true
+  return /access was updated/i.test(String(data.message ?? ""))
+}
+
+async function responseBodySaysAccessUpdated(response: Response): Promise<boolean> {
+  try {
+    const data = (await response.clone().json()) as {
+      code?: unknown
+      message?: unknown
+    }
+    return responseSaysAccessUpdated(data)
+  } catch {
+    return false
+  }
+}
+
+export function handleAuthSessionExpired(reason?: "access_updated"): void {
   if (typeof window === "undefined") return
   const path = window.location.pathname
   if (path.includes("/signin") || path.includes("/signup")) return
@@ -62,9 +88,9 @@ export function handleAuthSessionExpired(): void {
     Boolean(getStoredAccessToken()) || Boolean(getStoredRefreshToken())
   if (!hadSession) return
 
-  markIdleSessionTimeoutNotice()
   clearPortalSessionStorage()
   clearLastSessionActivity()
+  if (reason === "access_updated") markAccessUpdatedSignOutNotice()
 
   const returnPath = `${window.location.pathname}${window.location.search}`
   const next =
@@ -79,9 +105,19 @@ function shouldOmitActiveOrganization(init?: RequestInit): boolean {
   return headers.get(PORTAL_OMIT_ACTIVE_ORG_HEADER) === "1"
 }
 
+function skipsActivityTouch(init?: RequestInit): boolean {
+  return new Headers(init?.headers).get(PORTAL_SKIP_ACTIVITY_HEADER) === "1"
+}
+
+function skipsRefresh(init?: RequestInit): boolean {
+  return new Headers(init?.headers).get(PORTAL_NO_REFRESH_HEADER) === "1"
+}
+
 function mergeFreshAuthHeaders(init?: RequestInit): Headers {
   const headers = new Headers(init?.headers)
   headers.delete(PORTAL_TIMEOUT_HEADER)
+  headers.delete(PORTAL_SKIP_ACTIVITY_HEADER)
+  headers.delete(PORTAL_NO_REFRESH_HEADER)
   const omitActiveOrganization = shouldOmitActiveOrganization(init)
   if (omitActiveOrganization) {
     headers.delete(PORTAL_OMIT_ACTIVE_ORG_HEADER)
@@ -130,7 +166,7 @@ export async function portalFetch(
     }),
   )
 
-  if (isApi && !isAuthExemptUrl(url) && response.ok) {
+  if (isApi && !isAuthExemptUrl(url) && response.ok && !skipsActivityTouch(init)) {
     touchSessionActivity();
   }
 
@@ -143,9 +179,16 @@ export async function portalFetch(
     return response
   }
 
+  const accessUpdated = await responseBodySaysAccessUpdated(response)
+
+  if (skipsRefresh(init)) {
+    handleAuthSessionExpired(accessUpdated ? "access_updated" : undefined)
+    return response
+  }
+
   const refreshed = await tryRefreshAccessTokenOnce()
   if (!refreshed) {
-    handleAuthSessionExpired()
+    handleAuthSessionExpired(accessUpdated ? "access_updated" : undefined)
     return response
   }
 
@@ -162,7 +205,12 @@ export async function portalFetch(
         signal,
       }),
   )
-  if (isApi && !isAuthExemptUrl(url) && retryResponse.ok) {
+  if (
+    isApi &&
+    !isAuthExemptUrl(url) &&
+    retryResponse.ok &&
+    !skipsActivityTouch(retryInit)
+  ) {
     touchSessionActivity();
   }
   return retryResponse

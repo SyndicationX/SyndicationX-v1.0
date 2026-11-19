@@ -62,6 +62,7 @@ import { MemberRemoveConfirmModal } from "./MemberRemoveConfirmModal";
 import { MemberRoleBadge } from "./MemberRoleBadge";
 import {
   COMPANY_EDIT_ROLE_OPTIONS,
+  PLATFORM_EDIT_ROLE_OPTIONS,
   COMPANY_INVITE_ROLE_OPTIONS,
   MEMBER_AUDIT_ACTION_EDIT,
   MEMBER_AUDIT_ACTION_SUSPEND,
@@ -173,6 +174,14 @@ function rowOrganizationId(row: Record<string, unknown>): string | undefined {
   const v = row.organizationId ?? row.organization_id;
   if (typeof v === "string" && v.trim()) return v.trim();
   return undefined;
+}
+
+function editTargetHasCompany(row: Record<string, unknown>): boolean {
+  if (rowOrganizationId(row)) return true;
+  const name = String(row.companyName ?? row.company_name ?? "").trim();
+  if (name && name !== "—" && name.toLowerCase() !== "no company") return true;
+  const memberships = row.memberships;
+  return Array.isArray(memberships) && memberships.length > 0;
 }
 
 function rowStableId(row: Record<string, unknown>, index: number): string {
@@ -653,6 +662,7 @@ export default function UserManagementPage({
   const [reinviteBusyId, setReinviteBusyId] = useState<string | null>(null);
   const [editRow, setEditRow] = useState<Record<string, unknown> | null>(null);
   const [editOrganizationId, setEditOrganizationId] = useState("");
+  const [editRemoveCompany, setEditRemoveCompany] = useState(false);
   const [editRole, setEditRole] = useState("");
   const [editUserStatus, setEditUserStatus] = useState("active");
   const [editReason, setEditReason] = useState("");
@@ -1257,6 +1267,7 @@ export default function UserManagementPage({
     }
     setEditRow(row);
     setEditOrganizationId(rowOrganizationId(row) ?? "");
+    setEditRemoveCompany(false);
     const rawRole = String(row.role ?? "").trim();
     const roleForEdit =
       rawRole === "user" || rawRole === "" ? "platform_user" : rawRole;
@@ -1269,6 +1280,7 @@ export default function UserManagementPage({
   function closeEditMember() {
     setEditRow(null);
     setEditOrganizationId("");
+    setEditRemoveCompany(false);
     setEditReason("");
     setEditErr("");
   }
@@ -1311,12 +1323,15 @@ export default function UserManagementPage({
       return;
     }
     setEditSaving(true);
+    setMembersLoading(true);
     setEditErr("");
     try {
       const prevOrg = (rowOrganizationId(editRow) ?? "").trim();
       const nextOrg = editOrganizationId.trim();
+      const releaseToInvestor = editRemoveCompany;
       const organizationPayload =
         showCompanyColumn &&
+        !releaseToInvestor &&
         nextOrg &&
         prevOrg.toLowerCase() !== nextOrg.toLowerCase()
           ? { organizationId: nextOrg }
@@ -1328,11 +1343,13 @@ export default function UserManagementPage({
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          role: editRole,
+          role: releaseToInvestor ? "investor" : editRole,
           userStatus: editUserStatus,
           reason,
           action: MEMBER_AUDIT_ACTION_EDIT,
-          ...organizationPayload,
+          ...(releaseToInvestor
+            ? { organizationId: null }
+            : organizationPayload),
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -1347,12 +1364,25 @@ export default function UserManagementPage({
       }
       const u = data.user;
       if (u && typeof u === "object") {
+        const updated = releaseToInvestor
+          ? {
+              ...u,
+              role: "investor",
+              companyName: "",
+              organizationId: null,
+              organization_id: null,
+              memberships: [],
+            }
+          : u;
         setMemberRows((prev) =>
-          prev.map((r) => (String(r.id) === id ? { ...r, ...u } : r)),
+          prev.map((r) => (String(r.id) === id ? { ...r, ...updated } : r)),
         );
-        syncSessionUserDetailsById(id, u);
+        syncSessionUserDetailsById(id, updated);
       }
-      const okMsg = data.message || "Member updated.";
+      await refreshMembersAfterInvite();
+      const okMsg = releaseToInvestor
+        ? "Company removed. They are now a platform contact with investing access only."
+        : data.message || "Member updated.";
       toast.success("Member updated", okMsg);
       closeEditMember();
     } catch {
@@ -1360,6 +1390,7 @@ export default function UserManagementPage({
       toast.error("Could not update member", "Unable to connect.");
     } finally {
       setEditSaving(false);
+      setMembersLoading(false);
     }
   }
 
@@ -1454,7 +1485,7 @@ export default function UserManagementPage({
   const editRoleSelectOptions = useMemo(
     () =>
       showCompanyColumn
-        ? PLATFORM_INVITE_ROLE_OPTIONS
+        ? PLATFORM_EDIT_ROLE_OPTIONS
         : COMPANY_EDIT_ROLE_OPTIONS,
     [showCompanyColumn],
   );
@@ -2269,39 +2300,18 @@ export default function UserManagementPage({
             <div className="um_view_grid">
               <ViewReadonlyField
                 Icon={User}
-                label="User name"
-                value={formatMemberUsername(viewRow.username)}
+                label="First name"
+                value={formatValue(viewRow.firstName ?? viewRow.first_name)}
+              />
+              <ViewReadonlyField
+                Icon={User}
+                label="Last name"
+                value={formatValue(viewRow.lastName ?? viewRow.last_name)}
               />
               <ViewReadonlyField
                 Icon={Mail}
                 label="Email"
                 value={displayEmail(viewRow.email)}
-              />
-              <ViewReadonlyField
-                Icon={User}
-                label="First name"
-                value={formatValue(viewRow.firstName)}
-              />
-              <ViewReadonlyField
-                Icon={User}
-                label="Last name"
-                value={formatValue(viewRow.lastName)}
-              />
-              <ViewReadonlyField
-                Icon={Shield}
-                label="Roles"
-                value={<MemberRoleBadge row={viewRow} />}
-              />
-              <ViewReadonlyField
-                Icon={Building2}
-                label={organizationDisplayScope ? "Organization" : "Organizations"}
-                value={
-                  <UserOrganizationsCell
-                    row={viewRow}
-                    organizationScope={organizationDisplayScope}
-                  />
-                }
-                fieldClassName="um_view_field_span_full"
               />
               <ViewReadonlyField
                 Icon={Phone}
@@ -2319,7 +2329,10 @@ export default function UserManagementPage({
                 value={<StatusWithDot {...accountStatusForUi(viewRow)} />}
               />
             </div>
-            <MemberInvitationSection row={viewRow} />
+            <MemberInvitationSection
+              row={viewRow}
+              organizationScope={organizationDisplayScope}
+            />
             <div className="um_modal_actions um_modal_actions_view">
               <button
                 type="button"
@@ -2336,15 +2349,22 @@ export default function UserManagementPage({
 
       {editRow ? (
         <div
-          className="um_modal_overlay"
+          className="um_modal_overlay deals_add_inv_modal_overlay"
           role="presentation"
         >
           <div
-            className="um_modal um_modal_view"
+            className="um_modal um_modal_view deals_add_inv_modal_panel um_edit_member_modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="um-edit-member-title"
+            aria-busy={editSaving}
           >
+            {editSaving ? (
+              <div className="um_modal_saving" role="status" aria-live="polite">
+                <div className="data_table_loader_spinner" aria-hidden />
+                <p>Updating member…</p>
+              </div>
+            ) : null}
             <div className="um_modal_head">
               <h3 id="um-edit-member-title" className="um_modal_title">
                 Edit member
@@ -2359,51 +2379,85 @@ export default function UserManagementPage({
                 <X size={20} strokeWidth={2} aria-hidden />
               </button>
             </div>
-            <div className="um_view_grid um_view_grid_member_action">
-              <ViewReadonlyField
-                Icon={User}
-                label="User name"
-                value={formatMemberUsername(editRow.username)}
-              />
-              <ViewReadonlyField
-                Icon={Mail}
-                label="Email"
-                value={displayEmail(editRow.email)}
-              />
-            </div>
-            <form onSubmit={submitEditMember}>
-              {showCompanyColumn ? (
-                <div className="um_field">
-                  <label
-                    htmlFor="um-edit-member-company"
-                    className="um_field_label_row"
-                  >
-                    <Building2 className="um_field_label_icon" size={17} aria-hidden />
-                    <span>Company</span>
-                  </label>
-                  <DealsCreateDropdownSelect
-                    id="um-edit-member-company"
-                    className="um_company_dropdown"
-                    searchable
-                    searchPlaceholder="Search company"
-                    searchAriaLabel="Search company"
-                    searchShowOptionCountHint
-                    options={companyDropdownOptions}
-                    value={editOrganizationId}
-                    onChange={(v) => setEditOrganizationId(v)}
-                    placeholder="Select a company"
-                    disabled={editSaving || !!inviteCompaniesError}
-                    invalid={!!inviteCompaniesError}
-                    ariaLabel="Company"
+            <form
+              className="deals_add_inv_modal_form"
+              onSubmit={submitEditMember}
+            >
+              <div className="deals_add_inv_modal_scroll">
+                <div className="um_view_grid deals_add_inv_view_grid um_view_grid_member_action">
+                  <ViewReadonlyField
+                    Icon={User}
+                    label="Full name"
+                    value={rowDisplayName(editRow)}
                   />
-                  {inviteCompaniesError ? (
-                    <p className="um_msg_error um_modal_form_error" role="alert">
-                      {inviteCompaniesError}
-                    </p>
-                  ) : null}
+                  <ViewReadonlyField
+                    Icon={Mail}
+                    label="Email"
+                    value={displayEmail(editRow.email)}
+                  />
                 </div>
-              ) : null}
-              <div className="um_edit_role_status_row">
+                {showCompanyColumn ||
+                (isCompanyAdmin() && editRow && editTargetHasCompany(editRow)) ? (
+                  <div className="um_field">
+                    <div className="um_edit_company_label_row">
+                      <label
+                        htmlFor="um-edit-member-company"
+                        className="um_field_label_row"
+                      >
+                        <Building2 className="um_field_label_icon" size={17} aria-hidden />
+                        <span>Company</span>
+                      </label>
+                      {editRow && editTargetHasCompany(editRow) ? (
+                        <label className="um_edit_no_company" htmlFor="um-edit-no-company">
+                          <input
+                            id="um-edit-no-company"
+                            type="checkbox"
+                            checked={editRemoveCompany}
+                            disabled={editSaving}
+                            onChange={(e) => setEditRemoveCompany(e.target.checked)}
+                          />
+                          <span>No company (investing access only)</span>
+                        </label>
+                      ) : null}
+                    </div>
+                    {showCompanyColumn ? (
+                      <DealsCreateDropdownSelect
+                        id="um-edit-member-company"
+                        className="um_company_dropdown"
+                        searchable
+                        searchPlaceholder="Search company"
+                        searchAriaLabel="Search company"
+                        searchShowOptionCountHint
+                        options={companyDropdownOptions}
+                        value={editOrganizationId}
+                        onChange={(v) => setEditOrganizationId(v)}
+                        placeholder="Select a company"
+                        disabled={
+                          editSaving || editRemoveCompany || !!inviteCompaniesError
+                        }
+                        invalid={!!inviteCompaniesError}
+                        ariaLabel="Company"
+                      />
+                    ) : (
+                      <div
+                        id="um-edit-member-company"
+                        className={
+                          editRemoveCompany
+                            ? "um_view_field_box um_edit_company_readonly um_edit_company_readonly_muted"
+                            : "um_view_field_box um_edit_company_readonly"
+                        }
+                      >
+                        {membersWorkspaceCompanyName?.trim() ||
+                          String(editRow.companyName ?? editRow.company_name ?? "—")}
+                      </div>
+                    )}
+                    {inviteCompaniesError ? (
+                      <p className="um_msg_error um_modal_form_error" role="alert">
+                        {inviteCompaniesError}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="um_field">
                   <div
                     id="um-edit-member-role-heading"
@@ -2412,20 +2466,26 @@ export default function UserManagementPage({
                     <UserCog className="um_field_label_icon" size={17} aria-hidden />
                     <span>Role</span>
                   </div>
-                  <div
-                    className={
-                      editSaving ? "um_role_pills_interaction_lock" : undefined
-                    }
-                  >
-                    <RadioPillGroup
-                      name="umEditMemberRole"
-                      className="um_role_radio_group"
-                      value={editRole}
-                      options={editRoleSelectOptions}
-                      onChange={(v) => setEditRole(v)}
-                      ariaLabelledBy="um-edit-member-role-heading"
-                    />
-                  </div>
+                  {editRemoveCompany ? (
+                    <p className="um_field_hint um_edit_no_company_hint">
+                      Removing the company leaves investing access only.
+                    </p>
+                  ) : (
+                    <div
+                      className={
+                        editSaving ? "um_role_pills_interaction_lock" : undefined
+                      }
+                    >
+                      <RadioPillGroup
+                        name="umEditMemberRole"
+                        className="um_role_radio_group"
+                        value={editRole}
+                        options={editRoleSelectOptions}
+                        onChange={(v) => setEditRole(v)}
+                        ariaLabelledBy="um-edit-member-role-heading"
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="um_field">
                   <label
@@ -2435,50 +2495,46 @@ export default function UserManagementPage({
                     <Activity className="um_field_label_icon" size={17} aria-hidden />
                     <span>User Status</span>
                   </label>
-                  <select
+                  <DealsCreateDropdownSelect
                     id="um-edit-member-status"
-                    className="um_field_select"
+                    className="um_company_dropdown"
+                    options={MEMBER_STATUS_EDIT_OPTIONS}
                     value={editUserStatus}
-                    onChange={(e) => setEditUserStatus(e.target.value)}
+                    onChange={(v) => setEditUserStatus(v)}
+                    placeholder="Select status"
+                    disabled={editSaving}
+                    ariaLabel="User Status"
+                  />
+                </div>
+                <div className="um_field">
+                  <label
+                    htmlFor="um-edit-member-reason"
+                    className="um_field_label_row"
+                  >
+                    <ClipboardList
+                      className="um_field_label_icon"
+                      size={17}
+                      aria-hidden
+                    />
+                    <span>Reason</span>
+                  </label>
+                  <textarea
+                    id="um-edit-member-reason"
+                    className="um_field_textarea"
+                    value={editReason}
+                    onChange={(e) => setEditReason(e.target.value)}
+                    rows={3}
                     required
                     disabled={editSaving}
-                  >
-                    {MEMBER_STATUS_EDIT_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="um_field">
-                <label
-                  htmlFor="um-edit-member-reason"
-                  className="um_field_label_row"
-                >
-                  <ClipboardList
-                    className="um_field_label_icon"
-                    size={17}
-                    aria-hidden
+                    aria-required
                   />
-                  <span>Reason</span>
-                </label>
-                <textarea
-                  id="um-edit-member-reason"
-                  className="um_field_textarea"
-                  value={editReason}
-                  onChange={(e) => setEditReason(e.target.value)}
-                  rows={3}
-                  required
-                  disabled={editSaving}
-                  aria-required
-                />
+                </div>
+                {editErr ? (
+                  <p className="um_msg_error um_modal_form_error" role="alert">
+                    {editErr}
+                  </p>
+                ) : null}
               </div>
-              {editErr ? (
-                <p className="um_msg_error um_modal_form_error" role="alert">
-                  {editErr}
-                </p>
-              ) : null}
               <div className="um_modal_actions add_contact_modal_actions">
                 <button
                   type="button"
@@ -2496,10 +2552,16 @@ export default function UserManagementPage({
                     editSaving ||
                     !editReason.trim() ||
                     (showCompanyColumn &&
+                      !editRemoveCompany &&
                       (!editOrganizationId.trim() || !!inviteCompaniesError))
                   }
                 >
-                  <RefreshCw size={16} strokeWidth={2} aria-hidden />
+                  <RefreshCw
+                    size={16}
+                    strokeWidth={2}
+                    aria-hidden
+                    className={editSaving ? "um_btn_icon_spin" : undefined}
+                  />
                   {editSaving ? "Updating…" : "Update"}
                 </button>
               </div>

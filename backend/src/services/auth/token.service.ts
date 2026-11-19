@@ -125,9 +125,15 @@ export async function issueAuthTokenPair(
   };
 }
 
+export const ACCESS_UPDATED_AUTH_CODE = "access_updated";
+export const ACCESS_UPDATED_AUTH_MESSAGE =
+  "Your access was updated. Sign in again.";
+
+export type AccessTokenState = "active" | "inactive" | "access_updated";
+
 export type RefreshResult =
   | { ok: true; accessToken: string; refreshToken: string }
-  | { ok: false; status: number; message: string };
+  | { ok: false; status: number; message: string; code?: string };
 
 /** Validate refresh token, rotate it, and return a new token pair. */
 export async function refreshAuthTokens(
@@ -155,6 +161,14 @@ export async function refreshAuthTokens(
     .limit(1);
 
   if (!row) {
+    if (await revokedRefreshWasAccessUpdate(tokenHash)) {
+      return {
+        ok: false,
+        status: 401,
+        code: ACCESS_UPDATED_AUTH_CODE,
+        message: ACCESS_UPDATED_AUTH_MESSAGE,
+      };
+    }
     return { ok: false, status: 401, message: "Invalid or expired refresh token" };
   }
   if (row.expiresAt <= now) {
@@ -171,6 +185,7 @@ export async function refreshAuthTokens(
       email: users.email,
       role: users.role,
       userStatus: users.userStatus,
+      sessionInvalidAfter: users.sessionInvalidAfter,
     })
     .from(users)
     .where(eq(users.id, row.userId))
@@ -178,6 +193,19 @@ export async function refreshAuthTokens(
 
   if (!userRow) {
     return { ok: false, status: 401, message: "User not found" };
+  }
+
+  if (
+    userRow.sessionInvalidAfter &&
+    row.createdAt < userRow.sessionInvalidAfter
+  ) {
+    await revokeAllUserAuthTokens(row.userId);
+    return {
+      ok: false,
+      status: 401,
+      code: ACCESS_UPDATED_AUTH_CODE,
+      message: ACCESS_UPDATED_AUTH_MESSAGE,
+    };
   }
 
   const status = String(userRow.userStatus ?? "").trim().toLowerCase();
@@ -210,25 +238,71 @@ export async function refreshAuthTokens(
   };
 }
 
-/** True when the access token jti is present, unexpired, and not revoked. */
-export async function isAccessTokenActive(jti: string): Promise<boolean> {
+/**
+ * Access-token state for API auth.
+ * An admin access change revokes the token and sets `sessionInvalidAfter`, so that
+ * case is reported even when the row is already revoked.
+ */
+export async function getAccessTokenState(jti: string): Promise<AccessTokenState> {
   const trimmed = jti.trim();
-  if (!trimmed) return false;
+  if (!trimmed) return "inactive";
 
   const [row] = await db
-    .select({ expiresAt: userAuthTokens.expiresAt })
+    .select({
+      expiresAt: userAuthTokens.expiresAt,
+      createdAt: userAuthTokens.createdAt,
+      revokedAt: userAuthTokens.revokedAt,
+      sessionInvalidAfter: users.sessionInvalidAfter,
+    })
     .from(userAuthTokens)
+    .innerJoin(users, eq(users.id, userAuthTokens.userId))
     .where(
       and(
         eq(userAuthTokens.tokenHash, hashToken(trimmed)),
         eq(userAuthTokens.tokenType, "access"),
-        isNull(userAuthTokens.revokedAt),
       ),
     )
     .limit(1);
 
-  if (!row) return false;
-  return row.expiresAt > new Date();
+  if (!row) return "inactive";
+  if (row.sessionInvalidAfter && row.createdAt < row.sessionInvalidAfter) {
+    return "access_updated";
+  }
+  if (row.revokedAt) return "inactive";
+  if (row.expiresAt <= new Date()) return "inactive";
+  return "active";
+}
+
+/** True when the access token jti is present, unexpired, and not revoked. */
+export async function isAccessTokenActive(jti: string): Promise<boolean> {
+  return (await getAccessTokenState(jti)) === "active";
+}
+
+async function revokedRefreshWasAccessUpdate(tokenHash: string): Promise<boolean> {
+  const [row] = await db
+    .select({
+      userId: userAuthTokens.userId,
+      createdAt: userAuthTokens.createdAt,
+      revokedAt: userAuthTokens.revokedAt,
+    })
+    .from(userAuthTokens)
+    .where(
+      and(
+        eq(userAuthTokens.tokenHash, tokenHash),
+        eq(userAuthTokens.tokenType, "refresh"),
+      ),
+    )
+    .limit(1);
+  if (!row?.revokedAt) return false;
+
+  const [userRow] = await db
+    .select({ sessionInvalidAfter: users.sessionInvalidAfter })
+    .from(users)
+    .where(eq(users.id, row.userId))
+    .limit(1);
+  return Boolean(
+    userRow?.sessionInvalidAfter && row.createdAt < userRow.sessionInvalidAfter,
+  );
 }
 
 export async function revokeAllUserAuthTokens(userId: string): Promise<void> {

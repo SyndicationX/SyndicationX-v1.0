@@ -52,11 +52,13 @@ function ToastItem({ t }: { t: ToastRecord }) {
       >
         <X size={16} strokeWidth={2} aria-hidden />
       </button>
-      <div
-        className="toast_pill_timer"
-        style={{ animationDuration: `${t.duration}ms` }}
-        aria-hidden
-      />
+      {t.duration > 0 ? (
+        <div
+          className="toast_pill_timer"
+          style={{ animationDuration: `${t.duration}ms` }}
+          aria-hidden
+        />
+      ) : null}
     </div>
   );
 }

@@ -45,13 +45,17 @@ function pushToast(
   },
 ): string {
   const id = crypto.randomUUID();
-  const duration = partial.duration ?? 5000;
+  // Stay until the user closes the toast. A positive duration is an explicit
+  // auto-dismiss override.
+  const duration = partial.duration ?? 0;
   const placement = partial.placement ?? "bottom-right";
   const { duration: _d, placement: _p, ...rest } = partial;
   toasts = [...toasts, { ...rest, id, duration, placement }];
   emit();
-  const tid = window.setTimeout(() => dismissToast(id), duration);
-  timeouts.set(id, tid);
+  if (duration > 0) {
+    const tid = window.setTimeout(() => dismissToast(id), duration);
+    timeouts.set(id, tid);
+  }
   return id;
 }
 

@@ -203,6 +203,10 @@ export const PLATFORM_INVITE_ROLE_OPTIONS: { value: string; label: string }[] = 
   { value: "company_user", label: "Company Member" },
 ];
 
+/** Edit member: same as invite, without Platform user. */
+export const PLATFORM_EDIT_ROLE_OPTIONS: { value: string; label: string }[] =
+  PLATFORM_INVITE_ROLE_OPTIONS.filter((o) => o.value !== "platform_user");
+
 /** Roles a company admin may assign when inviting a member (Invite member modal). */
 export const COMPANY_INVITE_ROLE_OPTIONS: { value: string; label: string }[] = [
   { value: "company_admin", label: "Company Admin" },
@@ -399,11 +403,29 @@ export function roleSortValue(row: Record<string, unknown>): string {
   return primaryRoleLabelFromRow(row);
 }
 
-/** Distinct organization names in membership order (Organizations column). */
+/**
+ * Company the person belongs to. Deal roster roles (Co-sponsor, Lead Sponsor, and
+ * so on) are not a company membership, so those organizations stay out of this column.
+ */
+const COMPANY_MEMBERSHIP_ROLE_LABELS = new Set([
+  "company admin",
+  "company member",
+  "company user",
+  "platform admin",
+  "platform user",
+]);
+
+function isCompanyMembershipRoleLabel(role: string): boolean {
+  return COMPANY_MEMBERSHIP_ROLE_LABELS.has(role.trim().toLowerCase());
+}
+
+/** Distinct company-membership names (Organizations column). Deal organizations are omitted. */
 export function parseOrganizationLabelsFromRow(
   row: Record<string, unknown>,
 ): string[] {
-  const pairs = parseMembershipsFromRow(row);
+  const pairs = parseMembershipsFromRow(row).filter((p) =>
+    isCompanyMembershipRoleLabel(p.role),
+  );
   const out: string[] = [];
   const seen = new Set<string>();
   for (const p of pairs) {
