@@ -33,6 +33,7 @@ import {
   patchContactRelationship506bForViewer,
   patchContactStatusForViewer,
   type ContactRelationship506b,
+  resolveAddedByByContactId,
   resolveContactDisplayFields,
   resolveDealAdderNamesByContactIdForViewer,
   resolveFirstOrganizationInviterByContactId,
@@ -473,6 +474,8 @@ async function organizationColumnLimitForViewer(
   jwtUserRole: string | undefined,
   requestedOrganizationId?: string | null,
 ): Promise<string | null> {
+  const requested = String(requestedOrganizationId ?? "").trim().toLowerCase();
+  if (requested) return requested;
   const scope = await resolveDealViewerScope(
     userId,
     jwtUserRole,
@@ -480,6 +483,15 @@ async function organizationColumnLimitForViewer(
   );
   if (scope.isPlatformAdmin) return null;
   return String(scope.organizationId ?? "").trim().toLowerCase();
+}
+
+function isInvestorOrganizationRole(role: string): boolean {
+  const normalized = role.trim().toLowerCase().replace(/[_-]+/g, " ");
+  return (
+    normalized === "lp investor" ||
+    normalized === "lp investors" ||
+    normalized === "investor"
+  );
 }
 
 function withHomeOrganization(
@@ -490,6 +502,18 @@ function withHomeOrganization(
 ): ContactOrganizationSummary[] {
   const name = String(organizationName ?? "").trim();
   const id = String(organizationId ?? "").trim();
+  const investorOnly =
+    companies.length > 0 &&
+    companies.every(
+      (company) =>
+        company.deals.length > 0 &&
+        company.deals.every((deal) =>
+          isInvestorOrganizationRole(deal.contactRole),
+        ),
+    );
+  // An invited investor already lists the sponsor's company. Do not add the
+  // deal-owning company stored on a copied contact row.
+  if (investorOnly) return companies;
   if (limitToOrganizationId != null) {
     const homeId = id.toLowerCase();
     if (!homeId || homeId !== limitToOrganizationId) return companies;
@@ -535,6 +559,7 @@ async function mapContactsToJsonWithNames(
   const orgInviterByContactId = orgId
     ? await resolveFirstOrganizationInviterByContactId(rows, orgId)
     : null;
+  const addedByByContactId = await resolveAddedByByContactId(rows, orgId || null);
 
   const displayNameByCreatorId = new Map<string, string>();
   const creatorIdsNeedingName = [
@@ -586,6 +611,9 @@ async function mapContactsToJsonWithNames(
     const invitedBy = orgId
       ? orgInviterByContactId?.get(idKey)
       : invitedByNameByContactId.get(idKey);
+    const addedBy = addedByByContactId.get(idKey);
+    const addedByName =
+      addedBy?.displayName?.trim() || display.createdByDisplayName || "";
     return {
       ...rest,
       owners: display.owners,
@@ -596,11 +624,18 @@ async function mapContactsToJsonWithNames(
         addedByCompanyByUserId.get(row.createdBy) || undefined,
       createdByUserId: row.createdBy,
       created_by_user_id: row.createdBy,
-      createdByDisplayName: display.createdByDisplayName || undefined,
+      createdByDisplayName: addedByName || undefined,
+      addedByOrganizationName: addedBy?.organizationName?.trim() || undefined,
+      added_by_organization_name:
+        addedBy?.organizationName?.trim() || undefined,
       invitedByUserId: invitedBy?.userId || undefined,
       invited_by_user_id: invitedBy?.userId || undefined,
       invitedByDisplayName: invitedBy?.displayName?.trim() || undefined,
       invited_by_display_name: invitedBy?.displayName?.trim() || undefined,
+      invitedByOrganizationName:
+        invitedBy?.organizationName?.trim() || undefined,
+      invited_by_organization_name:
+        invitedBy?.organizationName?.trim() || undefined,
       dealCount,
       organizations,
     };
@@ -881,11 +916,17 @@ export async function getContacts(
         }),
       ]);
     }
+    const queryOrg = organizationIdFromRequestQuery(req);
+    const inviterOrg = queryOrg
+      ? queryOrg
+      : isPlatformAdminRole(user.userRole)
+        ? null
+        : await resolveActiveOrganizationIdForUser(user.id);
     const contacts = await mapContactsToJsonWithNames(
       rows,
       dealCounts,
       dealAdderNames,
-      organizationIdFromRequestQuery(req),
+      inviterOrg,
       user.id,
     );
     logSocContactDirectoryView({

@@ -186,6 +186,13 @@ function normalizeContact(raw: Record<string, unknown>): ContactRow {
       raw.createdByDisplayName != null || raw.created_by_display_name != null
         ? String(raw.createdByDisplayName ?? raw.created_by_display_name)
         : undefined,
+    addedByOrganizationName:
+      raw.addedByOrganizationName != null ||
+      raw.added_by_organization_name != null
+        ? String(
+            raw.addedByOrganizationName ?? raw.added_by_organization_name,
+          ).trim() || undefined
+        : undefined,
     invitedByDisplayName:
       raw.invitedByDisplayName != null || raw.invited_by_display_name != null
         ? String(
@@ -196,6 +203,13 @@ function normalizeContact(raw: Record<string, unknown>): ContactRow {
       raw.invitedByUserId != null || raw.invited_by_user_id != null
         ? String(raw.invitedByUserId ?? raw.invited_by_user_id).trim() ||
           undefined
+        : undefined,
+    invitedByOrganizationName:
+      raw.invitedByOrganizationName != null ||
+      raw.invited_by_organization_name != null
+        ? String(
+            raw.invitedByOrganizationName ?? raw.invited_by_organization_name,
+          ).trim() || undefined
         : undefined,
     createdByUserId:
       raw.createdByUserId != null || raw.created_by_user_id != null

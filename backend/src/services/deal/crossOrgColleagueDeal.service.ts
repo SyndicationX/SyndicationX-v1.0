@@ -222,21 +222,22 @@ function colleagueDealSql(
 }
 
 export type CrossOrgColleagueDealAccess = {
-  /** Colleague-sponsored deals and investor-company deals. */
+  /** Other-company deals a colleague sponsors. Investor-only deals are excluded. */
   dealIds: string[];
   /**
-   * Deals visible only because an investor from the viewer's company is on
-   * them. Colleague-sponsored deals stay out of this set.
+   * Other-company deals where a contact or LP from the viewer's company is
+   * invested, and no colleague is a sponsor. These are not shown to the
+   * company, including view-only. Colleague-sponsored deals stay out of this set.
    */
   investorCompanyDealIds: string[];
 };
 
 /**
  * Deals outside this user's organizations where someone in those organizations
- * is Lead, Admin, or Co-sponsor, or an LP investor. Drafts and unfinished
- * autosaves are omitted. Company admin and company members see the investor
- * deals on the syndicating list. Own-company deals stay out so company staff
- * keep their normal access.
+ * is Lead, Admin, or Co-sponsor. A contact or LP investment in another
+ * company's deal does not grant company visibility, including view-only.
+ * Drafts and unfinished autosaves are omitted. Own-company deals stay out so
+ * company staff keep their normal access.
  */
 export async function listCrossOrgColleagueDealAccess(
   userId: string,
@@ -336,8 +337,11 @@ async function queryCrossOrgColleagueDealAccess(
     }
     if (inViewerOrg) continue;
     const dealId = String(deal.id);
+    if (investorLinked && !sponsorLinked) {
+      investorCompanyDealIds.push(dealId);
+      continue;
+    }
     visible.push(dealId);
-    if (investorLinked && !sponsorLinked) investorCompanyDealIds.push(dealId);
   }
   return { dealIds: visible, investorCompanyDealIds };
 }

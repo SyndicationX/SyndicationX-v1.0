@@ -978,13 +978,60 @@ function contactsReferredByOrganizationMembersWhere(orgId: string): SQL {
 export type ContactInvitedBy = {
   userId: string;
   displayName: string;
+  organizationName: string;
 };
 
+async function inviterDetailsByUserId(
+  userIds: string[],
+): Promise<Map<string, ContactInvitedBy>> {
+  const ids = [...new Set(userIds.map((id) => String(id).trim()).filter(Boolean))];
+  const details = new Map<string, ContactInvitedBy>();
+  if (ids.length === 0) return details;
+
+  const inviters = await db
+    .select({
+      id: users.id,
+      firstName: users.firstName,
+      lastName: users.lastName,
+      email: users.email,
+      username: users.username,
+      organizationId: users.organizationId,
+    })
+    .from(users)
+    .where(inArray(users.id, ids));
+  const orgIds = [
+    ...new Set(
+      inviters
+        .map((user) => String(user.organizationId ?? "").trim())
+        .filter(Boolean),
+    ),
+  ];
+  const orgNameById = new Map<string, string>();
+  if (orgIds.length > 0) {
+    const orgs = await db
+      .select({ id: companies.id, name: companies.name })
+      .from(companies)
+      .where(inArray(companies.id, orgIds));
+    for (const org of orgs) {
+      orgNameById.set(String(org.id), String(org.name ?? "").trim());
+    }
+  }
+  for (const user of inviters) {
+    const id = String(user.id);
+    details.set(id, {
+      userId: id,
+      displayName: portalUserDisplayName(user),
+      organizationName:
+        orgNameById.get(String(user.organizationId ?? "").trim()) ?? "",
+    });
+  }
+  return details;
+}
+
 /**
- * Person who brought this contact in via an invite link
- * (`users.referred_by_user_id`), including a deal or offering link
- * (`contact.referred_by_deal_id` + the sponsor who created the row).
- * Contacts added by hand stay blank.
+ * Original person who brought this contact in, across every company.
+ * Signup invite (`users.referred_by_user_id`) and a hand-added CRM row count.
+ * Copies made for another company's deal do not.
  */
 export async function resolveInvitedByDisplayNameByContactId(
   rows: Array<Pick<ContactRow, "id" | "email" | "createdBy" | "referredByDealId">>,
@@ -999,79 +1046,55 @@ export async function resolveInvitedByDisplayNameByContactId(
         .filter((email) => email.includes("@")),
     ),
   ];
-  const portalByEmail = new Map<
-    string,
-    { id: string; referredByUserId: string | null }
-  >();
-  if (emails.length > 0) {
-    const portalUsers = await db
-      .select({
-        id: users.id,
-        email: users.email,
-        referredByUserId: users.referredByUserId,
-      })
-      .from(users)
-      .where(
-        sql`lower(trim(${users.email})) in (${sql.join(
-          emails.map((email) => sql`${email}`),
-          sql`, `,
-        )})`,
-      );
-    for (const user of portalUsers) {
-      const email = normalizeContactEmailForScope(user.email ?? "");
-      if (!email) continue;
-      portalByEmail.set(email, {
-        id: String(user.id),
-        referredByUserId: user.referredByUserId ?? null,
-      });
-    }
-  }
+  if (emails.length === 0) return invitedBy;
 
-  const inviterIdByContactId = new Map<string, string>();
-  const inviterIds = new Set<string>();
+  const found = await pool.query<{ email: string; inviter_id: string }>(
+    `SELECT DISTINCT ON (email) email, inviter_id
+     FROM (
+       SELECT lower(trim(invitee.email)) AS email,
+              invitee.referred_by_user_id AS inviter_id,
+              invitee.created_at AS at
+       FROM users invitee
+       WHERE lower(trim(invitee.email)) = ANY($1::text[])
+         AND invitee.referred_by_user_id IS NOT NULL
+
+       UNION ALL
+
+       SELECT lower(trim(c.email)) AS email,
+              c.created_by AS inviter_id,
+              c.created_at AS at
+       FROM contact c
+       WHERE lower(trim(c.email)) = ANY($1::text[])
+         AND c.created_by IS NOT NULL
+         AND c.import_source NOT IN ('deal_investor', 'deal_sponsor', 'deal_org_move')
+     ) events
+     WHERE inviter_id IS NOT NULL
+     ORDER BY email, at ASC NULLS LAST`,
+    [emails],
+  );
+  const details = await inviterDetailsByUserId(
+    found.rows.map((row) => String(row.inviter_id ?? "")),
+  );
+  const inviterByEmail = new Map<string, ContactInvitedBy>();
+  for (const row of found.rows) {
+    const email = normalizeContactEmailForScope(row.email ?? "");
+    const inviter = details.get(String(row.inviter_id ?? "").trim());
+    if (!email || !inviter?.userId) continue;
+    inviterByEmail.set(email, inviter);
+  }
   for (const row of rows) {
     const contactId = String(row.id).trim().toLowerCase();
-    if (!contactId) continue;
-    const portal = portalByEmail.get(normalizeContactEmailForScope(row.email));
-    const referrerId = String(portal?.referredByUserId ?? "").trim();
-    const dealId = String(row.referredByDealId ?? "").trim();
-    const creatorId = String(row.createdBy ?? "").trim();
-    const inviterId =
-      referrerId || (dealId && creatorId ? creatorId : "");
-    if (!inviterId) continue;
-    inviterIdByContactId.set(contactId, inviterId);
-    inviterIds.add(inviterId);
-  }
-  if (inviterIds.size === 0) return invitedBy;
-
-  const inviters = await db
-    .select({
-      id: users.id,
-      firstName: users.firstName,
-      lastName: users.lastName,
-      email: users.email,
-      username: users.username,
-    })
-    .from(users)
-    .where(inArray(users.id, [...inviterIds]));
-  const nameById = new Map(
-    inviters.map((user) => [String(user.id), portalUserDisplayName(user)]),
-  );
-  for (const [contactId, inviterId] of inviterIdByContactId) {
-    const name = nameById.get(inviterId)?.trim() ?? "";
-    if (!name && !inviterId) continue;
-    invitedBy.set(contactId, {
-      userId: inviterId,
-      displayName: name,
-    });
+    const inviter = inviterByEmail.get(normalizeContactEmailForScope(row.email));
+    if (!contactId || !inviter) continue;
+    invitedBy.set(contactId, inviter);
   }
   return invitedBy;
 }
 
 /**
- * First person who invited this contact into `organizationId`.
- * A signup link counts only for the inviter's own company. A CRM row or deal
- * counts only when that row or deal belongs to this company.
+ * Person in `organizationId` who first added or invited this contact.
+ * A deal owned by the company does not count when someone from another
+ * company added the investor.
  */
 export async function resolveFirstOrganizationInviterByContactId(
   rows: Array<Pick<ContactRow, "id" | "email">>,
@@ -1098,7 +1121,15 @@ export async function resolveFirstOrganizationInviterByContactId(
        FROM users invitee
        INNER JOIN users sponsor ON sponsor.id = invitee.referred_by_user_id
        WHERE lower(trim(invitee.email)) = ANY($2::text[])
-         AND sponsor.organization_id = $1::uuid
+         AND (
+           sponsor.organization_id = $1::uuid
+           OR EXISTS (
+             SELECT 1
+             FROM user_company_membership membership
+             WHERE membership.user_id = sponsor.id
+               AND membership.company_id = $1::uuid
+           )
+         )
 
        UNION ALL
 
@@ -1108,6 +1139,7 @@ export async function resolveFirstOrganizationInviterByContactId(
        FROM contact c
        INNER JOIN users creator ON creator.id = c.created_by
        WHERE lower(trim(c.email)) = ANY($2::text[])
+         AND c.import_source NOT IN ('deal_investor', 'deal_sponsor', 'deal_org_move')
          AND (
            c.organization_id = $1::uuid
            OR (
@@ -1127,63 +1159,45 @@ export async function resolveFirstOrganizationInviterByContactId(
 
        UNION ALL
 
-       SELECT lower(trim(c.email)) AS email,
-              c.created_by AS inviter_id,
-              c.created_at AS at
-       FROM contact c
-       INNER JOIN add_deal_form deal ON deal.id = c.referred_by_deal_id
-       WHERE lower(trim(c.email)) = ANY($2::text[])
-         AND deal.organization_id = $1::uuid
-         AND c.created_by IS NOT NULL
-
-       UNION ALL
-
-       SELECT lower(trim(investor.email)) AS email,
+       SELECT lower(trim(coalesce(investor.email, source_contact.email, ''))) AS email,
               investor.added_by AS inviter_id,
               investor.created_at AS at
        FROM deal_lp_investor investor
-       INNER JOIN add_deal_form deal ON deal.id = investor.deal_id
-       WHERE deal.organization_id = $1::uuid
+       INNER JOIN users adder ON adder.id = investor.added_by
+       LEFT JOIN contact source_contact
+         ON source_contact.id::text = trim(investor.contact_member_id)
+       WHERE investor.is_draft = false
+         AND investor.removed_at IS NULL
          AND investor.added_by IS NOT NULL
-         AND position('@' in trim(coalesce(investor.email, ''))) > 1
-         AND lower(trim(investor.email)) = ANY($2::text[])
+         AND (
+           adder.organization_id = $1::uuid
+           OR EXISTS (
+             SELECT 1
+             FROM user_company_membership membership
+             WHERE membership.user_id = adder.id
+               AND membership.company_id = $1::uuid
+           )
+         )
+         AND position('@' in trim(coalesce(investor.email, source_contact.email, ''))) > 1
+         AND lower(trim(coalesce(investor.email, source_contact.email, ''))) = ANY($2::text[])
      )
      SELECT DISTINCT ON (email) email, inviter_id
      FROM events
      WHERE inviter_id IS NOT NULL
+       AND position('@' in email) > 1
      ORDER BY email, at ASC NULLS LAST`,
     [orgId, emails],
   );
 
-  const inviterIds = [
-    ...new Set(
-      found.rows.map((row) => String(row.inviter_id ?? "").trim()).filter(Boolean),
-    ),
-  ];
-  if (inviterIds.length === 0) return invitedBy;
-
-  const inviters = await db
-    .select({
-      id: users.id,
-      firstName: users.firstName,
-      lastName: users.lastName,
-      email: users.email,
-      username: users.username,
-    })
-    .from(users)
-    .where(inArray(users.id, inviterIds));
-  const nameById = new Map(
-    inviters.map((user) => [String(user.id), portalUserDisplayName(user)]),
+  const details = await inviterDetailsByUserId(
+    found.rows.map((row) => String(row.inviter_id ?? "")),
   );
   const inviterByEmail = new Map<string, ContactInvitedBy>();
   for (const row of found.rows) {
     const email = normalizeContactEmailForScope(row.email ?? "");
-    const inviterId = String(row.inviter_id ?? "").trim();
-    if (!email || !inviterId) continue;
-    inviterByEmail.set(email, {
-      userId: inviterId,
-      displayName: nameById.get(inviterId)?.trim() ?? "",
-    });
+    const inviter = details.get(String(row.inviter_id ?? "").trim());
+    if (!email || !inviter?.userId) continue;
+    inviterByEmail.set(email, inviter);
   }
 
   for (const row of rows) {
@@ -1194,6 +1208,115 @@ export async function resolveFirstOrganizationInviterByContactId(
     invitedBy.set(contactId, inviter);
   }
   return invitedBy;
+}
+
+/**
+ * Person who added this contact.
+ * With an organization, only someone in that company counts.
+ * Without one, this is the first add on the platform, ignoring copies made
+ * for another company's deal.
+ */
+export async function resolveAddedByByContactId(
+  rows: Array<Pick<ContactRow, "id" | "email">>,
+  organizationId?: string | null,
+): Promise<Map<string, ContactInvitedBy>> {
+  const addedBy = new Map<string, ContactInvitedBy>();
+  const orgId = normalizeOrganizationUuid(organizationId);
+  if (rows.length === 0) return addedBy;
+
+  const emails = [
+    ...new Set(
+      rows
+        .map((row) => normalizeContactEmailForScope(row.email))
+        .filter((email) => email.includes("@")),
+    ),
+  ];
+  if (emails.length === 0) return addedBy;
+
+  const found = orgId
+    ? await pool.query<{ email: string; inviter_id: string }>(
+        `WITH events AS (
+           SELECT lower(trim(c.email)) AS email,
+                  c.created_by AS inviter_id,
+                  c.created_at AS at
+           FROM contact c
+           INNER JOIN users actor ON actor.id = c.created_by
+           WHERE lower(trim(c.email)) = ANY($2::text[])
+             AND c.created_by IS NOT NULL
+             AND c.import_source NOT IN ('deal_investor', 'deal_sponsor', 'deal_org_move')
+             AND (
+               c.organization_id = $1::uuid
+               OR c.organization_id IS NULL
+             )
+             AND (
+               actor.organization_id = $1::uuid
+               OR EXISTS (
+                 SELECT 1
+                 FROM user_company_membership membership
+                 WHERE membership.user_id = actor.id
+                   AND membership.company_id = $1::uuid
+               )
+             )
+
+           UNION ALL
+
+           SELECT lower(trim(coalesce(investor.email, source_contact.email, ''))) AS email,
+                  investor.added_by AS inviter_id,
+                  investor.created_at AS at
+           FROM deal_lp_investor investor
+           INNER JOIN users actor ON actor.id = investor.added_by
+           LEFT JOIN contact source_contact
+             ON source_contact.id::text = trim(investor.contact_member_id)
+           WHERE investor.is_draft = false
+             AND investor.removed_at IS NULL
+             AND investor.added_by IS NOT NULL
+             AND (
+               actor.organization_id = $1::uuid
+               OR EXISTS (
+                 SELECT 1
+                 FROM user_company_membership membership
+                 WHERE membership.user_id = actor.id
+                   AND membership.company_id = $1::uuid
+               )
+             )
+             AND position('@' in trim(coalesce(investor.email, source_contact.email, ''))) > 1
+             AND lower(trim(coalesce(investor.email, source_contact.email, ''))) = ANY($2::text[])
+         )
+         SELECT DISTINCT ON (email) email, inviter_id
+         FROM events
+         WHERE inviter_id IS NOT NULL
+           AND position('@' in email) > 1
+         ORDER BY email, at ASC NULLS LAST`,
+        [orgId, emails],
+      )
+    : await pool.query<{ email: string; inviter_id: string }>(
+        `SELECT DISTINCT ON (lower(trim(c.email)))
+                lower(trim(c.email)) AS email,
+                c.created_by AS inviter_id
+         FROM contact c
+         WHERE lower(trim(c.email)) = ANY($1::text[])
+           AND c.created_by IS NOT NULL
+           AND c.import_source NOT IN ('deal_investor', 'deal_sponsor', 'deal_org_move')
+         ORDER BY lower(trim(c.email)), c.created_at ASC NULLS LAST`,
+        [emails],
+      );
+  const details = await inviterDetailsByUserId(
+    found.rows.map((row) => String(row.inviter_id ?? "")),
+  );
+  const adderByEmail = new Map<string, ContactInvitedBy>();
+  for (const row of found.rows) {
+    const email = normalizeContactEmailForScope(row.email ?? "");
+    const adder = details.get(String(row.inviter_id ?? "").trim());
+    if (!email || !adder?.userId) continue;
+    adderByEmail.set(email, adder);
+  }
+  for (const row of rows) {
+    const contactId = String(row.id).trim().toLowerCase();
+    const adder = adderByEmail.get(normalizeContactEmailForScope(row.email));
+    if (!contactId || !adder) continue;
+    addedBy.set(contactId, adder);
+  }
+  return addedBy;
 }
 
 export async function loadContactCreatorUsersById(
@@ -1555,6 +1678,29 @@ const CONTACT_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
+ * A copied investor stays on this company's All Contacts only when someone in
+ * this company added them. An investor invited by another company stays on
+ * that company's list, even when the deal belongs here.
+ */
+function excludeInvestorsInvitedByAnotherOrganizationWhere(orgId: string): SQL {
+  return sql`NOT (
+    ${contact.importSource} = 'deal_investor'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM deal_lp_investor lp
+      INNER JOIN users adder ON adder.id = lp.added_by
+      LEFT JOIN contact source_contact
+        ON source_contact.id::text = trim(lp.contact_member_id)
+      WHERE lp.is_draft = false
+        AND lp.removed_at IS NULL
+        AND adder.organization_id = ${orgId}::uuid
+        AND lower(trim(coalesce(lp.email, source_contact.email, ''))) = lower(trim(${contact.email}))
+        AND position('@' in trim(coalesce(lp.email, source_contact.email, ''))) > 1
+    )
+  )`;
+}
+
+/**
  * Contacts created by people who belong to this company (primary org or
  * membership). Company admin and lead sponsors of that company use this to
  * see contacts a member filed while co-sponsoring another company.
@@ -1865,8 +2011,8 @@ function excludeForeignContactShadowedByOrganizationWhere(orgId: string): SQL {
 /**
  * All Contacts list:
  * - **platform_admin**: every company when no company is selected. Customers →
- *   one organization uses that company's own directory (the same contacts
- *   its company admin sees), not every portal user.
+ *   one organization lists only contacts stored on that company. An investor
+ *   invited by another company is not included, even when the deal belongs here.
  * - Users tied to a company: contacts with **`organization_id` = viewer’s org**, plus **legacy**
  *   rows (`organization_id` null) whose `created_by` is anyone in that org.
  * - No company / org: only contacts they created themselves.
@@ -1925,7 +2071,8 @@ async function buildContactsScopeWhere(
       ? or(eq(contact.organizationId, orgId), legacyMemberContacts)!
       : eq(contact.organizationId, orgId);
     return and(
-      or(orgScope, contactsCreatedByOrganizationMembersWhere(orgId))!,
+      orgScope,
+      excludeInvestorsInvitedByAnotherOrganizationWhere(orgId),
       fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm),
       excludePlatformAdminOnlyContactsWhere(),
       excludeCompanyStaffFromContactsWhere(orgId),
@@ -2649,9 +2796,11 @@ export type ContactOrganizationSummary = {
 };
 
 /**
- * Companies an investor is part of, from every non-draft deal linked to the contact.
- * Platform admins see every company and its deals. Other sponsors see only the
- * active organization and the deals that belong to it. Keyed by lowercased contact id.
+ * Companies an investor belongs to. A person invited or added by one sponsor
+ * stays in that sponsor's company, including deals that company does not own.
+ * Sponsor roster roles stay with the company that owns the deal. Platform
+ * admins see every company. Other sponsors see only the active organization.
+ * Keyed by lowercased contact id.
  */
 export async function listContactOrganizationsByContactIdForViewer(params: {
   viewerUserId: string;
@@ -2675,10 +2824,18 @@ export async function listContactOrganizationsByContactIdForViewer(params: {
   const viewerOrganizationId = String(scope.organizationId ?? "")
     .trim()
     .toLowerCase();
-  if (!scope.isPlatformAdmin && !viewerOrganizationId) return result;
-  const organizationFilter = scope.isPlatformAdmin
-    ? sql``
-    : sql`AND lower(co.id::text) = ${viewerOrganizationId}`;
+  const requestedOrganizationId = normalizeOrganizationUuid(
+    params.requestedOrganizationId,
+  );
+  if (!scope.isPlatformAdmin && !viewerOrganizationId && !requestedOrganizationId) {
+    return result;
+  }
+  const listedOrganizationId = requestedOrganizationId ?? (
+    scope.isPlatformAdmin ? "" : viewerOrganizationId
+  );
+  const organizationFilter = listedOrganizationId
+    ? sql`AND lower(owner_co.id::text) = ${listedOrganizationId}`
+    : sql``;
 
   const idParams = sql.join(keys.map((k) => sql`${k}`), sql`, `);
 
@@ -2764,11 +2921,37 @@ export async function listContactOrganizationsByContactIdForViewer(params: {
       d.id::text AS deal_id,
       d.deal_name AS deal_name,
       COALESCE(ranked.contact_role, '') AS contact_role,
-      COALESCE(co.id::text, '') AS company_id,
-      COALESCE(co.name, '') AS company_name
+      COALESCE(owner_co.id::text, '') AS company_id,
+      COALESCE(owner_co.name, '') AS company_name
     FROM ranked
     INNER JOIN add_deal_form d ON d.id::text = ranked.deal_id
-    LEFT JOIN companies co ON co.id = d.organization_id
+    LEFT JOIN LATERAL (
+      SELECT adder.organization_id
+      FROM deal_lp_investor lp
+      INNER JOIN users adder ON adder.id = lp.added_by
+      INNER JOIN contact_keys ck
+        ON ck.contact_key = ranked.contact_key
+      WHERE lp.deal_id = d.id
+        AND lp.is_draft = false
+        AND lp.removed_at IS NULL
+        AND adder.organization_id IS NOT NULL
+        AND replace(lower(trim(COALESCE(ranked.contact_role, ''))), '_', ' ')
+          IN ('lp investor', 'lp investors', 'investor')
+        AND (
+          lower(trim(lp.contact_member_id)) IN (
+            SELECT roster_id FROM roster_ids r
+            WHERE r.contact_key = ranked.contact_key
+          )
+          OR (
+            ck.email_norm <> ''
+            AND position('@' in ck.email_norm) > 1
+            AND lower(trim(coalesce(lp.email, ''))) = ck.email_norm
+          )
+        )
+      LIMIT 1
+    ) inviting_sponsor ON TRUE
+    LEFT JOIN companies owner_co
+      ON owner_co.id = COALESCE(inviting_sponsor.organization_id, d.organization_id)
     WHERE TRUE
       ${organizationFilter}
   `);

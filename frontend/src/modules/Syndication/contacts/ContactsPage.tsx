@@ -74,7 +74,6 @@ import "../usermanagement/user_management.css"
 import { ContactOrganizationsCell } from "./components/ContactOrganizationsCell"
 import {
   createContact,
-  fetchContactOwnerSponsors,
   fetchContactDealStats,
   fetchInvestorInviteLink,
   fetchContactsResult,
@@ -301,7 +300,9 @@ function contactRowMatchesSearch(row: ContactRow, query: string): boolean {
     ...row.lists,
     ...row.owners,
     row.createdByDisplayName ?? "",
+    row.addedByOrganizationName ?? "",
     row.invitedByDisplayName ?? "",
+    row.invitedByOrganizationName ?? "",
     row.addedByCompanyName ?? "",
     row.organizationName ?? "",
     ...(row.organizations ?? []).flatMap((company) => [
@@ -499,9 +500,6 @@ function ContactsPage({
   const [addedFromFilter, setAddedFromFilter] = useState("all")
   const [platformAddedFromFilter, setPlatformAddedFromFilter] = useState("all")
   const [ownerFilter, setOwnerFilter] = useState("all")
-  const [ownerSponsorOptions, setOwnerSponsorOptions] = useState<
-    DropdownSelectOption[]
-  >([{ value: "all", label: "All owners" }])
   const [offeringVisibilityPending, setOfferingVisibilityPending] = useState<{
     row: ContactRow
     next: ContactOfferingVisibility | null
@@ -706,7 +704,36 @@ function ContactsPage({
   )
 
   const ownerFilterOptions = useMemo(() => {
-    if (!platformAdminCompanyFilter) return ownerSponsorOptions
+    if (!platformAdminCompanyFilter) {
+      const byOwner = new Map<string, number>()
+      let unnamed = 0
+      for (const row of rowsBeforeOwnerFilter) {
+        const label = row.invitedByDisplayName?.trim() ?? ""
+        if (!label) {
+          unnamed += 1
+          continue
+        }
+        byOwner.set(label, (byOwner.get(label) ?? 0) + 1)
+      }
+      const options: DropdownSelectOption[] = [
+        {
+          value: "all",
+          label: `All owners (${formatCount(rowsBeforeOwnerFilter.length)})`,
+        },
+      ]
+      for (const [label, count] of [...byOwner.entries()].sort((a, b) =>
+        a[0].localeCompare(b[0], undefined, { sensitivity: "base" }),
+      )) {
+        options.push({ value: label, label: `${label} (${formatCount(count)})` })
+      }
+      if (unnamed > 0) {
+        options.push({
+          value: "__none__",
+          label: `No owner (${formatCount(unnamed)})`,
+        })
+      }
+      return options
+    }
     const byOrg = new Map<string, { name: string; count: number }>()
     let unnamed = 0
     for (const row of rowsBeforeOwnerFilter) {
@@ -739,7 +766,7 @@ function ContactsPage({
       })
     }
     return options
-  }, [platformAdminCompanyFilter, ownerSponsorOptions, rowsBeforeOwnerFilter])
+  }, [platformAdminCompanyFilter, rowsBeforeOwnerFilter])
 
   const filteredRows = useMemo(
     () =>
@@ -751,8 +778,9 @@ function ContactsPage({
           }
           return contactOrganizationEntries(r).some((entry) => entry.key === ownerFilter)
         }
-        const want = ownerFilter.trim().toLowerCase()
-        return r.owners.some((o) => o.trim().toLowerCase() === want)
+        const label = r.invitedByDisplayName?.trim() ?? ""
+        if (ownerFilter === "__none__") return !label
+        return label.toLowerCase() === ownerFilter.trim().toLowerCase()
       }),
     [rowsBeforeOwnerFilter, ownerFilter, platformAdminCompanyFilter],
   )
@@ -970,7 +998,7 @@ function ContactsPage({
       const orgOptions = scopedOrganizationId
         ? { organizationId: scopedOrganizationId }
         : undefined
-      const [listResult, dbTags, dbLists, ownerResult] = await Promise.all([
+      const [listResult, dbTags, dbLists] = await Promise.all([
         fetchContactsResult(
           scopedOrganizationId
             ? { lean: true, organizationId: scopedOrganizationId }
@@ -978,9 +1006,7 @@ function ContactsPage({
         ),
         fetchOrganizationContactTags(orgOptions),
         fetchOrganizationContactLists(orgOptions),
-        fetchContactOwnerSponsors(orgOptions),
       ])
-      const sponsors = ownerResult.sponsors
       if (listResult.ok) {
         setContactsLoadError("")
         setRows(listResult.contacts)
@@ -990,23 +1016,6 @@ function ContactsPage({
       }
       setDbCatalogTagNames(dbTags)
       setDbCatalogListNames(dbLists)
-      const seen = new Set<string>()
-      const sponsorOpts: DropdownSelectOption[] = [
-        { value: "all", label: "All owners" },
-      ]
-      for (const s of sponsors) {
-        const name = s.displayName.trim()
-        if (!name) continue
-        const key = name.toLowerCase()
-        if (seen.has(key)) continue
-        seen.add(key)
-        const email = s.email.trim()
-        sponsorOpts.push({
-          value: name,
-          label: email ? `${name} (${email})` : name,
-        })
-      }
-      setOwnerSponsorOptions(sponsorOpts)
     } finally {
       setLoading(false)
     }
@@ -2472,16 +2481,41 @@ function ContactsPage({
         : {
             id: "owners",
             header: "Owners",
-            sortValue: (row) => row.owners.join(" "),
+            sortValue: (row) => row.invitedByDisplayName ?? "",
             thClassName: "contacts_th_organization",
             tdClassName: "contacts_td_organization",
-            cell: (row) =>
-              dealStatsReadyIds.has(row.id) ? (
-                <TagsCell items={row.owners} />
+            cell: (row) => {
+              const name = row.invitedByDisplayName?.trim()
+              return name ? (
+                <span className="contacts_invited_by" title={name}>
+                  {name}
+                </span>
               ) : (
-                <span className="um_status_muted">…</span>
-              ),
+                <span className="um_status_muted">—</span>
+              )
+            },
           },
+      ...(platformAdminCompanyFilter
+        ? []
+        : ([
+            {
+              id: "createdBy",
+              header: "Added by",
+              sortValue: (row) => row.createdByDisplayName ?? "",
+              thClassName: "contacts_th_invited_by",
+              tdClassName: "contacts_td_invited_by",
+              cell: (row) => {
+                const name = row.createdByDisplayName?.trim()
+                return name ? (
+                  <span className="contacts_invited_by" title={name}>
+                    {name}
+                  </span>
+                ) : (
+                  <span className="um_status_muted">—</span>
+                )
+              },
+            },
+          ] satisfies DataTableColumn<ContactRow>[])),
       /* Hidden: Invited by column (restore by uncommenting)
       {
         id: "invitedBy",
@@ -3048,7 +3082,7 @@ function ContactsPage({
                           searchPlaceholder={
                             platformAdminCompanyFilter
                               ? "Search companies…"
-                              : "Search Lead or Admin sponsors…"
+                              : "Search owners…"
                           }
                           searchAriaLabel={
                             platformAdminCompanyFilter

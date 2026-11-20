@@ -199,26 +199,15 @@ export function hasInvestorClassPricePerUnit(
   return Number.isFinite(n)
 }
 
-function isPositiveMoneyAmount(raw: string): boolean {
-  const n = parseMoneyDigits(String(raw ?? ""))
-  return Number.isFinite(n) && n > 0
-}
-
-/**
- * Raise amount used for price-per-unit: distributions first, then ownership/offering size.
- * A zero distributions amount (GP / mezzanine classes default it to `$0`) falls back to
- * offering size so the price does not collapse to `$0`.
- */
+/** Offering size is the numerator for price per unit. */
 export function investorClassRaiseAmountForPricePerUnit(input: {
   offeringSize: string
   raiseAmountDistributions: string
 }): string {
-  const dist = String(input.raiseAmountDistributions ?? "").trim()
-  if (isPositiveMoneyAmount(dist)) return dist
   return String(input.offeringSize ?? "").trim()
 }
 
-/** Price per unit = raise amount ÷ number of units (empty when inputs are invalid). */
+/** Price per unit = offering size ÷ number of units (empty when inputs are invalid). */
 export function computeInvestorClassPricePerUnit(
   raiseAmount: string,
   numberOfUnits: string,

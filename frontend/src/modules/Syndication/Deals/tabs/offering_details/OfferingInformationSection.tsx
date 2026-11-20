@@ -4008,7 +4008,7 @@ function InvestorClassModalFormBody({
                         ariaLabel="More information: Price per unit"
                         infoContent={
                           <p>
-                            Automatically calculated as raise amount ÷ number
+                            Automatically calculated as offering size ÷ number
                             of units.
                           </p>
                         }

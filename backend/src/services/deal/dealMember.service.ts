@@ -667,9 +667,60 @@ async function resolveContactCreatorInOrganization(
 }
 
 /**
- * People already on the deal who belong to a different company are copied into
- * the lead sponsor's company contacts. Their original contact row stays put.
+ * Sponsors already on the deal who belong to a different company are copied
+ * into the lead sponsor's company contacts. Investors are not: an investor
+ * added or invited by a sponsor stays in that sponsor's company, even when
+ * the deal belongs to another company. Their original contact row stays put.
  */
+async function listInvestorOnlyRosterIds(
+  tx: DealWriteTx,
+  dealId: string,
+): Promise<Set<string>> {
+  const investorIds = new Set<string>();
+  const sponsorIds = new Set<string>();
+  const remember = (bucket: Set<string>, raw: string | null | undefined) => {
+    const id = String(raw ?? "").trim();
+    if (ROSTER_CONTACT_UUID_RE.test(id)) bucket.add(id.toLowerCase());
+  };
+
+  const lpRows = await tx
+    .select({ id: dealLpInvestor.contactMemberId })
+    .from(dealLpInvestor)
+    .where(
+      and(eq(dealLpInvestor.dealId, dealId), eq(dealLpInvestor.isDraft, false)),
+    );
+  for (const row of lpRows) remember(investorIds, row.id);
+
+  const memberRows = await tx
+    .select({
+      id: dealMember.contactMemberId,
+      role: dealMember.dealMemberRole,
+    })
+    .from(dealMember)
+    .where(and(eq(dealMember.dealId, dealId), eq(dealMember.isDraft, false)));
+  for (const row of memberRows) {
+    if (roleIsSponsor(row.role)) remember(sponsorIds, row.id);
+    else if (isLpInvestorRole(row.role)) remember(investorIds, row.id);
+  }
+
+  const investmentRows = await tx
+    .select({
+      id: dealInvestment.contactId,
+      role: dealInvestment.investor_role,
+    })
+    .from(dealInvestment)
+    .where(
+      and(eq(dealInvestment.dealId, dealId), eq(dealInvestment.isDraft, false)),
+    );
+  for (const row of investmentRows) {
+    if (roleIsSponsor(row.role)) remember(sponsorIds, row.id);
+    else if (isLpInvestorRole(row.role)) remember(investorIds, row.id);
+  }
+
+  for (const id of sponsorIds) investorIds.delete(id);
+  return investorIds;
+}
+
 async function copyOutsideDealRosterIntoOrganization(
   tx: DealWriteTx,
   dealId: string,
@@ -691,10 +742,12 @@ async function copyOutsideDealRosterIntoOrganization(
   const dealName = String(deal?.dealName ?? "").trim() || dealId;
 
   const rosterIds = await listSavedDealRosterIds(tx, dealId);
+  const investorOnlyIds = await listInvestorOnlyRosterIds(tx, dealId);
   const copiedEmails = new Set<string>();
   const created: Array<{ dealName: string; email: string }> = [];
 
   for (const rosterId of rosterIds) {
+    if (investorOnlyIds.has(rosterId.trim().toLowerCase())) continue;
     const person = await resolveDealRosterPerson(tx, rosterId);
     if (!person) continue;
     if (sameOrganization(person.homeOrganizationId, organizationId)) continue;
@@ -1042,9 +1095,10 @@ export async function syncOutsideSponsorsIntoOrganizationContacts(
 }
 
 /**
- * An investor added on a deal becomes a normal CRM contact of the company that
- * added them (or that owns the deal). Offering visibility and the other
- * contact actions apply to that company row, not to the platform signup row.
+ * An investor added on a deal becomes a CRM contact of the company that added
+ * them. The deal-owning company does not get a copy when someone from another
+ * company added the investor. Offering visibility applies to the adder's
+ * company row, not to the platform signup row.
  */
 async function copyInvestorIntoOrganization(
   tx: DealWriteTx,
@@ -1054,6 +1108,16 @@ async function copyInvestorIntoOrganization(
   organizationId: string,
 ): Promise<boolean> {
   if (!ROSTER_CONTACT_UUID_RE.test(organizationId)) return false;
+  const adderId = addedByUserId.trim();
+  if (!ROSTER_CONTACT_UUID_RE.test(adderId)) return false;
+  const [adder] = await tx
+    .select({ organizationId: users.organizationId })
+    .from(users)
+    .where(eq(users.id, adderId))
+    .limit(1);
+  if (!sameOrganization(String(adder?.organizationId ?? ""), organizationId)) {
+    return false;
+  }
   const person = await resolveDealRosterPerson(tx, rosterId);
   if (!person) return false;
   if (sameOrganization(person.homeOrganizationId, organizationId)) return false;
@@ -1124,18 +1188,16 @@ export async function syncDealInvestorsIntoOrganizationContacts(
       and(
         eq(dealLpInvestor.isDraft, false),
         isNull(dealLpInvestor.removedAt),
-        sql`(
-          ${addDealForm.organizationId} = ${orgId}::uuid
-          OR EXISTS (
-            SELECT 1 FROM users adder
-            WHERE adder.id = ${dealLpInvestor.addedBy}
-              AND adder.organization_id = ${orgId}::uuid
-          )
+        sql`EXISTS (
+          SELECT 1 FROM users adder
+          WHERE adder.id = ${dealLpInvestor.addedBy}
+            AND adder.organization_id = ${orgId}::uuid
         )`,
       ),
     );
 
   let created = 0;
+  let removed = 0;
   await db.transaction(async (tx) => {
     for (const row of lpRows) {
       if (
@@ -1143,19 +1205,41 @@ export async function syncDealInvestorsIntoOrganizationContacts(
           tx,
           String(row.dealId),
           String(row.contactMemberId),
-          String(row.addedBy ?? actorId),
+          String(row.addedBy ?? ""),
           orgId,
         )
       ) {
         created += 1;
       }
     }
+    const deleted = await tx
+      .delete(contact)
+      .where(
+        and(
+          eq(contact.organizationId, orgId),
+          eq(contact.importSource, "deal_investor"),
+          sql`NOT EXISTS (
+            SELECT 1
+            FROM deal_lp_investor lp
+            INNER JOIN users adder ON adder.id = lp.added_by
+            LEFT JOIN contact source_contact
+              ON source_contact.id::text = trim(lp.contact_member_id)
+            WHERE lp.is_draft = false
+              AND lp.removed_at IS NULL
+              AND adder.organization_id = ${orgId}::uuid
+              AND lower(trim(coalesce(lp.email, source_contact.email, ''))) = lower(trim(${contact.email}))
+              AND position('@' in trim(coalesce(lp.email, source_contact.email, ''))) > 1
+          )`,
+        ),
+      )
+      .returning({ id: contact.id });
+    removed = deleted.length;
   });
-  if (created > 0) invalidateContactDirectoryCache();
+  if (created > 0 || removed > 0) invalidateContactDirectoryCache();
   return created;
 }
 
-/** Platform Admin All Contacts: copy deal investors into each sponsor company. */
+/** Platform Admin All Contacts: copy each investor into the company that added them, and drop copies sitting on the deal owner. */
 export async function syncDealInvestorsIntoAllOrganizationContacts(
   requestedByUserId: string,
 ): Promise<void> {

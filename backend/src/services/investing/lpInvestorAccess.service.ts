@@ -789,7 +789,7 @@ export async function isDealInInvestingParticipantListForUser(
  * added to directly, every deal where a sponsor who invited them is a
  * sponsor, and every other-company deal where a company user is a sponsor.
  * Deals visible only because another investor in the viewer's company is on
- * the roster stay on the syndicating list, not here.
+ * the roster are omitted here and from the company syndicating list.
  */
 export async function listInvestingParticipantDealIdsForUser(params: {
   userId: string;

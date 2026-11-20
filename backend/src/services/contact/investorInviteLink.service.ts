@@ -24,10 +24,7 @@ import {
 import { listUserCompanyMemberships } from "../auth/userCompanyMembership.service.js";
 import { reconcileAssigningDealUsersForDeal } from "../deal/assigningDealUser.service.js";
 import { getAddDealFormById } from "../deal/dealForm.service.js";
-import {
-  isPortalUserDealSponsorOnDeal,
-  resolveViewerDealMemberRoleOnDeal,
-} from "../deal/dealMemberScope.service.js";
+import { isPortalUserDealSponsorOnDeal } from "../deal/dealMemberScope.service.js";
 import {
   buildContactFullName,
   getUserDisplayNameById,
@@ -197,7 +194,8 @@ export async function buildInvestorInviteLinkForUser(
 
 /**
  * Deal-scoped invite unique to this lead / admin / co-sponsor. Investors sign
- * up or sign in with it; the resulting contact stores org, deal, and sponsor.
+ * up or sign in with it. The contact is stored in the inviting sponsor's
+ * company, with the deal and sponsor recorded on that row.
  */
 export async function buildInvestorInviteLinkForDeal(
   userId: string,
@@ -247,16 +245,11 @@ export async function buildInvestorInviteLinkForDeal(
     };
   }
 
-  const dealOrg = String(deal.organizationId ?? "").trim();
-  const [sponsorName, dealCompany, sharerCompany] = await Promise.all([
+  const [sponsorName, sharerCompany] = await Promise.all([
     getUserDisplayNameById(uid),
-    dealOrg ? companyRecordById(dealOrg) : Promise.resolve(null),
     resolveSharerInviteCompany(uid),
   ]);
-  const company = dealCompany
-    ? { companyId: dealCompany.id, companyName: dealCompany.name }
-    : sharerCompany;
-  const ref = encryptInvestorInviteRef(uid, did, company?.companyId);
+  const ref = encryptInvestorInviteRef(uid, did, sharerCompany?.companyId);
   const next = `/deals/${encodeURIComponent(did)}`;
   return {
     ok: true,
@@ -266,7 +259,7 @@ export async function buildInvestorInviteLinkForDeal(
       inviteUrl: inviteSignupUrl({
         ref,
         sponsorName,
-        companyName: company?.companyName ?? "",
+        companyName: sharerCompany?.companyName ?? "",
         nextPath: next,
       }),
     },
@@ -274,11 +267,10 @@ export async function buildInvestorInviteLinkForDeal(
 }
 
 /**
- * Company that should own contacts this sponsor invites onto a deal.
- * An Admin sponsor or Co-sponsor from another company keeps those contacts in
- * their own company. The lead sponsor's company does not receive them.
- * A sponsor who belongs to the deal's company, including by membership, stays
- * in that company.
+ * Company that owns contacts this sponsor invites or adds onto a deal.
+ * The investor stays in the inviting sponsor's company. The deal's company
+ * does not receive a copy when that sponsor belongs to another company.
+ * The deal company is used only when the sponsor has no company of their own.
  */
 export async function organizationForSponsorInviteContacts(params: {
   dealId: string;
@@ -287,22 +279,11 @@ export async function organizationForSponsorInviteContacts(params: {
   sponsorOrganizationId: string | null;
   fallbackOrganizationId?: string | null;
 }): Promise<string | null> {
-  const dealOrg = String(params.dealOrganizationId ?? "").trim() || null;
   const sponsorOrg = String(params.sponsorOrganizationId ?? "").trim() || null;
+  if (sponsorOrg) return sponsorOrg;
+  const dealOrg = String(params.dealOrganizationId ?? "").trim() || null;
   const fallback = String(params.fallbackOrganizationId ?? "").trim() || null;
-  const inDealCompany = dealOrg ?? fallback ?? sponsorOrg;
-  if (!dealOrg || !sponsorOrg || dealOrg.toLowerCase() === sponsorOrg.toLowerCase()) {
-    return inDealCompany;
-  }
-  if (await userHasAccessToOrganization(params.sponsorUserId, dealOrg)) {
-    return dealOrg;
-  }
-  const role = await resolveViewerDealMemberRoleOnDeal(
-    params.dealId,
-    params.sponsorUserId,
-  );
-  if (role === "admin_sponsor" || role === "co_sponsor") return sponsorOrg;
-  return inDealCompany;
+  return dealOrg ?? fallback;
 }
 
 /** Resolves a `ref` query value back to the sharer, dropping stale or suspended users. */

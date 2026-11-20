@@ -672,10 +672,10 @@ export async function listDealsForViewer(
 }
 
 /**
- * Syndicating list: this company's deals, deals the viewer sponsors, deals a
- * colleague sponsors, and deals where an investor from this company is on the
- * roster. A deal where this viewer was only added as an investor is omitted
- * unless that company link applies.
+ * Syndicating list: this company's deals, deals the viewer sponsors, and deals
+ * a colleague sponsors. A contact or LP investment in another company's deal
+ * does not add that deal, including view-only. A deal where this viewer was
+ * only added as an investor is omitted.
  */
 async function keepSyndicationWorkspaceDeals(
   rows: AddDealFormRow[],
