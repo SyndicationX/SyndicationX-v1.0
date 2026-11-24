@@ -1,6 +1,47 @@
 export const EXTRA_COMPANY_USER_PAYMENT_REQUIRED =
   "EXTRA_COMPANY_USER_PAYMENT_REQUIRED"
 
+export const CONTACT_SALES_REQUIRED = "CONTACT_SALES_REQUIRED"
+
+export const CONTACT_SALES_LABEL = "Contact sales"
+
+/** Self-serve stops at 24 company users. The 25th is custom pricing. */
+export const CO_SPONSOR_SELF_SERVE_MAX = 24
+
+function normalizeRosterRole(raw: string | undefined): string {
+  return String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+}
+
+export function isCoSponsorRole(raw: string | undefined): boolean {
+  const s = normalizeRosterRole(raw)
+  return s === "co sponsor" || s === "cosponsor"
+}
+
+/** Lead, admin, co-sponsor, deal member, and general partner share the cap. */
+export function isCompanyUserRosterRole(raw: string | undefined): boolean {
+  const s = normalizeRosterRole(raw)
+  return (
+    s === "lead sponsor" ||
+    s === "admin sponsor" ||
+    isCoSponsorRole(raw) ||
+    s === "deal member" ||
+    s === "general partner" ||
+    s === "general partners" ||
+    s === "team member" ||
+    s === "team members"
+  )
+}
+
+export function contactSalesMessageFromBody(data: unknown): string | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null
+  const code = String((data as Record<string, unknown>).code ?? "").trim()
+  if (code !== CONTACT_SALES_REQUIRED) return null
+  return CONTACT_SALES_LABEL
+}
+
 export type ExtraCompanyUserPaymentRequired = {
   code: typeof EXTRA_COMPANY_USER_PAYMENT_REQUIRED
   message: string

@@ -3259,6 +3259,25 @@ export async function insertDealInvestment(params: {
   return row;
 }
 
+/** Removes an autosaved draft only. Saved roster rows are left in place. */
+export async function deleteDraftDealInvestment(
+  dealId: string,
+  investmentId: string,
+): Promise<void> {
+  const did = String(dealId ?? "").trim();
+  const iid = String(investmentId ?? "").trim();
+  if (!did || !iid) return;
+  await db
+    .delete(dealInvestment)
+    .where(
+      and(
+        eq(dealInvestment.id, iid),
+        eq(dealInvestment.dealId, did),
+        eq(dealInvestment.isDraft, true),
+      ),
+    );
+}
+
 export async function getDealInvestmentById(
   dealId: string,
   investmentId: string,

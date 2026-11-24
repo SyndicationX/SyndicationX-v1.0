@@ -264,6 +264,7 @@ export type DealDistributionFundingStatus = {
   detailsSubmitted: boolean
   fundingReady: boolean
   canManage: boolean
+  canViewBalance: boolean
   bankAccount: DealDistributionFundingBankAccount | null
 }
 
@@ -285,6 +286,7 @@ export async function fetchDealDistributionFundingStatus(
     detailsSubmitted: Boolean(data.detailsSubmitted),
     fundingReady: Boolean(data.fundingReady),
     canManage: Boolean(data.canManage),
+    canViewBalance: Boolean(data.canViewBalance),
     bankAccount: parseConnectBankAccount(data.bankAccount),
   }
 }
@@ -311,6 +313,107 @@ export async function startDealDistributionFundingOnboarding(
     status: String(data.status ?? "onboarding").trim(),
     fundingReady: Boolean(data.fundingReady),
   }
+}
+
+export type DealFundingTopup = {
+  id: string
+  amountCents: number
+  currency: string
+  status: string
+  createdAt: string
+  expectedAvailableAt: string | null
+  failureMessage: string | null
+}
+
+export type DealFundingBalance = {
+  accountId: string | null
+  availableCents: number
+  pendingCents: number
+  currency: "usd"
+  topups: DealFundingTopup[]
+}
+
+function parseDealFundingTopup(raw: unknown): DealFundingTopup | null {
+  if (!raw || typeof raw !== "object") return null
+  const row = raw as Record<string, unknown>
+  const id = String(row.id ?? "").trim()
+  const amountCents = Number(row.amountCents)
+  if (!id || !Number.isSafeInteger(amountCents)) return null
+  return {
+    id,
+    amountCents,
+    currency: String(row.currency ?? "usd").trim() || "usd",
+    status: String(row.status ?? "").trim() || "pending",
+    createdAt: String(row.createdAt ?? "").trim(),
+    expectedAvailableAt:
+      typeof row.expectedAvailableAt === "string" &&
+      row.expectedAvailableAt.trim()
+        ? row.expectedAvailableAt.trim()
+        : null,
+    failureMessage:
+      typeof row.failureMessage === "string" && row.failureMessage.trim()
+        ? row.failureMessage.trim()
+        : null,
+  }
+}
+
+function parseDealFundingBalance(
+  data: Record<string, unknown>,
+): DealFundingBalance {
+  const topups = Array.isArray(data.topups)
+    ? data.topups
+        .map(parseDealFundingTopup)
+        .filter((row): row is DealFundingTopup => row != null)
+    : []
+  const availableCents = Number(data.availableCents)
+  const pendingCents = Number(data.pendingCents)
+  return {
+    accountId:
+      typeof data.accountId === "string" && data.accountId.trim()
+        ? data.accountId.trim()
+        : null,
+    availableCents: Number.isSafeInteger(availableCents) ? availableCents : 0,
+    pendingCents: Number.isSafeInteger(pendingCents) ? pendingCents : 0,
+    currency: "usd",
+    topups,
+  }
+}
+
+export async function fetchDealDistributionFundingBalance(
+  dealId: string,
+): Promise<DealFundingBalance> {
+  const base = baseOrThrow()
+  const res = await fetch(
+    `${base}/deals/${encodeURIComponent(dealId)}/distribution-funding/balance`,
+    { headers: portalAuthHeaders(), credentials: "include" },
+  )
+  return parseDealFundingBalance(await jsonOrError(res))
+}
+
+export async function topUpDealDistributionFunding(params: {
+  dealId: string
+  amountCents: number
+  idempotencyKey: string
+}): Promise<DealFundingBalance & { topup: DealFundingTopup | null }> {
+  const base = baseOrThrow()
+  const res = await fetch(
+    `${base}/deals/${encodeURIComponent(params.dealId)}/distribution-funding/topup`,
+    {
+      method: "POST",
+      headers: {
+        ...portalAuthHeaders(),
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        amountCents: params.amountCents,
+        idempotencyKey: params.idempotencyKey,
+      }),
+    },
+  )
+  const data = await jsonOrError(res)
+  const balance = parseDealFundingBalance(data)
+  return { ...balance, topup: parseDealFundingTopup(data.topup) }
 }
 
 export type DistributionPayout = {

@@ -116,6 +116,7 @@ function achStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     "not-sent": "Not sent",
     pending: "Pending",
+    "ach-pending": "ACH pending",
     processing: "Processing",
     paid: "Paid",
     transferred: "Transferred",
@@ -134,7 +135,9 @@ function achStatusLabel(status: string): string {
 function achStatusTone(status: string): string {
   const slug = achStatusSlug(status)
   if (slug === "paid" || slug === "transferred") return "success"
-  if (slug === "processing" || slug === "pending") return "info"
+  if (slug === "processing" || slug === "pending" || slug === "ach-pending") {
+    return "info"
+  }
   if (slug === "failed" || slug === "canceled" || slug === "cancelled" || slug === "reversed")
     return "danger"
   return "neutral"
@@ -674,6 +677,13 @@ export function DistributionDetailsPage() {
           "Some payouts need attention",
           `${result.initiated} submitted, ${result.skipped} skipped, ${result.failed} failed. Skipped investors must add a bank on Investing → Profiles → Bank accounts, then assign it on My Profiles.`,
         )
+      } else if (
+        result.results.some((line) => line.status === "ach_pending")
+      ) {
+        toast.success(
+          "ACH debits started",
+          "Each payment ACH-debits the deal bank. Investors are paid after those debits settle.",
+        )
       } else {
         toast.success(
           "ACH payouts submitted",
@@ -716,7 +726,8 @@ export function DistributionDetailsPage() {
       return (
         status === "processing" ||
         status === "paid" ||
-        status === "transferred"
+        status === "transferred" ||
+        status === "ach_pending"
       )
     },
     [payoutByInvestmentId],
@@ -782,6 +793,12 @@ export function DistributionDetailsPage() {
             "Cannot send payment",
             lineResult?.message ||
               "This investor must add a bank account first (Investing → Profiles → Bank accounts).",
+          )
+        } else if (lineResult?.status === "ach_pending") {
+          toast.success(
+            "ACH debit started",
+            lineResult.message ||
+              `$${amountLabel} was debited from the deal bank for ${row.investorName}. The investor is paid after that debit settles.`,
           )
         } else {
           toast.success(
@@ -1466,11 +1483,13 @@ export function DistributionDetailsPage() {
                     ? bankSetUp
                       ? "Connect this investor's bank to Stripe before sending a payment"
                       : "Bank account is not set up for this investor"
-                    : canSend
-                      ? `Send ACH payment to ${row.investorName}`
-                      : payout
-                        ? `ACH already ${payout.status}`
-                        : "Payment amount must be greater than zero"
+                    : payout?.status.trim().toLowerCase() === "ach_pending"
+                      ? "ACH debit from the deal bank is pending. The investor is paid after it settles."
+                      : canSend
+                        ? `Send ACH payment to ${row.investorName}`
+                        : payout
+                          ? `ACH already ${payout.status}`
+                          : "Payment amount must be greater than zero"
               }
               aria-label={`${label} for ${row.investorName}`}
               onClick={() => requestSendInvestorAchPayout(row)}

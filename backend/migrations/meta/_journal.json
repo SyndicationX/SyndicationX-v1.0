@@ -827,6 +827,13 @@
       "when": 1896210000000,
       "tag": "0118_invoice_payer_user",
       "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1896220000000,
+      "tag": "0119_distribution_ach_debit",
+      "breakpoints": true
     }
   ]
 }

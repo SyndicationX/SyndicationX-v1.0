@@ -34,6 +34,7 @@ import {
   DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER,
   enrichInvestorApiRowsWithAddedBy,
   redactCoSponsorAddedInvestorEmailsForLeadAdminViewer,
+  deleteDraftDealInvestment,
   getDealInvestmentById,
   getLatestCommitmentAmountForDealContact,
   insertDealInvestment,
@@ -65,7 +66,6 @@ import { viewerCanApproveDealFundOnDeal } from "../../services/deal/dealMemberSc
 import { dealInvestmentReadyForFundApproval } from "../../constants/deal-investor-esign-status.js";
 import { logSocDealInvestmentWrite } from "../../audit/index.js";
 import { assertExtraCompanyUserAllowedForAdd } from "../../services/billing/dealExtraCompanyUser.service.js";
-import { EXTRA_COMPANY_USER_PAYMENT_REQUIRED } from "../../config/stripe.config.js";
 import { isPlatformAdminRole } from "../../constants/roles.js";
 
 const FUND_APPROVAL_FORBIDDEN_MESSAGE =
@@ -180,11 +180,7 @@ async function rejectIfExtraCompanyUserUnpaid(
 ): Promise<boolean> {
   const check = await assertExtraCompanyUserAllowedForAdd(params);
   if (check.ok) return false;
-  if (check.payload.code === EXTRA_COMPANY_USER_PAYMENT_REQUIRED) {
-    res.status(check.status).json(check.payload);
-    return true;
-  }
-  res.status(check.status).json({ message: check.payload.message });
+  res.status(check.status).json(check.payload);
   return true;
 }
 
@@ -708,6 +704,9 @@ export async function putDealInvestment(
         investorRole: investor_role,
       })
     ) {
+      if (existing.isDraft) {
+        await deleteDraftDealInvestment(dealId, investmentId);
+      }
       return;
     }
     if (!contactIsPlaceholder && !isLpInvestorRole(investor_role)) {

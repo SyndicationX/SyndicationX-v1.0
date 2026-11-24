@@ -35,6 +35,7 @@ import {
   personIsAssociatedWithCompany,
 } from "../../services/deal/dealMemberScope.service.js";
 import { isPlatformAdminRole } from "../../constants/roles.js";
+import { assertExtraCompanyUserAllowedForAdd } from "../../services/billing/dealExtraCompanyUser.service.js";
 import {
   dealHasEsignTemplateDocuments,
   getDealEsignTemplatesState,
@@ -872,6 +873,16 @@ export async function putDealMember(
       res
         .status(403)
         .json({ message: LEAD_SPONSOR_EDIT_FORBIDDEN_MESSAGE });
+      return;
+    }
+
+    const companyUserCheck = await assertExtraCompanyUserAllowedForAdd({
+      dealId,
+      contactId: existing.contactMemberId,
+      investorRole,
+    });
+    if (!companyUserCheck.ok) {
+      res.status(companyUserCheck.status).json(companyUserCheck.payload);
       return;
     }
 

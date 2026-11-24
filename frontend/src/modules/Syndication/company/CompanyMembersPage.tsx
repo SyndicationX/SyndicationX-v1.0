@@ -79,6 +79,7 @@ import {
   memberUserCellPrimaryLabel,
   rowDisplayName,
   memberInvitePending,
+  memberRowIsContactEmail,
   memberRowIsCurrentUser,
   memberRowIsInactive,
   membershipsSortValue,
@@ -1716,14 +1717,22 @@ export default function CompanyMembersPage() {
                   type="button"
                   role="menuitem"
                   className="um_kebab_menuitem deals_kebab_menuitem_danger"
-                  disabled={memberRowIsCurrentUser(
-                    openMenuContext.row,
-                    currentUserId,
-                  )}
+                  disabled={
+                    memberRowIsContactEmail(openMenuContext.row) ||
+                    memberRowIsCurrentUser(
+                      openMenuContext.row,
+                      currentUserId,
+                    )
+                  }
                   title={
-                    memberRowIsCurrentUser(openMenuContext.row, currentUserId)
-                      ? "You cannot remove your own account."
-                      : undefined
+                    memberRowIsContactEmail(openMenuContext.row)
+                      ? "This email has no login to remove."
+                      : memberRowIsCurrentUser(
+                            openMenuContext.row,
+                            currentUserId,
+                          )
+                        ? "You cannot remove your own account."
+                        : undefined
                   }
                   onClick={() => {
                     closeActionMenu()

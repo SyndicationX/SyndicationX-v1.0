@@ -4,6 +4,7 @@ import { db } from "../../database/db.js";
 import { addDealForm, companyBillingInvoices, contact, dealInvestorClass, dealInvestment, dealLpInvestor, dealMember, users } from "../../schema/schema.js";
 import {
   EXTRA_COMPANY_USER_FEE_CENTS,
+  CONTACT_SALES_REQUIRED,
   EXTRA_COMPANY_USER_PAYMENT_REQUIRED,
   includedCompanyUsersForPlan,
   MAX_SELF_SERVE_COMPANY_USERS,
@@ -579,7 +580,9 @@ export type DealCompanyUserSnapshot = {
 };
 
 export type ExtraCompanyUserPaymentRequiredPayload = {
-  code: typeof EXTRA_COMPANY_USER_PAYMENT_REQUIRED;
+  code:
+    | typeof EXTRA_COMPANY_USER_PAYMENT_REQUIRED
+    | typeof CONTACT_SALES_REQUIRED;
   message: string;
   dealId: string;
   dealName: string;
@@ -917,6 +920,35 @@ export function extraCompanyUsersToCharge(
   return Math.max(0, Math.floor(snapshot.extraCompanyUsersDue));
 }
 
+function contactSalesPayload(
+  snapshot: DealCompanyUserSnapshot,
+): ExtraCompanyUserPaymentRequiredPayload {
+  return {
+    code: CONTACT_SALES_REQUIRED,
+    message: "Contact sales",
+    dealId: snapshot.dealId,
+    dealName: snapshot.dealName,
+    planId: snapshot.planId,
+    includedCompanyUsers: snapshot.includedCompanyUsers,
+    currentCompanyUsers: snapshot.currentCompanyUsers,
+    extraUsersToPay: 0,
+    extraUserFeeCents: EXTRA_COMPANY_USER_FEE_CENTS,
+    amountDueCents: 0,
+  };
+}
+
+async function contactIsAlreadyCoSponsor(
+  dealId: string,
+  contactId: string,
+): Promise<boolean> {
+  const cid = String(contactId ?? "").trim().toLowerCase();
+  if (!cid || cid === DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER) return false;
+  const roster = await listDealBillingRoster(dealId);
+  return roster.some(
+    (member) => member.isCoGp && member.contactId.toLowerCase() === cid,
+  );
+}
+
 export async function assertExtraCompanyUserAllowedForAdd(params: {
   dealId: string;
   contactId: string;
@@ -928,42 +960,41 @@ export async function assertExtraCompanyUserAllowedForAdd(params: {
   if (isLpInvestorRole(params.investorRole)) {
     return { ok: true };
   }
-  if (!isDealCompanyUserStoredRole(params.investorRole)) {
+  const addingCoSponsor = isCoGpStoredRole(params.investorRole);
+  if (!addingCoSponsor && !isDealCompanyUserStoredRole(params.investorRole)) {
     return { ok: true };
   }
   const contactId = String(params.contactId ?? "").trim();
-  if (!contactId || contactId === DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER) {
+  const placeholder =
+    !contactId || contactId === DEAL_INVESTMENT_AUTOSAVE_CONTACT_PLACEHOLDER;
+
+  if (!placeholder) {
+    if (
+      addingCoSponsor &&
+      (await contactIsAlreadyCoSponsor(params.dealId, contactId))
+    ) {
+      return { ok: true };
+    }
+    if (await contactIsDealCompanyUser(params.dealId, contactId)) {
+      return { ok: true };
+    }
+  } else if (!addingCoSponsor) {
     return { ok: true };
   }
-  if (await contactIsDealCompanyUser(params.dealId, contactId)) {
-    return { ok: true };
-  }
+
   const snapshot = await getDealCompanyUserSnapshot(params.dealId);
   if (!snapshot) return { ok: true };
 
+  // Lead, admin, and co-sponsors share the 24 company-user cap.
   const nextCount = snapshot.currentCompanyUsers + 1;
   if (nextCount > MAX_SELF_SERVE_COMPANY_USERS) {
     return {
       ok: false,
       status: 400,
-      payload: {
-        code: EXTRA_COMPANY_USER_PAYMENT_REQUIRED,
-        message:
-          "This deal would have 25 or more company users. Contact sales for custom pricing.",
-        dealId: snapshot.dealId,
-        dealName: snapshot.dealName,
-        planId: snapshot.planId,
-        includedCompanyUsers: snapshot.includedCompanyUsers,
-        currentCompanyUsers: snapshot.currentCompanyUsers,
-        extraUsersToPay: 0,
-        extraUserFeeCents: EXTRA_COMPANY_USER_FEE_CENTS,
-        amountDueCents: 0,
-      },
+      payload: contactSalesPayload(snapshot),
     };
   }
 
-  if (!isCoGpStoredRole(params.investorRole)) return { ok: true };
-  // 6th co-sponsor uses the 10 package. 11th uses 10+. No $10 add-on.
   return { ok: true };
 }
 

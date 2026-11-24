@@ -63,6 +63,7 @@ import {
   parseDealSaasPaymentRequiredBody,
 } from "../utils/dealSaasAccess"
 import {
+  contactSalesMessageFromBody,
   parseExtraCompanyUserPaymentBody,
   type ExtraCompanyUserPaymentRequired,
 } from "../utils/extraCompanyUserBilling"
@@ -5444,9 +5445,7 @@ export async function putDealMemberRoster(
     )
     const data = (await res.json().catch(() => ({}))) as { message?: unknown }
     if (!res.ok) {
-      const msg =
-        data.message != null ? String(data.message) : res.statusText
-      return { ok: false, message: msg || "Could not update member" }
+      return investmentSaveFailure(data, dealId, "Could not update member")
     }
     return { ok: true, mode: "api" }
   } catch {
@@ -5696,7 +5695,30 @@ export type PostDealInvestmentResult =
       ok: false
       message: string
       extraCompanyUserPayment?: ExtraCompanyUserPaymentRequired
+      contactSales?: boolean
     }
+
+function investmentSaveFailure(
+  data: unknown,
+  dealId: string,
+  fallback: string,
+): PostDealInvestmentResult {
+  const contactSales = contactSalesMessageFromBody(data)
+  if (contactSales) {
+    return { ok: false, message: contactSales, contactSales: true }
+  }
+  const extraCompanyUserPayment = parseExtraCompanyUserPaymentBody(data, dealId)
+  const rec =
+    data && typeof data === "object" && !Array.isArray(data)
+      ? (data as { message?: unknown })
+      : {}
+  const msg = rec.message != null ? String(rec.message) : fallback
+  return {
+    ok: false,
+    message: msg || fallback,
+    ...(extraCompanyUserPayment ? { extraCompanyUserPayment } : {}),
+  }
+}
 
 function appendDealInvestmentMultipartFields(
   fd: FormData,
@@ -5774,17 +5796,7 @@ export async function postDealInvestment(
       investor?: { id?: string }
     }
     if (!res.ok) {
-      const extraCompanyUserPayment = parseExtraCompanyUserPaymentBody(
-        data,
-        dealId,
-      )
-      const msg =
-        data?.message != null ? String(data.message) : res.statusText
-      return {
-        ok: false,
-        message: msg || "Could not save investment",
-        ...(extraCompanyUserPayment ? { extraCompanyUserPayment } : {}),
-      }
+      return investmentSaveFailure(data, dealId, "Could not save investment")
     }
     const rawId = data.investor?.id
     const investmentId =
@@ -5857,17 +5869,7 @@ export async function putDealInvestment(
       message?: unknown
     }
     if (!res.ok) {
-      const extraCompanyUserPayment = parseExtraCompanyUserPaymentBody(
-        data,
-        dealId,
-      )
-      const msg =
-        data?.message != null ? String(data.message) : res.statusText
-      return {
-        ok: false,
-        message: msg || "Could not update investment",
-        ...(extraCompanyUserPayment ? { extraCompanyUserPayment } : {}),
-      }
+      return investmentSaveFailure(data, dealId, "Could not update investment")
     }
     if (import.meta.env.DEV) {
       console.info("[Edit investment] Stored in DB (PUT)", {

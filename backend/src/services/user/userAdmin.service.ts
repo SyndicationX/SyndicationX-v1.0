@@ -342,6 +342,141 @@ async function listUsersScopedToCompany(
   );
 }
 
+function membershipCompanyKey(item: unknown): string {
+  if (item === null || typeof item !== "object" || Array.isArray(item)) return "";
+  const rec = item as Record<string, unknown>;
+  return String(rec.company ?? rec.companyName ?? rec.company_name ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * The login email keeps the company on the account. A different email's company
+ * is shown only on that email's row.
+ */
+function accountRowWithoutOtherEmailCompanies(
+  row: Record<string, unknown>,
+  otherEmailCompanies: Set<string>,
+): Record<string, unknown> {
+  const raw = row.memberships;
+  if (!Array.isArray(raw) || otherEmailCompanies.size === 0) return row;
+  const kept = raw.filter(
+    (item) => !otherEmailCompanies.has(membershipCompanyKey(item)),
+  );
+  if (kept.length === raw.length) return row;
+  return { ...row, memberships: kept };
+}
+
+/**
+ * One Org Members row per email. An invited company contact whose email never
+ * became a login is its own row, next to the account that shares the name.
+ */
+async function appendUnregisteredContactEmailRows(
+  rows: Record<string, unknown>[],
+  companyId: string | null,
+): Promise<Record<string, unknown>[]> {
+  const scopeId = String(companyId ?? "").trim();
+  const scoped = scopeId.length > 0 && ORG_UUID_RE.test(scopeId);
+  const existingEmails = new Set(
+    rows
+      .map((row) => String(row.email ?? "").trim().toLowerCase())
+      .filter((email) => email.includes("@")),
+  );
+
+  const filters = [
+    eq(contact.invitationEmailSent, true),
+    sql`trim(${contact.email}) <> ''`,
+    sql`NOT EXISTS (
+      SELECT 1 FROM users existing_user
+      WHERE lower(trim(existing_user.email)) = lower(trim(${contact.email}))
+    )`,
+    sql`EXISTS (
+      SELECT 1 FROM users member_user
+      WHERE lower(trim(member_user.first_name)) = lower(trim(${contact.firstName}))
+        AND lower(trim(member_user.last_name)) = lower(trim(${contact.lastName}))
+        AND trim(member_user.first_name) <> ''
+        AND trim(member_user.last_name) <> ''
+        AND member_user.role IN ('company_admin', 'company_user')
+    )`,
+  ];
+  if (scoped) filters.push(eq(contact.organizationId, scopeId));
+
+  const found = await db
+    .select({
+      id: contact.id,
+      email: contact.email,
+      phone: contact.phone,
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+      organizationId: contact.organizationId,
+      companyName: companies.name,
+      createdAt: contact.createdAt,
+      createdBy: contact.createdBy,
+    })
+    .from(contact)
+    .innerJoin(companies, eq(contact.organizationId, companies.id))
+    .where(and(...filters));
+
+  const extrasByName = new Map<string, Record<string, unknown>[]>();
+  const seenEmails = new Set(existingEmails);
+  for (const row of found) {
+    const email = String(row.email ?? "").trim();
+    const emailKey = email.toLowerCase();
+    const companyName = String(row.companyName ?? "").trim();
+    if (!emailKey.includes("@") || !companyName || seenEmails.has(emailKey)) {
+      continue;
+    }
+    seenEmails.add(emailKey);
+    const nameKey = `${String(row.firstName ?? "").trim().toLowerCase()}|${String(row.lastName ?? "").trim().toLowerCase()}`;
+    const extra: Record<string, unknown> = {
+      id: row.id,
+      email,
+      phone: String(row.phone ?? ""),
+      firstName: String(row.firstName ?? ""),
+      lastName: String(row.lastName ?? ""),
+      username: "",
+      role: COMPANY_USER,
+      userStatus: "active",
+      userSignupCompleted: "false",
+      organizationId: row.organizationId,
+      organization_id: row.organizationId,
+      companyName,
+      memberships: [{ company: companyName, role: "Company Member" }],
+      contactEmailRow: true,
+      createdAt: row.createdAt,
+      invitedByUserId: row.createdBy,
+      invitedAt: row.createdAt,
+    };
+    const list = extrasByName.get(nameKey) ?? [];
+    list.push(extra);
+    extrasByName.set(nameKey, list);
+  }
+  if (extrasByName.size === 0) return rows;
+
+  const merged: Record<string, unknown>[] = [];
+  const placed = new Set<string>();
+  for (const row of rows) {
+    const nameKey = `${String(row.firstName ?? row.first_name ?? "").trim().toLowerCase()}|${String(row.lastName ?? row.last_name ?? "").trim().toLowerCase()}`;
+    const extras = extrasByName.get(nameKey);
+    if (!extras || placed.has(nameKey)) {
+      merged.push(row);
+      continue;
+    }
+    placed.add(nameKey);
+    const emailsOwnCompany = new Set(
+      extras
+        .map((extra) => String(extra.companyName ?? "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    merged.push(accountRowWithoutOtherEmailCompanies(row, emailsOwnCompany));
+    merged.push(...extras);
+  }
+  for (const [nameKey, extras] of extrasByName) {
+    if (!placed.has(nameKey)) merged.push(...extras);
+  }
+  return merged;
+}
+
 /** Platform Users & Roles: every account, not one company and not staff roles only. */
 async function listAllUsersForPlatformAdmin(
   sort: UserListSort,
@@ -377,10 +512,16 @@ export async function listUsersForAdmin(
       filterOrg.length > 0 && ORG_UUID_RE.test(filterOrg);
     if (!applyOrgFilter) {
       return attachMemberInvitationDetails(
-        await listAllUsersForPlatformAdmin(sort),
+        await appendUnregisteredContactEmailRows(
+          await listAllUsersForPlatformAdmin(sort),
+          null,
+        ),
       );
     }
-    let rows = await listUsersScopedToCompany(filterOrg, sort);
+    let rows = await appendUnregisteredContactEmailRows(
+      await listUsersScopedToCompany(filterOrg, sort),
+      filterOrg,
+    );
     const actorUserId = opts?.actorUserId?.trim() ?? "";
     if (actorUserId) {
       rows = await appendPlatformAdminViewerToScopedList(
@@ -400,7 +541,10 @@ export async function listUsersForAdmin(
         : actorOrganizationId?.trim() ?? "";
     if (companyId && ORG_UUID_RE.test(companyId)) {
       return attachMemberInvitationDetails(
-        await listUsersScopedToCompany(companyId, sort),
+        await appendUnregisteredContactEmailRows(
+          await listUsersScopedToCompany(companyId, sort),
+          companyId,
+        ),
       );
     }
   }

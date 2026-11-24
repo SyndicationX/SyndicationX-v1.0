@@ -40,6 +40,9 @@ export const MAX_SELF_SERVE_COMPANY_USERS = 24;
 export const EXTRA_COMPANY_USER_PAYMENT_REQUIRED =
   "EXTRA_COMPANY_USER_PAYMENT_REQUIRED";
 
+/** 25+ co-sponsors are custom pricing. Not a $10 checkout. */
+export const CONTACT_SALES_REQUIRED = "CONTACT_SALES_REQUIRED";
+
 export function includedCompanyUsersForPlan(
   planId: string | null | undefined,
 ): number {

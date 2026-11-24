@@ -29,6 +29,8 @@ import {
   debitDealFundingAccountForDistribution,
   handleDealDistributionFundingWebhookEvent,
   requireDealDistributionFundingSource,
+  retrieveDealBankAchDebit,
+  startDealBankAchDebit,
 } from "./dealDistributionFunding.service.js";
 import {
   archivedConnectAccountIds,
@@ -713,10 +715,196 @@ export type ExecuteDistributionPayoutsResult =
     }
   | { ok: false; status: number; message: string };
 
+const ACH_DEBIT_PENDING = "ach_pending";
+const ACH_DEBIT_PENDING_MESSAGE =
+  "ACH debit started from the deal bank for this payment. The investor is paid after that debit settles.";
+
+type DistributionPayoutRow = typeof investorDistributionPayouts.$inferSelect;
+
 /**
- * Debits the deal's distribution funding account, transfers each line to the
- * investor's Connect account, then creates a standard ACH payout to their bank.
- * Pass `investmentIds` to pay one (or a subset of) investor lines.
+ * After the deal-bank ACH debit is available, move it to the investor and
+ * pay their bank. Idempotent on the payout row id.
+ */
+async function payInvestorFromDealBalance(params: {
+  local: DistributionPayoutRow;
+  fundingAccountId: string;
+  isRetry: boolean;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  const { local, isRetry } = params;
+  const stripe = getStripeClient();
+  const accountId = local.stripeConnectedAccountId;
+  try {
+    let transferId =
+      isRetry && local.status === "reversed"
+        ? ""
+        : local.stripeTransferId?.trim() || "";
+    if (!transferId) {
+      const debit = await debitDealFundingAccountForDistribution({
+        dealAccountId: params.fundingAccountId,
+        amountCents: local.amountCents,
+        dealId: local.dealId,
+        distributionId: local.distributionId,
+        idempotencyKey: isRetry
+          ? `deal_funding_debit_${local.id}_${local.updatedAt.getTime()}`
+          : `deal_funding_debit_${local.id}`,
+      });
+      if (!debit.ok) {
+        await db
+          .update(investorDistributionPayouts)
+          .set({
+            status: "failed",
+            failureCode: "deal_funding_debit_failed",
+            failureMessage: debit.message,
+            updatedAt: new Date(),
+          })
+          .where(eq(investorDistributionPayouts.id, local.id));
+        return { ok: false, message: debit.message };
+      }
+
+      const transfer = await stripe.transfers.create(
+        {
+          amount: local.amountCents,
+          currency: "usd",
+          destination: accountId,
+          transfer_group: `distribution_${local.distributionId}`,
+          metadata: {
+            flow: "investor_distribution",
+            fundingSource: "deal_bank_ach",
+            dealFundingAccountId: params.fundingAccountId,
+            dealFundingChargeId: debit.chargeId,
+            payoutRecordId: local.id,
+            dealId: local.dealId,
+            distributionId: local.distributionId,
+            investmentId: local.investmentId,
+          },
+        },
+        {
+          idempotencyKey: isRetry
+            ? `distribution_transfer_${local.id}_${local.updatedAt.getTime()}`
+            : `distribution_transfer_${local.id}`,
+        },
+      );
+      transferId = transfer.id;
+      await db
+        .update(investorDistributionPayouts)
+        .set({
+          stripeTransferId: transferId,
+          status: "transferred",
+          initiatedAt: local.initiatedAt ?? new Date(),
+          failureCode: null,
+          failureMessage: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(investorDistributionPayouts.id, local.id));
+    }
+
+    let payoutId = isRetry ? "" : local.stripePayoutId?.trim() || "";
+    if (!payoutId) {
+      const payout = await stripe.payouts.create(
+        {
+          amount: local.amountCents,
+          currency: "usd",
+          method: "standard",
+          metadata: {
+            flow: "investor_distribution",
+            payoutRecordId: local.id,
+            dealId: local.dealId,
+            distributionId: local.distributionId,
+            investmentId: local.investmentId,
+            transferId,
+          },
+        },
+        {
+          stripeAccount: accountId,
+          idempotencyKey: isRetry
+            ? `distribution_payout_${local.id}_${local.updatedAt.getTime()}`
+            : `distribution_payout_${local.id}`,
+        },
+      );
+      payoutId = payout.id;
+    }
+
+    await db
+      .update(investorDistributionPayouts)
+      .set({
+        stripeTransferId: transferId,
+        stripePayoutId: payoutId,
+        status: "processing",
+        initiatedAt: local.initiatedAt ?? new Date(),
+        failureCode: null,
+        failureMessage: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(investorDistributionPayouts.id, local.id));
+    return { ok: true };
+  } catch (err) {
+    const stripeError = err as Stripe.errors.StripeError;
+    const message =
+      err instanceof Error ? err.message : "Stripe payout creation failed";
+    await db
+      .update(investorDistributionPayouts)
+      .set({
+        status: "failed",
+        failureCode: stripeError?.code ?? null,
+        failureMessage: message,
+        updatedAt: new Date(),
+      })
+      .where(eq(investorDistributionPayouts.id, local.id));
+    return { ok: false, message };
+  }
+}
+
+async function loadPayoutRow(payoutId: string) {
+  const [row] = await db
+    .select()
+    .from(investorDistributionPayouts)
+    .where(eq(investorDistributionPayouts.id, payoutId))
+    .limit(1);
+  return row ?? null;
+}
+
+/** When a deal-bank ACH debit has settled, pay the investor. */
+export async function settleDistributionAchDebit(
+  payoutId: string,
+): Promise<void> {
+  const local = await loadPayoutRow(payoutId);
+  if (!local || local.status !== ACH_DEBIT_PENDING) return;
+  const topupId = local.stripeFundingTopupId?.trim() || "";
+  if (!topupId || local.stripeTransferId) return;
+
+  const funding = await requireDealDistributionFundingSource(local.dealId);
+  if (!funding.ok) return;
+
+  const debit = await retrieveDealBankAchDebit({
+    dealAccountId: funding.accountId,
+    topupId,
+  });
+  if (!debit.ok || debit.status === "pending") return;
+  if (debit.status !== "succeeded") {
+    await db
+      .update(investorDistributionPayouts)
+      .set({
+        status: "failed",
+        failureCode: "deal_bank_ach_failed",
+        failureMessage:
+          debit.failureMessage ||
+          "The ACH debit from the deal bank did not complete.",
+        updatedAt: new Date(),
+      })
+      .where(eq(investorDistributionPayouts.id, local.id));
+    return;
+  }
+
+  await payInvestorFromDealBalance({
+    local,
+    fundingAccountId: funding.accountId,
+    isRetry: false,
+  });
+}
+
+/**
+ * ACH-debits the deal bank for each line, then pays the investor after the
+ * debit settles. Pass `investmentIds` to pay one (or a subset of) lines.
  */
 export async function executeDistributionPayouts(params: {
   dealId: string;
@@ -773,7 +961,6 @@ export async function executeDistributionPayouts(params: {
     };
   }
 
-  const stripe = getStripeClient();
   const results: PayoutLineResult[] = [];
   const paymentLines =
     onlyInvestmentIds.size > 0
@@ -960,151 +1147,185 @@ export async function executeDistributionPayouts(params: {
       local.status === "canceled" ||
       local.status === "reversed";
 
-    try {
-      let transferId =
-        isRetry && local.status === "reversed"
-          ? ""
-          : local.stripeTransferId?.trim() || "";
-      if (!transferId) {
-        // Pull funds from the deal funding Connect balance (not SyndicationX billing).
-        const debit = await debitDealFundingAccountForDistribution({
+    if (local.status === ACH_DEBIT_PENDING && local.stripeFundingTopupId) {
+      await settleDistributionAchDebit(local.id);
+      const refreshed = await loadPayoutRow(local.id);
+      const settled = refreshed?.status === "processing";
+      results.push({
+        investmentId,
+        investorName,
+        amountCents,
+        status: settled ? "processing" : (refreshed?.status ?? ACH_DEBIT_PENDING),
+        message: settled
+          ? undefined
+          : refreshed?.failureMessage || ACH_DEBIT_PENDING_MESSAGE,
+      });
+      continue;
+    }
+
+    const alreadyMoved =
+      Boolean(local.stripeTransferId?.trim()) && local.status !== "reversed";
+    if (!alreadyMoved) {
+      const existingTopup = local.stripeFundingTopupId?.trim() || "";
+      if (existingTopup) {
+        const debit = await retrieveDealBankAchDebit({
           dealAccountId: funding.accountId,
-          amountCents,
-          dealId,
-          distributionId,
-          idempotencyKey: isRetry
-            ? `deal_funding_debit_${local.id}_${local.updatedAt.getTime()}`
-            : `deal_funding_debit_${local.id}`,
+          topupId: existingTopup,
         });
-        if (!debit.ok) {
-          await db
-            .update(investorDistributionPayouts)
-            .set({
-              status: "failed",
-              failureCode: "deal_funding_debit_failed",
-              failureMessage: debit.message,
-              updatedAt: new Date(),
-            })
-            .where(eq(investorDistributionPayouts.id, local.id));
+        if (debit.ok && debit.status === "succeeded") {
+          const paid = await payInvestorFromDealBalance({
+            local,
+            fundingAccountId: funding.accountId,
+            isRetry: false,
+          });
           results.push({
             investmentId,
             investorName,
             amountCents,
-            status: "failed",
-            message: debit.message,
+            status: paid.ok ? "processing" : "failed",
+            message: paid.ok ? undefined : paid.message,
           });
           continue;
         }
+        if (!isRetry) {
+          const stillPending = !debit.ok || debit.status === "pending";
+          if (!stillPending) {
+            await db
+              .update(investorDistributionPayouts)
+              .set({
+                status: "failed",
+                failureCode: "deal_bank_ach_failed",
+                failureMessage:
+                  (debit.ok && debit.failureMessage) ||
+                  "The ACH debit from the deal bank did not complete.",
+                updatedAt: new Date(),
+              })
+              .where(eq(investorDistributionPayouts.id, local.id));
+          } else if (local.status !== ACH_DEBIT_PENDING) {
+            await db
+              .update(investorDistributionPayouts)
+              .set({
+                status: ACH_DEBIT_PENDING,
+                failureCode: null,
+                failureMessage: null,
+                updatedAt: new Date(),
+              })
+              .where(eq(investorDistributionPayouts.id, local.id));
+          }
+          results.push({
+            investmentId,
+            investorName,
+            amountCents,
+            status: stillPending ? ACH_DEBIT_PENDING : "failed",
+            message: stillPending
+              ? ACH_DEBIT_PENDING_MESSAGE
+              : (debit.ok && debit.failureMessage) ||
+                "The ACH debit from the deal bank did not complete.",
+          });
+          continue;
+        }
+      }
 
-        const transfer = await stripe.transfers.create(
-          {
-            amount: amountCents,
-            currency: "usd",
-            destination: accountId,
-            transfer_group: `distribution_${distributionId}`,
-            metadata: {
-              flow: "investor_distribution",
-              fundingSource: "deal_distribution_funding",
-              dealFundingAccountId: funding.accountId,
-              dealFundingChargeId: debit.chargeId,
-              payoutRecordId: local.id,
-              dealId,
-              distributionId,
-              investmentId,
-            },
-          },
-          {
-            idempotencyKey: isRetry
-              ? `distribution_transfer_${local.id}_${local.updatedAt.getTime()}`
-              : `distribution_transfer_${local.id}`,
-          },
-        );
-        transferId = transfer.id;
+      const ach = await startDealBankAchDebit({
+        dealAccountId: funding.accountId,
+        amountCents,
+        dealId,
+        distributionId,
+        payoutRecordId: local.id,
+        idempotencyKey: isRetry
+          ? `deal_bank_ach_${local.id}_${local.updatedAt.getTime()}`
+          : `deal_bank_ach_${local.id}`,
+      });
+      if (!ach.ok) {
         await db
           .update(investorDistributionPayouts)
           .set({
-            stripeTransferId: transferId,
-            status: "transferred",
-            initiatedAt: new Date(),
-            failureCode: null,
-            failureMessage: null,
+            status: "failed",
+            failureCode: "deal_bank_ach_failed",
+            failureMessage: ach.message,
             updatedAt: new Date(),
           })
           .where(eq(investorDistributionPayouts.id, local.id));
-      }
-
-      // Failed/canceled payouts keep their Stripe id; clear so a new ACH can be created.
-      let payoutId = isRetry ? "" : local.stripePayoutId?.trim() || "";
-      if (!payoutId) {
-        const payout = await stripe.payouts.create(
-          {
-            amount: amountCents,
-            currency: "usd",
-            method: "standard",
-            metadata: {
-              flow: "investor_distribution",
-              payoutRecordId: local.id,
-              dealId,
-              distributionId,
-              investmentId,
-              transferId,
-            },
-          },
-          {
-            stripeAccount: accountId,
-            idempotencyKey: isRetry
-              ? `distribution_payout_${local.id}_${local.updatedAt.getTime()}`
-              : `distribution_payout_${local.id}`,
-          },
-        );
-        payoutId = payout.id;
+        results.push({
+          investmentId,
+          investorName,
+          amountCents,
+          status: "failed",
+          message: ach.message,
+        });
+        continue;
       }
 
       await db
         .update(investorDistributionPayouts)
         .set({
-          stripeTransferId: transferId,
-          stripePayoutId: payoutId,
-          status: "processing",
-          initiatedAt: local.initiatedAt ?? new Date(),
+          stripeFundingTopupId: ach.topupId,
+          status: ACH_DEBIT_PENDING,
+          initiatedAt: new Date(),
           failureCode: null,
           failureMessage: null,
           updatedAt: new Date(),
         })
         .where(eq(investorDistributionPayouts.id, local.id));
+
+      if (ach.status === "succeeded") {
+        const fresh = await loadPayoutRow(local.id);
+        const paid = fresh
+          ? await payInvestorFromDealBalance({
+              local: { ...fresh, status: ACH_DEBIT_PENDING },
+              fundingAccountId: funding.accountId,
+              isRetry: false,
+            })
+          : { ok: false as const, message: "Could not load the payout record." };
+        if (!paid.ok) {
+          results.push({
+            investmentId,
+            investorName,
+            amountCents,
+            status: "failed",
+            message: paid.message,
+          });
+          continue;
+        }
+        results.push({
+          investmentId,
+          investorName,
+          amountCents,
+          status: "processing",
+        });
+        continue;
+      }
+
       results.push({
         investmentId,
         investorName,
         amountCents,
-        status: "processing",
+        status: ACH_DEBIT_PENDING,
+        message: ACH_DEBIT_PENDING_MESSAGE,
       });
-    } catch (err) {
-      const stripeError = err as Stripe.errors.StripeError;
-      const message =
-        err instanceof Error ? err.message : "Stripe payout creation failed";
-      await db
-        .update(investorDistributionPayouts)
-        .set({
-          status: "failed",
-          failureCode: stripeError?.code ?? null,
-          failureMessage: message,
-          updatedAt: new Date(),
-        })
-        .where(eq(investorDistributionPayouts.id, local.id));
-      results.push({
-        investmentId,
-        investorName,
-        amountCents,
-        status: "failed",
-        message,
-      });
+      continue;
     }
+
+    const paid = await payInvestorFromDealBalance({
+      local,
+      fundingAccountId: funding.accountId,
+      isRetry,
+    });
+    results.push({
+      investmentId,
+      investorName,
+      amountCents,
+      status: paid.ok ? "processing" : "failed",
+      message: paid.ok ? undefined : paid.message,
+    });
   }
 
   return {
     ok: true,
     results,
-    initiated: results.filter((r) => r.status === "processing").length,
+    initiated: results.filter(
+      (r) => r.status === "processing" || r.status === ACH_DEBIT_PENDING,
+    ).length,
     skipped: results.filter((r) => r.status === "skipped").length,
     failed: results.filter((r) => r.status === "failed").length,
   };
@@ -1118,6 +1339,23 @@ export async function listDistributionPayouts(params: {
   const dealId = uuid(params.dealId);
   const distributionId = String(params.distributionId ?? "").trim();
   if (!dealId || !distributionId) return [];
+  const pendingDebits = await db
+    .select({ id: investorDistributionPayouts.id })
+    .from(investorDistributionPayouts)
+    .where(
+      and(
+        eq(investorDistributionPayouts.dealId, dealId),
+        eq(investorDistributionPayouts.distributionId, distributionId),
+        eq(investorDistributionPayouts.status, ACH_DEBIT_PENDING),
+      ),
+    );
+  for (const row of pendingDebits) {
+    try {
+      await settleDistributionAchDebit(row.id);
+    } catch (err) {
+      console.error("listDistributionPayouts.settleAch:", err);
+    }
+  }
   const rows = await db
     .select()
     .from(investorDistributionPayouts)
@@ -1165,6 +1403,24 @@ function connectAccountIdFromWebhookEvent(event: Stripe.Event): string | null {
 export async function handleDistributionConnectWebhookEvent(
   event: Stripe.Event,
 ): Promise<boolean> {
+  if (
+    event.type === "topup.succeeded" ||
+    event.type === "topup.failed" ||
+    event.type === "topup.canceled" ||
+    event.type === "topup.reversed"
+  ) {
+    const topup = event.data.object as Stripe.Topup;
+    const payoutRecordId = String(topup.metadata?.payoutRecordId ?? "").trim();
+    if (topup.metadata?.flow !== "deal_distribution_ach_debit") return false;
+    if (!payoutRecordId) return false;
+    const local = await loadPayoutRow(payoutRecordId);
+    if (!local || !local.stripeFundingTopupId) return false;
+    if (local.status === ACH_DEBIT_PENDING) {
+      await settleDistributionAchDebit(payoutRecordId);
+    }
+    return true;
+  }
+
   if (await handleDealDistributionFundingWebhookEvent(event)) {
     return true;
   }

@@ -92,7 +92,9 @@ export const investorDistributionPayouts = pgTable(
     }).notNull(),
     stripeTransferId: varchar("stripe_transfer_id", { length: 255 }),
     stripePayoutId: varchar("stripe_payout_id", { length: 255 }),
-    /** pending | transferred | processing | paid | failed | canceled | reversed */
+    /** ACH debit of the deal bank that funds this payout. */
+    stripeFundingTopupId: varchar("stripe_funding_topup_id", { length: 255 }),
+    /** pending | ach_pending | transferred | processing | paid | failed | canceled | reversed */
     status: varchar("status", { length: 32 }).notNull().default("pending"),
     failureCode: varchar("failure_code", { length: 128 }),
     failureMessage: text("failure_message"),
@@ -116,6 +118,9 @@ export const investorDistributionPayouts = pgTable(
     ),
     uniqueIndex("investor_distribution_payouts_payout_uidx").on(
       t.stripePayoutId,
+    ),
+    uniqueIndex("investor_distribution_payouts_funding_topup_uidx").on(
+      t.stripeFundingTopupId,
     ),
     index("investor_distribution_payouts_distribution_idx").on(
       t.dealId,

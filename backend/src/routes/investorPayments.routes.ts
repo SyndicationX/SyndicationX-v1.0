@@ -6,6 +6,7 @@ import { blockCrossOrgColleagueDealMutations } from "../middleware/crossOrgDealM
 //   postInvestorInvestmentCheckoutSync,
 // } from "../controllers/payments/investorCheckout.controller.js";
 import {
+  getDealDistributionFundingBalanceHandler,
   getDealDistributionFundingOnboardingStatus,
   getDistributionInvestmentBankAccountSetup,
   getDistributionPayouts,
@@ -13,6 +14,7 @@ import {
   deleteInvestorSharedConnectBank,
   getInvestorSharedConnectBanks,
   postDealDistributionFundingOnboarding,
+  postDealDistributionFundingTopup,
   postDistributionInvestmentBankAccountSetupRequest,
   postDistributionPayouts,
   postInvestorConnectAttachBank,
@@ -59,6 +61,14 @@ router.post(
 router.get(
   "/deals/:dealId/distribution-funding/status",
   getDealDistributionFundingOnboardingStatus,
+);
+router.get(
+  "/deals/:dealId/distribution-funding/balance",
+  getDealDistributionFundingBalanceHandler,
+);
+router.post(
+  "/deals/:dealId/distribution-funding/topup",
+  postDealDistributionFundingTopup,
 );
 router.get(
   "/deals/:dealId/distributions/:distributionId/payouts",

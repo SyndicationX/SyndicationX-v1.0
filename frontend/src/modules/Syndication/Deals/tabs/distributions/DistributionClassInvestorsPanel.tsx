@@ -103,6 +103,7 @@ function achStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     "not-sent": "Not sent",
     pending: "Pending",
+    "ach-pending": "ACH pending",
     processing: "Processing",
     paid: "Paid",
     transferred: "Transferred",
@@ -121,7 +122,9 @@ function achStatusLabel(status: string): string {
 function achStatusTone(status: string): string {
   const slug = achStatusSlug(status)
   if (slug === "paid" || slug === "transferred") return "success"
-  if (slug === "processing" || slug === "pending") return "info"
+  if (slug === "processing" || slug === "pending" || slug === "ach-pending") {
+    return "info"
+  }
   if (
     slug === "failed" ||
     slug === "canceled" ||
@@ -260,7 +263,8 @@ export function DistributionClassInvestorsPanel({
       return (
         status === "processing" ||
         status === "paid" ||
-        status === "transferred"
+        status === "transferred" ||
+        status === "ach_pending"
       )
     },
     [payoutByInvestmentId],
@@ -426,6 +430,12 @@ export function DistributionClassInvestorsPanel({
             "Cannot send payment",
             lineResult?.message ||
               "This investor must add a bank account first (Investing → Profiles → Bank accounts).",
+          )
+        } else if (lineResult?.status === "ach_pending") {
+          toast.success(
+            "ACH debit started",
+            lineResult.message ||
+              `$${amountLabel} was debited from the deal bank for ${row.name}. The investor is paid after that debit settles.`,
           )
         } else {
           toast.success(
@@ -787,11 +797,13 @@ export function DistributionClassInvestorsPanel({
                     ? bankSetUp
                       ? "Connect this investor's bank to Stripe before sending a payment"
                       : "Bank account is not set up for this investor"
-                    : canSend
-                      ? `Send ACH payment to ${row.name}`
-                      : payout
-                        ? `ACH already ${payout.status}`
-                        : "Payment amount must be greater than zero"
+                    : payout?.status.trim().toLowerCase() === "ach_pending"
+                      ? "ACH debit from the deal bank is pending. The investor is paid after it settles."
+                      : canSend
+                        ? `Send ACH payment to ${row.name}`
+                        : payout
+                          ? `ACH already ${payout.status}`
+                          : "Payment amount must be greater than zero"
               }
               aria-label={`${label} for ${row.name}`}
               onClick={() => requestSendInvestorAchPayout(row)}

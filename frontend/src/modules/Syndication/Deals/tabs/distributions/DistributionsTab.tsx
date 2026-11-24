@@ -269,7 +269,7 @@ export function DistributionsTab({
             toast.success(
               "Deal bank account ready",
               bankBits.length
-                ? `${bankBits.join(" ")}. ACH distributions can be sent from this account.`
+                ? `${bankBits.join(" ")}. Send payment ACH-debits this account for each investor.`
                 : "ACH distributions can now be sent from this deal's bank account.",
             )
           } else {
@@ -866,8 +866,8 @@ export function DistributionsTab({
                       </span>
                     </div>
                     <p className="deal_dist_funding_copy">
-                      Add this deal’s bank account once. ACH distributions for
-                      every run are paid from this account to investors.
+                      Add this deal’s bank account once. Send payment ACH-debits
+                      this account for each investor. No separate top-up.
                     </p>
                   </div>
                 </div>

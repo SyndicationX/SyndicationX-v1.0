@@ -199,6 +199,117 @@
   margin-top: 0.15rem;
 }
 
+.deal_dist_funding_balance {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid
+    color-mix(in srgb, var(--portal-border, #c6c6cd) 85%, transparent);
+}
+
+.deal_dist_funding_balance_head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.deal_dist_funding_balance_title_wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  color: var(--portal-text, #1b1b1d);
+}
+
+.deal_dist_funding_balance_title_wrap h3 {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.deal_dist_funding_text_btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--portal-accent, #2563eb);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.deal_dist_funding_topup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.deal_dist_funding_topup_label {
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--portal-text-muted, #64748b);
+}
+
+.deal_dist_funding_topup_row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.deal_dist_funding_topup_input {
+  width: 10.5rem;
+  max-width: 100%;
+  height: 2.25rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--portal-border, #c6c6cd);
+  border-radius: var(--ui-button-border-radius, 4px);
+  background: var(--portal-surface, #fff);
+  color: var(--portal-text, #1b1b1d);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.deal_dist_funding_topup_input:focus {
+  outline: 2px solid
+    color-mix(in srgb, var(--portal-accent, #2563eb) 45%, transparent);
+  outline-offset: 1px;
+}
+
+.deal_dist_funding_topups {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.deal_dist_funding_topup_item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.65rem;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--portal-text, #1b1b1d);
+}
+
+.deal_dist_funding_topup_meta {
+  font-weight: 500;
+  color: var(--portal-text-muted, #64748b);
+}
+
+:root[data-theme="dark"] .deal_dist_funding_topup_input {
+  background: var(--portal-surface, #111);
+  border-color: var(--portal-border, rgb(255 255 255 / 12%));
+}
+
 .deal_dist_funding_action {
   display: inline-flex;
   align-items: center;

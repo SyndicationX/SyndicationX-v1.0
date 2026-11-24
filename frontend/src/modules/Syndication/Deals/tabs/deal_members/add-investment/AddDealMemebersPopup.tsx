@@ -118,7 +118,11 @@ import { InfoIconPanel } from "../../offering_details/FieldInfoHeading"
 import { YesNoCardRadioGroup } from "../../../../../../common/components/YesNoCardRadioGroup/YesNoCardRadioGroup"
 import { ExtraCompanyUserPayModal } from "../../../../company/ExtraCompanyUserPayModal"
 import {
+  CO_SPONSOR_SELF_SERVE_MAX,
+  CONTACT_SALES_LABEL,
   ExtraCompanyUserPaymentRequiredError,
+  isCompanyUserRosterRole,
+  isCoSponsorRole,
   type ExtraCompanyUserPaymentRequired,
 } from "../../../utils/extraCompanyUserBilling"
 import "../../../../contacts/contacts.css"
@@ -452,6 +456,42 @@ export function AddInvestmentModal({
       ),
     [memberRosterForGate, excludeRowIdForLeadSponsorGate],
   )
+
+  const addingCoSponsorPastCap = useMemo(() => {
+    if (!isCoSponsorRole(form.investorRole)) return false
+    const selectedId = form.contactId.trim().toLowerCase()
+    const alreadyOnRoster = memberRosterForGate.some((row) => {
+      if (row.id === excludeRowIdForLeadSponsorGate) return false
+      const contactId = String(row.contactId ?? "").trim().toLowerCase()
+      return (
+        Boolean(selectedId) &&
+        contactId === selectedId &&
+        isCompanyUserRosterRole(row.investorRole)
+      )
+    })
+    if (alreadyOnRoster) return false
+    const companyUserIds = new Set<string>()
+    for (const row of memberRosterForGate) {
+      if (row.id === excludeRowIdForLeadSponsorGate) continue
+      if (!isCompanyUserRosterRole(row.investorRole)) continue
+      const contactId = String(row.contactId ?? "").trim().toLowerCase()
+      if (contactId) companyUserIds.add(contactId)
+    }
+    return companyUserIds.size >= CO_SPONSOR_SELF_SERVE_MAX
+  }, [
+    form.investorRole,
+    form.contactId,
+    memberRosterForGate,
+    excludeRowIdForLeadSponsorGate,
+  ])
+  const [serverCoSponsorCap, setServerCoSponsorCap] = useState(false)
+  const [contactSalesOpen, setContactSalesOpen] = useState(false)
+  const coSponsorCapReached = addingCoSponsorPastCap || serverCoSponsorCap
+
+  useEffect(() => {
+    if (isCoSponsorRole(form.investorRole)) return
+    setServerCoSponsorCap(false)
+  }, [form.investorRole])
 
   const leadSponsorContactId = useMemo(
     () =>
@@ -795,6 +835,11 @@ export function AddInvestmentModal({
           ? { backendLpInvestorId: backendLpInvestorIdRef.current }
           : {}),
       }
+      /* 25+ co-sponsors: no draft row, and no $10 checkout. */
+      if (coSponsorCapReached) {
+        clearAddMemberDraft(dealId)
+        return
+      }
       /* Fresh “Add Member”: do not overwrite stored draft with an empty form — keeps draft row visible. */
       if (!restoreAddMemberSessionDraft && !addMemberDraftHasContent(draft)) return
       saveAddMemberDraft(dealId, draft)
@@ -813,6 +858,7 @@ export function AddInvestmentModal({
     restoreAddMemberSessionDraft,
     backendInvestmentId,
     backendLpInvestorId,
+    coSponsorCapReached,
   ])
 
   backendInvestmentIdRef.current = backendInvestmentId
@@ -822,6 +868,7 @@ export function AddInvestmentModal({
   useEffect(() => {
     if (!getApiV1Base()) return
     if (!open || mode !== "add") return
+    if (coSponsorCapReached) return
     if (membersLoading) return
     if (!investorClassesReady) return
     if (isInvestorEntry && dealClasses.length === 0) return
@@ -918,6 +965,16 @@ export function AddInvestmentModal({
               null,
               { autosave: true },
             )
+            if (!result.ok && result.contactSales) {
+              clearAddMemberDraft(dealId)
+              backendInvestmentIdRef.current = null
+              setBackendInvestmentId(null)
+              setServerCoSponsorCap(true)
+              setError(null)
+              setContactSalesOpen(true)
+              if (onBackendAutosave) await onBackendAutosave({ createdInvestment: true })
+              return
+            }
             if (result.ok && result.mode === "api") {
               refreshMemberRosterForGate()
               if (onBackendAutosave) await onBackendAutosave()
@@ -937,6 +994,13 @@ export function AddInvestmentModal({
           const result = await postDealInvestment(dealId, values, null, {
             autosave: true,
           })
+          if (!result.ok && result.contactSales) {
+            clearAddMemberDraft(dealId)
+            setServerCoSponsorCap(true)
+            setError(null)
+            setContactSalesOpen(true)
+            return
+          }
           if (result.ok && result.mode === "api" && result.investmentId) {
             backendInvestmentIdRef.current = result.investmentId
             setBackendInvestmentId(result.investmentId)
@@ -977,6 +1041,7 @@ export function AddInvestmentModal({
     dealBlocksInvitationEmails,
     isInvestorEntry,
     membersLoading,
+    coSponsorCapReached,
     contactRows,
     platformContactRows,
     memberRows,
@@ -1005,6 +1070,10 @@ export function AddInvestmentModal({
       return
     }
     if (mode !== "add") return
+    if (coSponsorCapReached) {
+      clearAddMemberDraft(dealId)
+      return
+    }
     const draft: AddMemberFormDraft = {
       form: latestAddMemberDraftRef.current.form,
       step: 1 as const,
@@ -1017,7 +1086,7 @@ export function AddInvestmentModal({
     }
     if (!addMemberDraftHasContent(draft)) return
     saveAddMemberDraft(dealId, draft)
-  }, [open, mode, dealId])
+  }, [open, mode, dealId, coSponsorCapReached])
 
   useEffect(() => {
     if (!open) {
@@ -1522,7 +1591,15 @@ export function AddInvestmentModal({
     return ta === tb
   }
 
+  useEffect(() => {
+    if (!open || !coSponsorCapReached) return
+    clearAddMemberDraft(dealId)
+    setError(null)
+    setContactSalesOpen(true)
+  }, [open, coSponsorCapReached, dealId])
+
   function validateInvestmentStep1(): string | null {
+    if (coSponsorCapReached) return CONTACT_SALES_LABEL
     if (!form.offeringId.trim()) return "Select an offering."
     if (!form.contactId.trim()) {
       return isInvestorEntry
@@ -1611,6 +1688,11 @@ export function AddInvestmentModal({
   async function performSave() {
     setError(null)
     const validationMessage = validateInvestmentStep1()
+    if (validationMessage === CONTACT_SALES_LABEL) {
+      setError(null)
+      setContactSalesOpen(true)
+      return
+    }
     if (validationMessage) {
       reportAddInvestmentValidation(validationMessage)
       return
@@ -1642,9 +1724,18 @@ export function AddInvestmentModal({
         setError(err.message)
         return
       }
-      setError(
-        err instanceof Error ? err.message : "Could not save. Try again.",
-      )
+      const message =
+        err instanceof Error ? err.message : "Could not save. Try again."
+      if (message === CONTACT_SALES_LABEL) {
+        clearAddMemberDraft(dealId)
+        backendInvestmentIdRef.current = null
+        setBackendInvestmentId(null)
+        setServerCoSponsorCap(true)
+        setError(null)
+        setContactSalesOpen(true)
+        return
+      }
+      setError(message)
     } finally {
       setSubmitting(false)
     }
@@ -2569,6 +2660,49 @@ export function AddInvestmentModal({
         </form>
       </div>
     </div>
+    {contactSalesOpen ? (
+      <div
+        className="um_modal_overlay deals_add_inv_no_company_overlay"
+        role="presentation"
+        onClick={(event) => {
+          if (event.target === event.currentTarget) setContactSalesOpen(false)
+        }}
+      >
+        <div
+          className="um_modal um_modal_view"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="add-member-contact-sales-title"
+        >
+          <div className="um_modal_head">
+            <h3 id="add-member-contact-sales-title" className="um_modal_title">
+              Contact sales
+            </h3>
+            <button
+              type="button"
+              className="um_modal_close"
+              onClick={() => setContactSalesOpen(false)}
+              aria-label="Close"
+            >
+              <X size={20} strokeWidth={2} aria-hidden />
+            </button>
+          </div>
+          <p className="um_modal_desc">
+            This deal already has 24 company users. Contact sales to add
+            another co-sponsor.
+          </p>
+          <div className="um_modal_actions">
+            <button
+              type="button"
+              className="um_btn_primary"
+              onClick={() => setContactSalesOpen(false)}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    ) : null}
     {noCompanyAddNotice ? (
       <div
         className="um_modal_overlay deals_add_inv_no_company_overlay"

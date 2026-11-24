@@ -8,6 +8,8 @@ import { getAddDealFormById } from "../../services/deal/dealForm.service.js";
 import { requestedOrganizationIdFromRequest } from "../../services/org/orgResolution.service.js";
 import {
   createDealDistributionFundingOnboardingLink,
+  createDealDistributionFundingTopup,
+  getDealDistributionFundingBalance,
   getDealDistributionFundingStatus,
 } from "../../services/payments/dealDistributionFunding.service.js";
 import {
@@ -210,6 +212,62 @@ export async function getDealDistributionFundingOnboardingStatus(
     dealId,
     userId: access.userId,
     userRole: user?.userRole,
+  });
+  if (!result.ok) {
+    res.status(result.status).json({ message: result.message });
+    return;
+  }
+  res.status(200).json(result);
+}
+
+/** GET /deals/:dealId/distribution-funding/balance */
+export async function getDealDistributionFundingBalanceHandler(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const dealId = param(req.params.dealId);
+  const access = await requireSyndicationDealAccess(req, dealId);
+  if (!access.ok) {
+    res.status(access.status).json({ message: access.message });
+    return;
+  }
+  const result = await getDealDistributionFundingBalance({
+    dealId,
+    userId: access.userId,
+  });
+  if (!result.ok) {
+    res.status(result.status).json({ message: result.message });
+    return;
+  }
+  res.status(200).json(result);
+}
+
+/** POST /deals/:dealId/distribution-funding/topup */
+export async function postDealDistributionFundingTopup(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const dealId = param(req.params.dealId);
+  const access = await requireSyndicationDealAccess(req, dealId);
+  if (!access.ok) {
+    res.status(access.status).json({ message: access.message });
+    return;
+  }
+  const body =
+    req.body != null && typeof req.body === "object" && !Array.isArray(req.body)
+      ? (req.body as Record<string, unknown>)
+      : {};
+  const amountCents = Number(body.amountCents ?? body.amount_cents);
+  const idempotencyKey = String(
+    body.idempotencyKey ?? body.idempotency_key ?? "",
+  ).trim();
+  const user = await getValidJwtUser(req);
+  const result = await createDealDistributionFundingTopup({
+    dealId,
+    userId: access.userId,
+    userRole: user?.userRole,
+    amountCents,
+    idempotencyKey: idempotencyKey || null,
   });
   if (!result.ok) {
     res.status(result.status).json({ message: result.message });

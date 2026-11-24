@@ -544,6 +544,11 @@ export function normalizeMemberStatusForEdit(row: Record<string, unknown>): stri
   return "active";
 }
 
+/** Invited contact email that never became a login. Shown as its own Org Members row. */
+export function memberRowIsContactEmail(row: Record<string, unknown>): boolean {
+  return row.contactEmailRow === true;
+}
+
 export function memberRowIsInactive(row: Record<string, unknown>): boolean {
   const s = String(row.userStatus ?? "").trim().toLowerCase();
   return s === "suspended" || s === "inactive";

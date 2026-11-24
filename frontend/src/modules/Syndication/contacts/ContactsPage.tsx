@@ -391,20 +391,6 @@ function accreditationBadge(status: string | null | undefined) {
   )
 }
 
-function TagsCell({ items }: { items: string[] }) {
-  if (!items.length)
-    return <span className="um_status_muted">—</span>
-  return (
-    <div className="contacts_cell_chips">
-      {items.map((t, i) => (
-        <span key={`${t}-${i}`} className="contacts_cell_chip" title={t}>
-          {t}
-        </span>
-      ))}
-    </div>
-  )
-}
-
 export type ContactsPageProps = {
   /** Customers → company: CRM directory for this organization only. */
   organizationId?: string
