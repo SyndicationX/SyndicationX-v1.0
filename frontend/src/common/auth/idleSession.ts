@@ -1,5 +1,12 @@
-/** Inactivity limit before automatic sign-out. */
+/** Inactivity limit before automatic sign-out (30 minutes with no user activity). */
 import { toast } from "../components/Toast/toastStore";
+
+let mirrorSessionActivity: (() => void) | null = null;
+
+/** Lets the new-tab session copy update without a circular import. */
+export function registerSessionActivityMirror(mirror: () => void): void {
+  mirrorSessionActivity = mirror;
+}
 
 export const IDLE_LOGOUT_MS = 30 * 60 * 1000;
 
@@ -108,6 +115,7 @@ export function resetIdleSessionTimeoutToastGuard(): void {
 export function touchSessionActivity(): void {
   if (typeof sessionStorage === "undefined") return;
   sessionStorage.setItem(SESSION_LAST_ACTIVITY_KEY, String(Date.now()));
+  mirrorSessionActivity?.();
 }
 
 export function getLastSessionActivityMs(): number | null {

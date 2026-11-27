@@ -521,20 +521,86 @@ export async function personIsAssociatedWithCompany(
     return res.rows[0]?.has_company === true;
   };
 
+  let hasCompany = false;
   try {
-    return await read(true);
+    hasCompany = await read(true);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (!msg.includes('relation "user_company_membership" does not exist')) {
       throw err;
     }
-    return read(false);
+    hasCompany = await read(false);
   }
+  if (!hasCompany) return false;
+  return !(await companyIsOnlyTheContactFilingOrganization(id));
 }
 
 /**
- * Signed-in admin sponsor or co-sponsor on any deal who has no company yet.
- * Used to prompt them to create a company after login.
+ * A hand-added contact is filed under the company that created it. That
+ * company is not one the person owns, unless their portal account administers it.
+ */
+async function companyIsOnlyTheContactFilingOrganization(
+  personId: string,
+): Promise<boolean> {
+  const filed = await pool.query<{
+    filing_org: string | null;
+    user_id: string | null;
+    role: string | null;
+    user_org: string | null;
+  }>(
+    `SELECT c.organization_id::text AS filing_org,
+            u.id::text AS user_id,
+            lower(trim(coalesce(u.role, ''))) AS role,
+            u.organization_id::text AS user_org
+     FROM contact c
+     LEFT JOIN users u
+       ON position('@' in trim(coalesce(c.email, ''))) > 1
+      AND lower(trim(u.email)) = lower(trim(c.email))
+     WHERE c.id = $1::uuid
+     LIMIT 1`,
+    [personId],
+  );
+  const row = filed.rows[0];
+  const filingOrg = String(row?.filing_org ?? "").trim().toLowerCase();
+  if (!filingOrg) return false;
+
+  const userId = String(row?.user_id ?? "").trim();
+  if (!userId) return true;
+
+  const userOrg = String(row?.user_org ?? "").trim().toLowerCase();
+  const role = String(row?.role ?? "").trim().toLowerCase();
+  if (userOrg && userOrg !== filingOrg) return false;
+  if (userOrg === filingOrg && role === "company_admin") return false;
+
+  try {
+    const memberships = await pool.query<{
+      company_id: string | null;
+      role: string | null;
+    }>(
+      `SELECT company_id::text AS company_id, lower(trim(role)) AS role
+       FROM user_company_membership
+       WHERE user_id = $1::uuid`,
+      [userId],
+    );
+    for (const membership of memberships.rows) {
+      const companyId = String(membership.company_id ?? "").trim().toLowerCase();
+      const memberRole = String(membership.role ?? "").trim().toLowerCase();
+      if (companyId && companyId !== filingOrg) return false;
+      if (companyId === filingOrg && memberRole === "company_admin") return false;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('relation "user_company_membership" does not exist')) {
+      throw err;
+    }
+  }
+  return true;
+}
+
+/**
+ * Signed-in lead, admin, or co-sponsor on any deal who has no company of
+ * their own. The company that only filed their contact does not count.
+ * Used to keep them out of a syndication deal until they add a company.
  */
 export async function viewerIsCoSponsorWithoutCompany(
   userId: string,
@@ -543,27 +609,35 @@ export async function viewerIsCoSponsorWithoutCompany(
   if (!uid) return false;
 
   const [userRow] = await db
-    .select({ organizationId: users.organizationId })
+    .select({ role: users.role })
     .from(users)
     .where(eq(users.id, uid))
     .limit(1);
-  if (userRow?.organizationId) return false;
+  if (isPlatformAdminRole(userRow?.role)) return false;
 
+  const sponsorRoles =
+    "'lead sponsor', 'admin sponsor', 'co-sponsor', 'co sponsor'";
   const sql = (includeMembership: boolean) =>
     `SELECT (
-       u.organization_id IS NULL
-       ${
-         includeMembership
-           ? `AND NOT EXISTS (
-         SELECT 1 FROM user_company_membership m WHERE m.user_id = u.id
-       )`
-           : ""
-       }
+       NOT (
+         lower(trim(coalesce(u.role, ''))) IN ('company_admin', 'company_user')
+         AND u.organization_id IS NOT NULL
+         ${
+           includeMembership
+             ? `OR EXISTS (
+           SELECT 1 FROM user_company_membership m
+           WHERE m.user_id = u.id
+             AND lower(trim(m.role)) IN ('company_admin', 'company_user')
+         )`
+             : ""
+         }
+       )
+       AND lower(trim(coalesce(u.role, ''))) <> 'platform_admin'
        AND (
          EXISTS (
            SELECT 1 FROM deal_member dm
            WHERE dm.is_draft = false
-             AND lower(replace(trim(dm.deal_member_role), '_', ' ')) IN ('co-sponsor', 'co sponsor', 'admin sponsor')
+             AND lower(replace(trim(dm.deal_member_role), '_', ' ')) IN (${sponsorRoles})
              AND (
                trim(dm.contact_member_id) = u.id::text
                OR EXISTS (
@@ -576,7 +650,7 @@ export async function viewerIsCoSponsorWithoutCompany(
          OR EXISTS (
            SELECT 1 FROM deal_investment di
            WHERE di.is_draft = false
-             AND lower(replace(trim(di.investor_role), '_', ' ')) IN ('co-sponsor', 'co sponsor', 'admin sponsor')
+             AND lower(replace(trim(di.investor_role), '_', ' ')) IN (${sponsorRoles})
              AND trim(di.contact_id) <> $2
              AND (
                trim(di.contact_id) = u.id::text

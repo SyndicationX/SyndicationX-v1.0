@@ -10,6 +10,7 @@ import {
   userSavedAddresses,
   users,
 } from "../../schema/schema.js";
+import { linkProfilesSharingReadyConnectBank } from "./linkSharedConnectBank.js";
 import {
   distributionBankDbValues,
   distributionBankForApi,
@@ -327,6 +328,7 @@ export type ProfileBookSnapshot = {
 export async function getProfileBookForUser(
   userId: string,
 ): Promise<ProfileBookSnapshot> {
+  await linkProfilesSharingReadyConnectBank(userId);
   const [pRows, bRows, aRows] = await Promise.all([
     db
       .select()
@@ -437,7 +439,13 @@ export async function createInvestorProfileForUser(
     .returning();
 
   if (!row) return null;
-  return mapProfileRow(row);
+  await linkProfilesSharingReadyConnectBank(userId);
+  const [linked] = await db
+    .select()
+    .from(userInvestorProfiles)
+    .where(eq(userInvestorProfiles.id, row.id))
+    .limit(1);
+  return mapProfileRow(linked ?? row);
 }
 
 export async function setInvestorProfileArchived(
@@ -781,7 +789,13 @@ export async function updateInvestorProfileForUser(
     )
     .returning();
   if (!row) return null;
-  return mapProfileRow(row);
+  await linkProfilesSharingReadyConnectBank(userId);
+  const [linked] = await db
+    .select()
+    .from(userInvestorProfiles)
+    .where(eq(userInvestorProfiles.id, row.id))
+    .limit(1);
+  return mapProfileRow(linked ?? row);
 }
 
 export async function updateBeneficiaryForUser(

@@ -1299,3 +1299,37 @@
   line-height: 1.45;
   color: var(--portal-text-muted, #64748b);
 }
+
+.deal_dist_bank_modal {
+  width: min(32rem, calc(100vw - 2rem));
+  padding: 1.25rem 1.25rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.deal_dist_bank_modal_head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.deal_dist_bank_modal_head .deal_dist_funding_title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.deal_dist_bank_form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.deal_dist_bank_form_actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}

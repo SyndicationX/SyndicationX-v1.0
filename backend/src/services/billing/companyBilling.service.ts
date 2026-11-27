@@ -170,6 +170,16 @@ export async function resolveCompanyBillingAccess(
     (membership) => normalizeCompanyId(membership.companyId) === cid,
   );
   if (belongsToCompany && (staffPortalRole || memberOfThisCompany)) {
+    // A company member who leads a deal pays for that deal. Other members only view.
+    if (leadDealIds.length > 0) {
+      return {
+        canView: true,
+        canManage: false,
+        canPay: true,
+        viewerScope: "lead_sponsor",
+        dealIds: leadDealIds,
+      };
+    }
     return {
       canView: true,
       canManage: false,

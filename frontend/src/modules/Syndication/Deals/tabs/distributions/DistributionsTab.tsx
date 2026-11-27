@@ -127,6 +127,12 @@ function dealFundingStatusMeta(
   return { label: fundingStatusLabel(funding.status), tone: "neutral" }
 }
 
+function maskRoutingLast4(value: string | null | undefined): string {
+  const digits = (value ?? "").replace(/\D/g, "")
+  if (!digits) return "—"
+  return `···· ${digits.slice(-4)}`
+}
+
 function formatDealBankDetails(
   funding: DealDistributionFundingStatus | null,
 ): string | null {
@@ -135,7 +141,10 @@ function formatDealBankDetails(
   const parts: string[] = []
   if (bank.bankName) parts.push(bank.bankName)
   if (bank.last4) parts.push(`···· ${bank.last4}`)
-  if (bank.routingNumber) parts.push(`Routing ${bank.routingNumber}`)
+  if (bank.routingNumber) {
+    const masked = maskRoutingLast4(bank.routingNumber)
+    if (masked !== "—") parts.push(`Routing ${masked}`)
+  }
   if (bank.accountHolderName) parts.push(bank.accountHolderName)
   if (bank.currency) parts.push(bank.currency)
   return parts.length ? parts.join(" · ") : null
@@ -260,22 +269,14 @@ export function DistributionsTab({
           const status = await fetchDealDistributionFundingStatus(id)
           setDealFunding(status)
           if (status.fundingReady) {
-            const bankBits = [
-              status.bankAccount?.bankName?.trim() || null,
-              status.bankAccount?.last4
-                ? `···· ${status.bankAccount.last4}`
-                : null,
-            ].filter(Boolean)
             toast.success(
               "Deal bank account ready",
-              bankBits.length
-                ? `${bankBits.join(" ")}. Send payment ACH-debits this account for each investor.`
-                : "ACH distributions can now be sent from this deal's bank account.",
+              "Send payment debits this bank and pays that investor.",
             )
           } else {
             toast.warning(
               "Bank setup pending",
-              "Finish adding the deal bank details before ACH distributions can be sent.",
+              "Finish updating the deal bank before payments can be sent.",
             )
           }
         } catch (err) {
@@ -866,8 +867,8 @@ export function DistributionsTab({
                       </span>
                     </div>
                     <p className="deal_dist_funding_copy">
-                      Add this deal’s bank account once. Send payment ACH-debits
-                      this account for each investor. No separate top-up.
+                      Add this deal’s bank account once. Send payment debits
+                      this bank and pays that investor.
                     </p>
                   </div>
                 </div>
@@ -925,8 +926,9 @@ export function DistributionsTab({
                     <div className="deal_dist_funding_detail_row">
                       <dt>Routing</dt>
                       <dd>
-                        {dealFunding?.bankAccount?.routingNumber?.trim() ||
-                          "—"}
+                        {maskRoutingLast4(
+                          dealFunding?.bankAccount?.routingNumber,
+                        )}
                       </dd>
                     </div>
                     <div className="deal_dist_funding_detail_row">
@@ -954,16 +956,16 @@ export function DistributionsTab({
                   </p>
                 ) : (
                   <p className="deal_dist_funding_hint" role="status">
-                    No bank account linked yet.
+                    No bank account on this deal yet.
                     {dealFunding.canManage
-                      ? " Use Add bank account to connect the deal funding account in Stripe."
+                      ? " Add the bank that should be debited for investor payments."
                       : " Ask the lead or admin sponsor to add one."}
                   </p>
                 )}
                 {dealFunding?.canManage && dealBankDetailsLabel ? (
                   <p className="deal_dist_funding_hint deal_dist_funding_hint--footer">
-                    Full account numbers stay masked. Use Update bank account to
-                    change the linked account in Stripe.
+                    Full account numbers stay masked. Update bank account to
+                    replace the account that Send payment debits.
                   </p>
                 ) : null}
               </div>

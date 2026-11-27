@@ -98,6 +98,51 @@ export async function hasUserCompanyMembership(
   return row != null;
 }
 
+/**
+ * My Account shows a company only when this person is on that company's staff.
+ * An organization copied from the contact that invited them does not count.
+ */
+export async function hideFilingCompanyOnOwnProfile(
+  userId: string,
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const role = String(payload.role ?? "").trim();
+  const orgId = String(
+    payload.organization_id ?? payload.organizationId ?? "",
+  ).trim();
+  const memberships = await listUserCompanyMemberships(userId);
+  const matched = orgId
+    ? memberships.find(
+        (membership) =>
+          membership.companyId.toLowerCase() === orgId.toLowerCase(),
+      )
+    : undefined;
+  if (matched || (isCompanyMembershipRole(role) && orgId)) {
+    return payload;
+  }
+  const ownCompany = memberships[0];
+  if (ownCompany) {
+    return {
+      ...payload,
+      organization_id: ownCompany.companyId,
+      organizationId: ownCompany.companyId,
+      companyName: ownCompany.companyName,
+      company_name: ownCompany.companyName,
+      organization_name: ownCompany.companyName,
+      organizationName: ownCompany.companyName,
+    };
+  }
+  return {
+    ...payload,
+    organization_id: null,
+    organizationId: null,
+    companyName: "",
+    company_name: "",
+    organization_name: "",
+    organizationName: "",
+  };
+}
+
 export async function listUserCompanyMemberships(
   userId: string,
 ): Promise<UserCompanyMembershipView[]> {

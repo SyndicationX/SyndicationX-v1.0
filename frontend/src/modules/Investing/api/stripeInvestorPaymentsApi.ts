@@ -152,7 +152,12 @@ export async function fetchStripeConnectRecipientStatus(
 export async function startStripeConnectRecipientOnboarding(
   profileId: string,
   opts?: { forceNew?: boolean },
-): Promise<{ url: string; status: string; payoutsEnabled: boolean }> {
+): Promise<{
+  url: string
+  status: string
+  payoutsEnabled: boolean
+  alreadyConnected: boolean
+}> {
   const base = baseOrThrow()
   const res = await fetch(
     `${base}/investing/profiles/${encodeURIComponent(profileId)}/stripe-connect/onboarding`,
@@ -167,12 +172,16 @@ export async function startStripeConnectRecipientOnboarding(
     },
   )
   const data = await jsonOrError(res)
+  const alreadyConnected = Boolean(data.alreadyConnected)
   const url = String(data.url ?? "").trim()
-  if (!url) throw new Error("Bank setup did not return a URL. Please try again.")
+  if (!url && !alreadyConnected) {
+    throw new Error("Bank setup did not return a URL. Please try again.")
+  }
   return {
     url,
     status: String(data.status ?? "onboarding").trim(),
     payoutsEnabled: Boolean(data.payoutsEnabled),
+    alreadyConnected,
   }
 }
 
@@ -312,6 +321,38 @@ export async function startDealDistributionFundingOnboarding(
     url,
     status: String(data.status ?? "onboarding").trim(),
     fundingReady: Boolean(data.fundingReady),
+  }
+}
+
+export async function confirmDealDistributionFundingBank(
+  dealId: string,
+  setupIntentId: string,
+): Promise<DealDistributionFundingStatus> {
+  const base = baseOrThrow()
+  const res = await fetch(
+    `${base}/deals/${encodeURIComponent(dealId)}/distribution-funding/bank`,
+    {
+      method: "POST",
+      headers: {
+        ...portalAuthHeaders(),
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ setupIntentId }),
+    },
+  )
+  const data = await jsonOrError(res)
+  return {
+    accountId:
+      typeof data.accountId === "string" && data.accountId.trim()
+        ? data.accountId.trim()
+        : null,
+    status: String(data.status ?? "not_started").trim(),
+    detailsSubmitted: Boolean(data.detailsSubmitted),
+    fundingReady: Boolean(data.fundingReady),
+    canManage: Boolean(data.canManage),
+    canViewBalance: Boolean(data.canViewBalance),
+    bankAccount: parseConnectBankAccount(data.bankAccount),
   }
 }
 

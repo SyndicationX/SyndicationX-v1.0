@@ -1669,10 +1669,9 @@ async function viewerIncludesSameOrganizationAssociatedInvestors(
 }
 
 /**
- * Company Admin and Company Member accounts belong on Org Members.
- * A company list hides staff of that company. The platform-wide list hides
- * every company admin and company member, except a sponsor copy that lives in
- * a company they do not belong to.
+ * Company Admin and Company Member accounts belong on Org Members for company
+ * users. A company list hides staff of that company. Platform admin All
+ * Contacts does not use this filter: every user stays on that directory.
  */
 const CONTACT_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -2009,10 +2008,135 @@ function excludeForeignContactShadowedByOrganizationWhere(orgId: string): SQL {
 }
 
 /**
+ * A portal user with no CRM row still belongs on platform admin All Contacts.
+ * Company staff are filed under their company. Everyone else is a platform
+ * contact so company directories keep hiding them.
+ */
+async function ensurePortalUsersHaveContactRows(): Promise<void> {
+  const missing = await pool.query(
+    `SELECT 1
+     FROM users u
+     WHERE position('@' in btrim(coalesce(u.email, ''))) > 1
+       AND NOT EXISTS (
+         SELECT 1
+         FROM contact c
+         WHERE lower(btrim(c.email)) = lower(btrim(u.email))
+       )
+     LIMIT 1`,
+  );
+  if ((missing.rowCount ?? 0) === 0) return;
+
+  const inserted = await pool.query(
+    `WITH lock AS (
+       SELECT pg_advisory_xact_lock(8142011027)
+     )
+     INSERT INTO contact (
+       organization_id,
+       first_name,
+       last_name,
+       full_name,
+       email,
+       phone,
+       note,
+       tags,
+       lists,
+       owners,
+       status,
+       is_portal_user,
+       platform_admin_only,
+       visible_to_users,
+       relationship_506b,
+       import_source,
+       created_by
+     )
+     SELECT
+       home.company_id,
+       CASE WHEN btrim(u.first_name) = '' THEN '—' ELSE left(btrim(u.first_name), 200) END,
+       CASE WHEN btrim(u.last_name) = '' THEN '—' ELSE left(btrim(u.last_name), 200) END,
+       CASE
+         WHEN btrim(concat_ws(' ', u.first_name, u.last_name)) = '' THEN lower(btrim(u.email))
+         ELSE left(btrim(concat_ws(' ', u.first_name, u.last_name)), 400)
+       END,
+       lower(btrim(u.email)),
+       left(coalesce(u.phone, ''), 64),
+       '',
+       '[]'::jsonb,
+       '[]'::jsonb,
+       '[]'::jsonb,
+       'active',
+       true,
+       home.company_id IS NULL,
+       false,
+       'NO',
+       'portal_signup',
+       u.id
+     FROM users u
+     CROSS JOIN lock
+     LEFT JOIN LATERAL (
+       SELECT picked.company_id
+       FROM (
+         SELECT u.organization_id AS company_id, 0 AS ord
+         WHERE u.organization_id IS NOT NULL
+           AND (
+             lower(btrim(u.role)) IN ('company_admin', 'company_user', 'company_member')
+             OR EXISTS (
+               SELECT 1
+               FROM user_company_membership m
+               WHERE m.user_id = u.id
+                 AND m.company_id = u.organization_id
+             )
+           )
+         UNION ALL
+         SELECT m.company_id, 1 AS ord
+         FROM user_company_membership m
+         WHERE m.user_id = u.id
+           AND lower(btrim(m.role)) IN ('company_admin', 'company_user', 'company_member')
+       ) picked
+       WHERE picked.company_id IS NOT NULL
+       ORDER BY picked.ord
+       LIMIT 1
+     ) home ON true
+     WHERE position('@' in btrim(coalesce(u.email, ''))) > 1
+       AND NOT EXISTS (
+         SELECT 1
+         FROM contact c
+         WHERE lower(btrim(c.email)) = lower(btrim(u.email))
+       )`,
+  );
+  if ((inserted.rowCount ?? 0) > 0) invalidateContactDirectoryCache();
+}
+
+/**
+ * Contact rows for people who belong to this company, including a row stored
+ * on another company or as a platform signup.
+ */
+function contactsMatchingOrganizationMembersWhere(orgId: string): SQL {
+  return sql`EXISTS (
+    SELECT 1
+    FROM users member
+    WHERE lower(btrim(member.email)) = lower(btrim(${contact.email}))
+      AND position('@' in btrim(coalesce(member.email, ''))) > 1
+      AND (
+        (
+          member.organization_id = ${orgId}::uuid
+          AND lower(btrim(member.role)) IN ('company_admin', 'company_user', 'company_member')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM user_company_membership membership
+          WHERE membership.user_id = member.id
+            AND membership.company_id = ${orgId}::uuid
+        )
+      )
+  )`;
+}
+
+/**
  * All Contacts list:
- * - **platform_admin**: every company when no company is selected. Customers →
- *   one organization lists only contacts stored on that company. An investor
- *   invited by another company is not included, even when the deal belongs here.
+ * - **platform_admin**: every contact and every portal user when no company is
+ *   selected — company members included. Customers → one organization lists
+ *   that company's contacts and that company's members. An investor invited by
+ *   another company is not included, even when the deal belongs here.
  * - Users tied to a company: contacts with **`organization_id` = viewer’s org**, plus **legacy**
  *   rows (`organization_id` null) whose `created_by` is anyone in that org.
  * - No company / org: only contacts they created themselves.
@@ -2050,7 +2174,10 @@ async function buildContactsScopeWhere(
   }
   const requestedOrgForAdmin = normalizeOrganizationUuid(requestedOrganizationId);
   if (isPlatformAdminRole(ctx.roleForScope) && !requestedOrgForAdmin) {
-    await syncDealInvestorsIntoAllOrganizationContacts(viewerUserId);
+    if (options?.syncRelatedContacts !== false) {
+      await syncDealInvestorsIntoAllOrganizationContacts(viewerUserId);
+    }
+    await ensurePortalUsersHaveContactRows();
     return and(
       fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm),
       excludePlatformSignupWhenCompanyCopyExistsWhere(),
@@ -2059,6 +2186,7 @@ async function buildContactsScopeWhere(
   if (isPlatformAdminRole(ctx.roleForScope) && requestedOrgForAdmin) {
     const orgId = ctx.organizationId;
     if (!orgId) return null;
+    await ensurePortalUsersHaveContactRows();
     const memberIds = await userIdsInOrganization(orgId);
     const legacyMemberContacts =
       memberIds.length > 0
@@ -2070,14 +2198,17 @@ async function buildContactsScopeWhere(
     const orgScope = legacyMemberContacts
       ? or(eq(contact.organizationId, orgId), legacyMemberContacts)!
       : eq(contact.organizationId, orgId);
-    return and(
-      orgScope,
+    const memberContacts = contactsMatchingOrganizationMembersWhere(orgId);
+    const narrowedToCompanyContacts = and(
       excludeInvestorsInvitedByAnotherOrganizationWhere(orgId),
-      fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm),
       excludePlatformAdminOnlyContactsWhere(),
-      excludeCompanyStaffFromContactsWhere(orgId),
       excludeOutsideCoSponsorContactsWhere(orgId, memberIds),
       excludeForeignContactShadowedByOrganizationWhere(orgId),
+    )!;
+    return and(
+      or(orgScope, memberContacts)!,
+      or(memberContacts, narrowedToCompanyContacts)!,
+      fullOrgContactListVisibilityWhere(ctx.viewerEmailNorm),
     )!;
   }
 

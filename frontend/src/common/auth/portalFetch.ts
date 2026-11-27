@@ -17,6 +17,7 @@ import {
 } from "./idleSession"
 import { portalAuthHeaders, ACTIVE_ORGANIZATION_HEADER, PORTAL_OMIT_ACTIVE_ORG_HEADER } from "./portalAuthHeaders"
 import { clearPortalSessionStorage } from "./sessionKeys"
+import { adoptNewerPortalSessionMirror } from "./sessionTabHandoff"
 
 /** Client-only: a session check must not count as user activity. */
 export const PORTAL_SKIP_ACTIVITY_HEADER = "x-portal-skip-activity"
@@ -81,6 +82,7 @@ async function responseBodySaysAccessUpdated(response: Response): Promise<boolea
 
 export function handleAuthSessionExpired(reason?: "access_updated"): void {
   if (typeof window === "undefined") return
+  if (reason !== "access_updated" && adoptNewerPortalSessionMirror()) return
   const path = window.location.pathname
   if (path.includes("/signin") || path.includes("/signup")) return
 
@@ -234,7 +236,10 @@ export function installPortalFetchInterceptor(): void {
 }
 
 /** Refresh before access JWT expires (or when legacy token has no jti). */
-export async function ensureValidAccessToken(): Promise<boolean> {
+export async function ensureValidAccessToken(options?: {
+  /** Background renewal must not reset the idle timer. */
+  touchActivity?: boolean
+}): Promise<boolean> {
   const access = getStoredAccessToken()
   if (!access) return false
 
@@ -250,7 +255,7 @@ export async function ensureValidAccessToken(): Promise<boolean> {
 
   if (expired || missingJti || expiresSoon) {
     const refreshed = await tryRefreshAccessTokenOnce()
-    if (refreshed) touchSessionActivity()
+    if (refreshed && options?.touchActivity !== false) touchSessionActivity()
     return refreshed
   }
 

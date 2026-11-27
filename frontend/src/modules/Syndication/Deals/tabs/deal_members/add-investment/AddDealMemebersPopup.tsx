@@ -595,7 +595,7 @@ export function AddInvestmentModal({
     (contactId: string, role: string, displayName?: string) => {
       if (isInvestorEntry || isGpEntry) return
       const seq = ++companyCheckSeqRef.current
-      if (!isAdminSponsorOrCoSponsorRole(role) || !contactId.trim()) {
+      if (!isSponsorRosterRole(role) || !contactId.trim()) {
         setNoCompanyAddNotice(null)
         return
       }
@@ -2734,8 +2734,8 @@ export function AddInvestmentModal({
             <strong className="deals_add_inv_no_company_name">
               {noCompanyAddNotice.name}
             </strong>{" "}
-            has no company. You can still add them. They cannot open this deal
-            until they add a company.
+            has no company. Add a company for them, or add them under No
+            company. They cannot open this deal until they add a company.
           </p>
           <div className="um_modal_actions">
             <button

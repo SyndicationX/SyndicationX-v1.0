@@ -375,6 +375,12 @@ function maskAccountNumber(raw: string): string {
   return `···· ${last4}`
 }
 
+function maskRoutingNumber(raw: string): string {
+  const d = raw.replace(/\D/g, "")
+  if (!d) return "—"
+  return `···· ${d.slice(-4)}`
+}
+
 function optionLabel(
   value: string,
   options: { value: string; label: string }[],
@@ -504,7 +510,7 @@ function buildDistributionRows(form: WizardForm, addresses: SavedAddress[]): Inv
   })
   if (method === "ach") {
     pushRows(rows, [
-      ["Routing number", form.achRoutingNumber],
+      ["Routing number", maskRoutingNumber(form.achRoutingNumber)],
       ["Account number", maskAccountNumber(form.achAccountNumber)],
       ["Bank name", form.achBankName],
       ["Bank address", form.achBankAddress],

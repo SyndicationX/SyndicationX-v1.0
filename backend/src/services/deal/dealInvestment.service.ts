@@ -2308,9 +2308,10 @@ function appendCompanyName(
 }
 
 /**
- * Company a person belongs to. Company membership wins over `users.organization_id`.
+ * Company a person owns. Company membership wins over `users.organization_id`.
  * A CRM contact is matched to the portal account by email and uses that account's company.
- * The contact's own organization is used only when no portal account exists.
+ * The contact row's organization is the company that created the contact, so it
+ * does not count. A sponsor with no company of their own stays under No company.
  * Multiple memberships are joined with `||`.
  */
 export async function resolveUserCompanyNamesByIds(
@@ -2371,30 +2372,24 @@ export async function resolveUserCompanyNamesByIds(
     if (!m.has(key)) m.set(key, names);
   }
 
-  const contactOrgFallback = new Map<string, string>();
   const contactRows = await db
     .select({
       id: contact.id,
       email: contact.email,
-      companyName: companies.name,
     })
     .from(contact)
-    .leftJoin(companies, eq(contact.organizationId, companies.id))
     .where(inArray(contact.id, idList));
   const emailToKeys = new Map<string, string[]>();
   for (const row of contactRows) {
-    const key = String(row.id).toLowerCase();
-    const orgName = String(row.companyName ?? "").trim();
-    if (orgName) contactOrgFallback.set(key, orgName);
     const email = String(row.email ?? "").trim().toLowerCase();
     if (!email) continue;
+    const key = String(row.id).toLowerCase();
     const keys = emailToKeys.get(email) ?? [];
     keys.push(key);
     emailToKeys.set(email, keys);
   }
 
   const emails = [...emailToKeys.keys()];
-  const portalAccountKeys = new Set<string>();
   if (emails.length > 0) {
     const byEmail = await db
       .select({
@@ -2439,7 +2434,6 @@ export async function resolveUserCompanyNamesByIds(
     for (const row of byEmail) {
       const keys = emailToKeys.get(String(row.email ?? "").trim().toLowerCase());
       if (!keys) continue;
-      for (const key of keys) portalAccountKeys.add(key);
       const userKey = String(row.id ?? "").toLowerCase();
       const chosen =
         membershipForMatched.get(userKey) ||
@@ -2449,43 +2443,95 @@ export async function resolveUserCompanyNamesByIds(
     }
   }
 
-  for (const [key, orgName] of contactOrgFallback) {
-    if (portalAccountKeys.has(key) || m.has(key)) continue;
-    appendCompanyName(m, key, orgName);
-  }
+  await omitContactFilingCompany(idList, m);
+  return m;
+}
 
-  // Portal account with no membership and no organization_id: use the CRM
-  // contact company that shares the account email.
-  const emailToAccountKeys = new Map<string, string[]>();
-  for (const u of found) {
-    const key = String(u.id).toLowerCase();
-    if (m.has(key)) continue;
-    const email = String(u.email ?? "").trim().toLowerCase();
-    if (!email.includes("@")) continue;
-    const keys = emailToAccountKeys.get(email) ?? [];
-    keys.push(key);
-    emailToAccountKeys.set(email, keys);
+/**
+ * The company on a hand-added contact is the company that filed the contact.
+ * It is not the sponsor's company unless that person administers it.
+ */
+async function omitContactFilingCompany(
+  idList: string[],
+  companyById: Map<string, string>,
+): Promise<void> {
+  const filed = await db
+    .select({
+      id: contact.id,
+      email: contact.email,
+      organizationId: contact.organizationId,
+      companyName: companies.name,
+    })
+    .from(contact)
+    .leftJoin(companies, eq(contact.organizationId, companies.id))
+    .where(inArray(contact.id, idList));
+  const filingByContact = new Map<
+    string,
+    { email: string; organizationId: string; companyName: string }
+  >();
+  for (const row of filed) {
+    const companyName = String(row.companyName ?? "").trim();
+    const organizationId = String(row.organizationId ?? "").trim().toLowerCase();
+    if (!companyName || !organizationId) continue;
+    filingByContact.set(String(row.id).toLowerCase(), {
+      email: String(row.email ?? "").trim().toLowerCase(),
+      organizationId,
+      companyName,
+    });
   }
-  const accountEmails = [...emailToAccountKeys.keys()];
-  if (accountEmails.length > 0) {
-    const contactCompanies = await db
+  if (filingByContact.size === 0) return;
+
+  const emails = [
+    ...new Set(
+      [...filingByContact.values()]
+        .map((row) => row.email)
+        .filter((email) => email.includes("@")),
+    ),
+  ];
+  const adminOfFiling = new Set<string>();
+  if (emails.length > 0) {
+    const accounts = await db
       .select({
-        email: contact.email,
-        companyName: companies.name,
+        email: users.email,
+        role: users.role,
+        organizationId: users.organizationId,
       })
-      .from(contact)
-      .innerJoin(companies, eq(contact.organizationId, companies.id))
-      .where(inArray(sql`lower(trim(${contact.email}))`, accountEmails));
-    for (const row of contactCompanies) {
-      const keys = emailToAccountKeys.get(
-        String(row.email ?? "").trim().toLowerCase(),
-      );
-      if (!keys) continue;
-      for (const key of keys) appendCompanyName(m, key, row.companyName);
+      .from(users)
+      .where(inArray(sql`lower(trim(${users.email}))`, emails));
+    for (const account of accounts) {
+      const email = String(account.email ?? "").trim().toLowerCase();
+      const organizationId = String(account.organizationId ?? "")
+        .trim()
+        .toLowerCase();
+      if (
+        email &&
+        organizationId &&
+        isCompanyAdminRole(account.role)
+      ) {
+        adminOfFiling.add(`${email}\0${organizationId}`);
+      }
     }
   }
 
-  return m;
+  for (const [contactId, filing] of filingByContact) {
+    const current = companyById.get(contactId);
+    if (!current) continue;
+    if (
+      filing.email.includes("@") &&
+      adminOfFiling.has(`${filing.email}\0${filing.organizationId}`)
+    ) {
+      continue;
+    }
+    const kept = current
+      .split("||")
+      .map((name) => name.trim())
+      .filter(
+        (name) =>
+          name && name.toLowerCase() !== filing.companyName.toLowerCase(),
+      );
+    if (kept.length > 0) companyById.set(contactId, kept.join("||"));
+    else companyById.delete(contactId);
+  }
 }
 
 function companyAdminDisplayName(row: {

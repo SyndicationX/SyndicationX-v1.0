@@ -28,6 +28,7 @@ import {
   formatCommittedUsdWhole,
   GENERAL_PARTNER_ROLE_STORED,
   isDealCompanyUserStoredRole,
+  isDealTeamRosterRole,
   isGeneralPartnerStoredRole,
   isLpInvestorRole,
   groupDealInvestmentsByCanonicalKey,
@@ -423,8 +424,8 @@ const DEAL_NAME_UNIQUENESS_EXEMPT = new Set(["untitled deal", "pending"]);
 type DealWriteTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
- * Organization for a roster id: the portal user's company, or the CRM contact's
- * company when that contact is not a portal user.
+ * Organization this person owns. A CRM contact's organization is the company
+ * that created the contact, so it does not count.
  */
 async function resolveOrganizationIdForRosterContact(
   contactMemberId: string,
@@ -444,7 +445,6 @@ async function resolveOrganizationIdForRosterContact(
 
   const [contactRow] = await db
     .select({
-      organizationId: contact.organizationId,
       email: contact.email,
     })
     .from(contact)
@@ -463,8 +463,7 @@ async function resolveOrganizationIdForRosterContact(
     if (userOrg) return userOrg;
   }
 
-  const contactOrg = String(contactRow.organizationId ?? "").trim();
-  return contactOrg || null;
+  return null;
 }
 
 type DealRosterPerson = {
@@ -472,7 +471,7 @@ type DealRosterPerson = {
   firstName: string;
   lastName: string;
   phone: string;
-  /** Portal company, or the CRM contact's company when they are not a portal user. */
+  /** Portal company this person owns. A CRM contact organization does not count. */
   homeOrganizationId: string;
   isPortalUser: boolean;
 };
@@ -526,7 +525,6 @@ async function resolveDealRosterPerson(
       firstName: contact.firstName,
       lastName: contact.lastName,
       phone: contact.phone,
-      organizationId: contact.organizationId,
     })
     .from(contact)
     .where(eq(contact.id, id))
@@ -568,7 +566,7 @@ async function resolveDealRosterPerson(
     firstName: String(contactRow.firstName ?? "").trim(),
     lastName: String(contactRow.lastName ?? "").trim(),
     phone: String(contactRow.phone ?? "").trim(),
-    homeOrganizationId: String(contactRow.organizationId ?? "").trim(),
+    homeOrganizationId: "",
     isPortalUser: false,
   };
 }
@@ -911,6 +909,7 @@ async function copySponsorIntoOrganization(
   organizationId: string,
 ): Promise<boolean> {
   if (!ROSTER_CONTACT_UUID_RE.test(organizationId)) return false;
+  if (!(await personIsAssociatedWithCompany(sponsorRosterId))) return false;
   const person = await resolveDealRosterPerson(tx, sponsorRosterId);
   if (!person) return false;
   if (sameOrganization(person.homeOrganizationId, organizationId)) return false;
@@ -1506,7 +1505,7 @@ export async function saveDealMemberRoleForDeal(
         leadSponsorContactId,
       );
     }
-    if (roleIsSponsor(role)) {
+    if (roleIsSponsor(role) && (await personIsAssociatedWithCompany(cid))) {
       sponsorContactCreated = await copySponsorIntoRelatedOrganizations(
         tx,
         dealId,
@@ -1947,11 +1946,6 @@ export async function listDealMembersMappedToInvestorApi(
         : {}),
       ...(m?.investorKind ? { investorKind: m.investorKind } : {}),
     };
-  });
-  console.log("[Deal Members result]", {
-    dealId,
-    mergedRowsBeforeMapping: patched.length,
-    returnedRows: result.length,
   });
   return result;
 }
@@ -2435,8 +2429,76 @@ async function deleteSnapshottedRosterEntry(
 export type DealRosterRemovalScope = "member" | "team_member";
 
 /**
+ * Sponsor rows on General Partners for this person. The table id is often the
+ * newest investment, so removal must follow the contact, not that investment id.
+ * Portal user id and CRM contact id for the same email are the same person.
+ */
+async function sponsorRosterMembersForPerson(
+  dealId: string,
+  contactId: string,
+): Promise<DealMemberRow[]> {
+  const id = contactId.trim();
+  if (!id || isPlaceholderRosterContact(id)) return [];
+  const members = await db
+    .select()
+    .from(dealMember)
+    .where(and(eq(dealMember.dealId, dealId), eq(dealMember.isDraft, false)));
+  const sponsors = members.filter((member) =>
+    isDealTeamRosterRole(member.dealMemberRole),
+  );
+  if (sponsors.length === 0) return [];
+  const rawToCanonical = await mapContactIdsToCanonicalCommitmentKeys([
+    id,
+    ...sponsors.map((member) => member.contactMemberId),
+  ]);
+  const canonicalOf = (raw: string): string => {
+    const key = normalizeContactKey(raw);
+    if (!key) return "";
+    return rawToCanonical.get(key) ?? `id:${key}`;
+  };
+  const target = canonicalOf(id);
+  if (!target) return [];
+  return sponsors.filter(
+    (member) => canonicalOf(member.contactMemberId) === target,
+  );
+}
+
+/** Autosave rows are not on the Investors tab, so a draft discard may delete them. */
+async function rosterSnapshotIsDraft(
+  dealId: string,
+  snapshot: RosterRemovalSnapshot,
+): Promise<boolean> {
+  const rowId = snapshot.removedRowId.trim();
+  if (!rowId) return false;
+  if (snapshot.mode === "investment") {
+    const [row] = await db
+      .select({ isDraft: dealInvestment.isDraft })
+      .from(dealInvestment)
+      .where(and(eq(dealInvestment.id, rowId), eq(dealInvestment.dealId, dealId)))
+      .limit(1);
+    return row?.isDraft === true;
+  }
+  if (snapshot.mode === "member") {
+    const [row] = await db
+      .select({ isDraft: dealMember.isDraft })
+      .from(dealMember)
+      .where(and(eq(dealMember.id, rowId), eq(dealMember.dealId, dealId)))
+      .limit(1);
+    return row?.isDraft === true;
+  }
+  const [row] = await db
+    .select({ isDraft: dealLpInvestor.isDraft })
+    .from(dealLpInvestor)
+    .where(and(eq(dealLpInvestor.id, rowId), eq(dealLpInvestor.dealId, dealId)))
+    .limit(1);
+  return row?.isDraft === true;
+}
+
+/**
  * Removes a member from the deal roster. `rowId` is either `deal_investment.id`
  * (row merged with latest investment), `deal_lp_investor.id`, or `deal_member.id`.
+ * Removing a sponsor from General Partners deletes that person's sponsor roster
+ * row only. Their investments, LP rows, and every other sponsor stay.
  * Investor removal deletes only the selected investment or LP row. Another
  * investment for the same contact stays. Shared LP and roster rows are removed
  * only when that contact has no investment left. The roster row is kept when
@@ -2455,6 +2517,73 @@ export async function deleteDealMemberRosterEntry(
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   const snapshot = await loadRosterRemovalSnapshot(dealId, rowId);
   if (!snapshot) return { ok: false, message: "Member or investment not found" };
+
+  if (scope === "member" && snapshot.mode !== "member") {
+    const sponsors = await sponsorRosterMembersForPerson(
+      dealId,
+      snapshot.removedContactId,
+    );
+    if (sponsors.length > 0) {
+      const removingKeys = new Set(
+        sponsors.map((sponsor) => normalizeContactKey(sponsor.contactMemberId)),
+      );
+      const leads = await leadSponsorContactKeysForDeal(dealId);
+      const removingLead = [...leads].some((key) => removingKeys.has(key));
+      const leadsLeft = [...leads].filter((key) => !removingKeys.has(key));
+      if (removingLead && leadsLeft.length < 1) {
+        throw new DealLeadSponsorValidationError(LEAD_SPONSOR_REQUIRED_MESSAGE);
+      }
+      const actorUserId = deletedByUserId.trim();
+      const deletedByName = await deletedByLabel(actorUserId);
+      await db.transaction(async (tx) => {
+        for (const sponsor of sponsors) {
+          const [deletedMember] = await tx
+            .delete(dealMember)
+            .where(
+              and(eq(dealMember.id, sponsor.id), eq(dealMember.dealId, dealId)),
+            )
+            .returning();
+          if (!deletedMember) continue;
+          await tx.insert(dealMemberRemovalLogs).values({
+            dealId,
+            removedRowId: deletedMember.id,
+            removedContactId: String(deletedMember.contactMemberId ?? "").trim(),
+            removedName: snapshot.removedName,
+            removedRole: preferLabel(deletedMember.dealMemberRole),
+            deletedByUserId: actorUserId,
+            deletedByName,
+            removedSnapshot: {
+              ...emptyRemovalSnapshot(),
+              rosterMember: completeRowSnapshot(deletedMember),
+            },
+          });
+        }
+      });
+      if (
+        sponsors.some((sponsor) => {
+          const removedRole = String(sponsor.dealMemberRole ?? "")
+            .trim()
+            .toLowerCase();
+          return (
+            removedRole.includes("co-sponsor") ||
+            removedRole.includes("co sponsor") ||
+            removedRole.includes("cosponsor")
+          );
+        })
+      ) {
+        const { scheduleDealSaasBillingSync } = await import(
+          "../billing/dealBilling.service.js"
+        );
+        scheduleDealSaasBillingSync(dealId);
+      }
+      return { ok: true };
+    }
+    // Saved General Partners rows must not take the investment or LP record
+    // with them. Those records are what the Investors tab lists.
+    if (!(await rosterSnapshotIsDraft(dealId, snapshot))) {
+      return { ok: false, message: "Member not found" };
+    }
+  }
 
   if (scope === "team_member") {
     const contactId = snapshot.removedContactId.trim();

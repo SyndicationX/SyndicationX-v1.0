@@ -225,6 +225,11 @@ function normalizeContact(raw: Record<string, unknown>): ContactRow {
         ? String(raw.organizationName ?? raw.organization_name).trim() ||
           undefined
         : undefined,
+    theirCompanyName:
+      raw.theirCompanyName != null || raw.their_company_name != null
+        ? String(raw.theirCompanyName ?? raw.their_company_name).trim() ||
+          undefined
+        : undefined,
     addedByCompanyName:
       raw.addedByCompanyName != null || raw.added_by_company_name != null
         ? String(raw.addedByCompanyName ?? raw.added_by_company_name).trim() ||

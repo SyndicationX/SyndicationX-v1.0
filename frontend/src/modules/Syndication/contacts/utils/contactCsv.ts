@@ -89,7 +89,7 @@ export function buildContactsCsv(
     "Contact tags",
     "Lists",
     "Owners",
-    ...(includeOrganization ? ["Organization"] : []),
+    ...(includeOrganization ? ["Organization", "Their company"] : []),
     "Invited by",
     ...(includeVisibility ? ["Added from", "Visible on platform"] : []),
     "Added by",
@@ -111,7 +111,12 @@ export function buildContactsCsv(
         joinMulti(row.tags),
         joinMulti(row.lists),
         joinMulti(row.owners),
-        ...(includeOrganization ? [row.organizationName?.trim() ?? ""] : []),
+        ...(includeOrganization
+          ? [
+              row.organizationName?.trim() ?? "",
+              row.theirCompanyName?.trim() ?? "",
+            ]
+          : []),
         row.invitedByDisplayName?.trim() ?? "",
         ...(includeVisibility
           ? [contactAddedFromLabel(row), row.visibleToUsers === true ? "Yes" : "No"]

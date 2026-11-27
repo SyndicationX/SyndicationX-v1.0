@@ -114,6 +114,11 @@ export interface ContactRow {
   organizationId?: string
   /** Company (`companies.name`) this contact belongs to. */
   organizationName?: string
+  /**
+   * Company from this person's company membership. Empty when they have
+   * no membership. The user's organization and the adder's company are not used.
+   */
+  theirCompanyName?: string
   /** Company of the user who added this contact. */
   addedByCompanyName?: string
   /**

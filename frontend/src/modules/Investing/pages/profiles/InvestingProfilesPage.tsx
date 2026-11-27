@@ -312,8 +312,10 @@ export default function InvestingProfilesPage() {
       if (connectReturn === "refresh") {
         try {
           const link = await startStripeConnectRecipientOnboarding(profileId)
-          window.location.assign(link.url)
-          return
+          if (!link.alreadyConnected && link.url) {
+            window.location.assign(link.url)
+            return
+          }
         } catch (err) {
           toast.error(
             "Bank setup needs attention",
@@ -900,6 +902,15 @@ export default function InvestingProfilesPage() {
       setStripeConnectBusy(true)
       try {
         const link = await startStripeConnectRecipientOnboarding(profileId)
+        if (link.alreadyConnected) {
+          toast.success(
+            "Bank account connected",
+            "This profile uses the Stripe bank already verified for these account details.",
+          )
+          await reloadProfileBook()
+          setStripeConnectBusy(false)
+          return
+        }
         window.location.assign(link.url)
       } catch (err) {
         toast.error(
@@ -909,7 +920,7 @@ export default function InvestingProfilesPage() {
         setStripeConnectBusy(false)
       }
     },
-    [stripeConnectBusy],
+    [stripeConnectBusy, reloadProfileBook],
   )
 
   const connectBankToStripe = useCallback(

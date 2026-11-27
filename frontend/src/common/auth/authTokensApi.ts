@@ -2,8 +2,13 @@ import {
   SESSION_BEARER_KEY,
   SESSION_REFRESH_KEY,
 } from "./sessionKeys"
+import { decodeJwtPayload } from "../../modules/auth/utils/decode-jwt-payload"
 import { getApiV1Base } from "../utils/apiBaseUrl"
 import { markAccessUpdatedSignOutNotice } from "./idleSession"
+import {
+  adoptNewerPortalSessionMirror,
+  syncPortalSessionMirror,
+} from "./sessionTabHandoff"
 
 export function getStoredAccessToken(): string | null {
   if (typeof sessionStorage === "undefined") return null
@@ -32,10 +37,23 @@ export function storeAuthTokens(
   } else {
     sessionStorage.removeItem(SESSION_REFRESH_KEY)
   }
+  syncPortalSessionMirror()
 }
 
-/** Exchange refresh token for a new access + refresh pair. */
-export async function refreshAuthTokens(): Promise<boolean> {
+function accessTokenIsFresh(access: string | null): boolean {
+  if (!access) return false
+  const payload = decodeJwtPayload<{ exp?: number }>(access)
+  const expMs = typeof payload?.exp === "number" ? payload.exp * 1000 : 0
+  return expMs > Date.now() + 60_000
+}
+
+async function refreshAuthTokensUnlocked(): Promise<boolean> {
+  adoptNewerPortalSessionMirror()
+  if (accessTokenIsFresh(getStoredAccessToken())) {
+    syncPortalSessionMirror()
+    return true
+  }
+
   const base = getApiV1Base()
   const refreshToken = getStoredRefreshToken()
   if (!base) return false
@@ -83,6 +101,15 @@ export async function refreshAuthTokens(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/** Exchange refresh token for a new access + refresh pair. */
+export async function refreshAuthTokens(): Promise<boolean> {
+  const locks = typeof navigator !== "undefined" ? navigator.locks : undefined
+  if (locks?.request) {
+    return locks.request("portal-auth-refresh", () => refreshAuthTokensUnlocked())
+  }
+  return refreshAuthTokensUnlocked()
 }
 
 /** Revoke tokens server-side before clearing local session. */

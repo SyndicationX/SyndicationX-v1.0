@@ -1,4 +1,5 @@
 import { Navigate, Outlet } from "react-router-dom";
+import { usePortalSessionGate } from "./RequireAuth";
 import { SESSION_BEARER_KEY } from "./sessionKeys";
 
 type RequireAccessProps = {
@@ -12,6 +13,8 @@ type RequireAccessProps = {
  * this component remains safe when it is reused elsewhere.
  */
 export function RequireAccess({ allowed }: RequireAccessProps) {
+  const sessionGate = usePortalSessionGate();
+  if (sessionGate === "pending") return null;
   const token = sessionStorage.getItem(SESSION_BEARER_KEY);
   if (!token) return <Navigate to="/signin" replace />;
   if (!allowed()) return <Navigate to="/dashboard" replace />;

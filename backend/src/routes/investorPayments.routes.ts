@@ -13,6 +13,7 @@ import {
   getInvestorConnectOnboardingStatus,
   deleteInvestorSharedConnectBank,
   getInvestorSharedConnectBanks,
+  postDealDistributionFundingBank,
   postDealDistributionFundingOnboarding,
   postDealDistributionFundingTopup,
   postDistributionInvestmentBankAccountSetupRequest,
@@ -57,6 +58,10 @@ router.post(
 router.post(
   "/deals/:dealId/distribution-funding/onboarding",
   postDealDistributionFundingOnboarding,
+);
+router.post(
+  "/deals/:dealId/distribution-funding/bank",
+  postDealDistributionFundingBank,
 );
 router.get(
   "/deals/:dealId/distribution-funding/status",

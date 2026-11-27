@@ -1,13 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { getApiV1Base } from "../utils/apiBaseUrl";
 import {
   ensureValidAccessToken,
   handleAuthSessionExpired,
-  PORTAL_NO_REFRESH_HEADER,
   PORTAL_SKIP_ACTIVITY_HEADER,
 } from "./portalFetch";
 import { parseSafeNextPath } from "./parseSafeNextPath";
+import { requestPortalSessionFromOpenTab } from "./sessionTabHandoff";
 import { AUTH_RETURN_NEXT_KEY, SESSION_BEARER_KEY } from "./sessionKeys";
 import { useIdleLogout } from "./useIdleLogout";
 
@@ -39,13 +39,18 @@ function AuthBootstrap() {
     if (!base) return;
     const checkSession = () => {
       if (!sessionStorage.getItem(SESSION_BEARER_KEY)) return;
-      void fetch(`${base}/auth/me`, {
-        method: "GET",
-        headers: {
-          [PORTAL_SKIP_ACTIVITY_HEADER]: "1",
-          [PORTAL_NO_REFRESH_HEADER]: "1",
-        },
-      });
+      void (async () => {
+        // Renew the 15-minute access token without counting this poll as activity.
+        // A revoked session still fails refresh and /auth/me ends the sign-in.
+        await ensureValidAccessToken({ touchActivity: false });
+        if (!sessionStorage.getItem(SESSION_BEARER_KEY)) return;
+        void fetch(`${base}/auth/me`, {
+          method: "GET",
+          headers: {
+            [PORTAL_SKIP_ACTIVITY_HEADER]: "1",
+          },
+        });
+      })();
     };
     checkSession();
     const timer = window.setInterval(checkSession, ACCESS_SESSION_CHECK_MS);
@@ -54,9 +59,36 @@ function AuthBootstrap() {
   return null;
 }
 
+/** Wait until this tab has a sign-in, including one copied from a duplicated tab. */
+export function usePortalSessionGate(): "pending" | "in" | "out" {
+  const [sessionGate, setSessionGate] = useState<"pending" | "in" | "out">(() =>
+    sessionStorage.getItem(SESSION_BEARER_KEY)?.trim() ? "in" : "pending",
+  );
+
+  useEffect(() => {
+    if (sessionStorage.getItem(SESSION_BEARER_KEY)?.trim()) {
+      setSessionGate("in");
+      return;
+    }
+    let cancelled = false;
+    void requestPortalSessionFromOpenTab().then((ok) => {
+      if (!cancelled) setSessionGate(ok ? "in" : "out");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return sessionGate;
+}
+
 /** Wraps routes that require a valid session (JWT in sessionStorage). */
 export function RequireAuth() {
   const location = useLocation();
+  const sessionGate = usePortalSessionGate();
+
+  if (sessionGate === "pending") return null;
+
   const token = sessionStorage.getItem(SESSION_BEARER_KEY);
   if (!token) {
     const returnPath = `${location.pathname}${location.search}`;

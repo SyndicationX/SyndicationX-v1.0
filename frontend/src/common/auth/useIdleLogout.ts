@@ -7,6 +7,7 @@ import {
   touchSessionActivity,
 } from "./idleSession";
 import { performPortalLogout } from "./portalLogout";
+import { syncPortalSessionMirror } from "./sessionTabHandoff";
 
 const ACTIVITY_THROTTLE_MS = 1000;
 
@@ -94,8 +95,15 @@ export function useIdleLogout(): void {
       }
     }
 
-    // Honor elapsed idle time on mount; activity listeners extend the window.
-    scheduleLogout();
+    // A duplicated tab can copy an older activity time before the shared copy
+    // arrives. Publish first so an active session is not signed out on load.
+    syncPortalSessionMirror();
+    const scheduleAfterLoad = () => scheduleLogout();
+    if (document.readyState === "complete") {
+      scheduleLogout();
+    } else {
+      window.addEventListener("load", scheduleAfterLoad, { once: true });
+    }
 
     for (const event of ACTIVITY_EVENTS) {
       window.addEventListener(event, onActivity, { passive: true });
@@ -105,6 +113,7 @@ export function useIdleLogout(): void {
 
     return () => {
       clearTimer();
+      window.removeEventListener("load", scheduleAfterLoad);
       for (const event of ACTIVITY_EVENTS) {
         window.removeEventListener(event, onActivity);
       }

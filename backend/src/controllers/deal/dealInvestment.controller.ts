@@ -927,31 +927,6 @@ export async function putDealInvestment(
         subscriptionDocumentAttached: Boolean(documentStoragePath),
       });
     }
-    console.log("[putDealInvestment] saved to database", {
-      deal_investment: {
-        id: row.id,
-        deal_id: row.dealId,
-        offering_id: row.offeringId,
-        contact_id: row.contactId,
-        contact_display_name: row.contactDisplayName,
-        profile_id: row.profileId,
-        investor_role: row.investor_role,
-        status: row.status,
-        fund_approved: row.fundApproved,
-        investor_class: row.investorClass,
-        doc_signed_date: row.docSignedDate,
-        commitment_amount: row.commitmentAmount,
-        extra_contribution_amounts: row.extraContributionAmounts,
-        document_storage_path: row.documentStoragePath ?? null,
-      },
-      deal_member_upsert: {
-        deal_id: dealId,
-        added_by: user.id,
-        contact_member_id: contactId,
-        deal_member_role: investor_role,
-        send_invitation_mail: sendInvitationMail,
-      },
-    });
     if (switchingBookProfile) {
       res.status(201).json({
         message: "Investment recorded for this profile; previous commitment row kept.",
@@ -1213,31 +1188,6 @@ export async function postDealInvestment(
         subscriptionDocumentAttached: Boolean(documentStoragePath),
       });
     }
-    console.log("[postDealInvestment] saved to database", {
-      deal_investment: {
-        id: row.id,
-        deal_id: row.dealId,
-        offering_id: row.offeringId,
-        contact_id: row.contactId,
-        contact_display_name: row.contactDisplayName,
-        profile_id: row.profileId,
-        investor_role: row.investor_role,
-        status: row.status,
-        fund_approved: row.fundApproved,
-        investor_class: row.investorClass,
-        doc_signed_date: row.docSignedDate,
-        commitment_amount: row.commitmentAmount,
-        extra_contribution_amounts: row.extraContributionAmounts,
-        document_storage_path: row.documentStoragePath ?? null,
-      },
-      deal_member_upsert: {
-        deal_id: dealId,
-        added_by: user.id,
-        contact_member_id: contactId,
-        deal_member_role: investor_role,
-        send_invitation_mail: sendInvitationMail,
-      },
-    });
     res.status(201).json({
       message: "Investment recorded",
       investor,

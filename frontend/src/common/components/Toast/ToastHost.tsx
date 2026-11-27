@@ -75,7 +75,7 @@ export default function ToastHost() {
   }
 
   const topCenter = list.filter((t) => t.placement === "top-center");
-  const bottomRight = list.filter((t) => t.placement === "bottom-right");
+  const topRight = list.filter((t) => t.placement === "top-right");
 
   return createPortal(
     <>
@@ -86,9 +86,9 @@ export default function ToastHost() {
           ))}
         </div>
       ) : null}
-      {bottomRight.length > 0 ? (
-        <div className="toast_viewport toast_viewport--bottom-right">
-          {bottomRight.map((t) => (
+      {topRight.length > 0 ? (
+        <div className="toast_viewport toast_viewport--top-right">
+          {topRight.map((t) => (
             <ToastItem key={t.id} t={t} />
           ))}
         </div>

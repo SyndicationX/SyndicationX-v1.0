@@ -108,21 +108,35 @@ const SigninForm = () => {
   }, [emailPrefill]);
 
   useEffect(() => {
-    if (!sessionStorage.getItem(SESSION_BEARER_KEY)) return;
-    const next =
-      parseSafeNextPath(searchParams.get("next")) ??
-      parseSafeNextPath(routeState?.from) ??
-      parseSafeNextPath(sessionStorage.getItem(AUTH_RETURN_NEXT_KEY));
-    if (!next || !isLinkedSignInReturn(next)) return;
-    if (/(?:\?|&)portal=investing(?:&|$)/.test(next)) {
-      try {
-        sessionStorage.setItem(SESSION_PORTAL_MODE_KEY, "investing");
-      } catch {
-        /* sessionStorage unavailable */
+    function leaveIfSessionArrived(): void {
+      if (!sessionStorage.getItem(SESSION_BEARER_KEY)?.trim()) return;
+      const next =
+        parseSafeNextPath(searchParams.get("next")) ??
+        parseSafeNextPath(routeState?.from) ??
+        parseSafeNextPath(sessionStorage.getItem(AUTH_RETURN_NEXT_KEY));
+      const destination = next ?? homePathAfterSignIn();
+      if (next && /(?:\?|&)portal=investing(?:&|$)/.test(next)) {
+        try {
+          sessionStorage.setItem(SESSION_PORTAL_MODE_KEY, "investing");
+        } catch {
+          /* sessionStorage unavailable */
+        }
       }
+      sessionStorage.removeItem(AUTH_RETURN_NEXT_KEY);
+      navigate(destination, { replace: true });
     }
-    sessionStorage.removeItem(AUTH_RETURN_NEXT_KEY);
-    navigate(next, { replace: true });
+
+    leaveIfSessionArrived();
+    window.addEventListener("pageshow", leaveIfSessionArrived);
+    window.addEventListener("load", leaveIfSessionArrived);
+    const poll = window.setInterval(leaveIfSessionArrived, 200);
+    const stop = window.setTimeout(() => window.clearInterval(poll), 8000);
+    return () => {
+      window.removeEventListener("pageshow", leaveIfSessionArrived);
+      window.removeEventListener("load", leaveIfSessionArrived);
+      window.clearInterval(poll);
+      window.clearTimeout(stop);
+    };
   }, [navigate, routeState?.from, searchParams]);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -335,7 +349,7 @@ const SigninForm = () => {
           />
           <p className="auth_session_card_text">
             <span className="auth_session_card_label">Session timed out.</span>{" "}
-            You were signed out after 15 minutes of inactivity. Sign in again to
+            You were signed out after 30 minutes of inactivity. Sign in again to
             continue.
           </p>
         </div>

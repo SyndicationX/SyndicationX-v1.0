@@ -349,6 +349,13 @@ async function applyMutation(
     }
     return;
   }
+  const [rosterMember] = await tx
+    .select({ role: dealMember.dealMemberRole })
+    .from(dealMember)
+    .where(and(eq(dealMember.id, mutation.id), eq(dealMember.dealId, dealId)))
+    .limit(1);
+  // Investors-tab removal never drops a General Partners or team roster row.
+  if (rosterMember && isDealCompanyUserStoredRole(rosterMember.role)) return;
   const deleted = await tx
     .delete(dealMember)
     .where(and(eq(dealMember.id, mutation.id), eq(dealMember.dealId, dealId)))

@@ -1,7 +1,11 @@
 import type { Request, Response } from "express";
 import { eq, inArray, sql } from "drizzle-orm";
 import { getValidJwtUser } from "../middleware/jwtUser.js";
-import { isPlatformAdminRole } from "../constants/roles.js";
+import {
+  COMPANY_ADMIN,
+  COMPANY_USER,
+  isPlatformAdminRole,
+} from "../constants/roles.js";
 import { db } from "../database/db.js";
 import { users } from "../schema/auth.schema/signin.js";
 import { companies } from "../schema/company.schema/company.js";
@@ -467,7 +471,7 @@ async function loadAddedByCompanyNameByUserId(
 
 /**
  * `null` means the viewer is a platform admin and may see every company.
- * A string limits the home company to that organization.
+ * A string limits the inviting company to that organization.
  */
 async function organizationColumnLimitForViewer(
   userId: string,
@@ -494,6 +498,10 @@ function isInvestorOrganizationRole(role: string): boolean {
   );
 }
 
+/**
+ * Organization/Owners lists the company that invited or filed the contact,
+ * plus companies from their deals. This is not the person's own company.
+ */
 function withHomeOrganization(
   companies: ContactOrganizationSummary[],
   organizationId: string | null | undefined,
@@ -511,8 +519,6 @@ function withHomeOrganization(
           isInvestorOrganizationRole(deal.contactRole),
         ),
     );
-  // An invited investor already lists the sponsor's company. Do not add the
-  // deal-owning company stored on a copied contact row.
   if (investorOnly) return companies;
   if (limitToOrganizationId != null) {
     const homeId = id.toLowerCase();
@@ -529,6 +535,84 @@ function withHomeOrganization(
     { companyId: id, companyName: name || "Organization", deals: [] },
     ...companies,
   ];
+}
+
+const THEIR_COMPANY_STAFF_ROLES = [COMPANY_ADMIN, COMPANY_USER];
+
+function isTheirCompanyStaffRole(role: string | null | undefined): boolean {
+  const normalized = String(role ?? "").trim().toLowerCase();
+  return THEIR_COMPANY_STAFF_ROLES.some((staffRole) => staffRole === normalized);
+}
+
+/**
+ * Companies from this person's portal membership. The company that only
+ * filed the contact is not listed here.
+ */
+async function loadTheirCompanyNameByEmail(
+  emails: string[],
+): Promise<Map<string, string>> {
+  const companyByEmail = new Map<string, string>();
+  const norms = [
+    ...new Set(
+      emails
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => email.includes("@")),
+    ),
+  ];
+  if (norms.length === 0) return companyByEmail;
+
+  const accounts = await db
+    .select({
+      id: users.id,
+      email: users.email,
+    })
+    .from(users)
+    .where(inArray(sql`lower(trim(${users.email}))`, norms));
+  if (accounts.length === 0) return companyByEmail;
+
+  const membershipNames = new Map<string, string[]>();
+  try {
+    const memberships = await db
+      .select({
+        userId: userCompanyMembership.userId,
+        role: userCompanyMembership.role,
+        companyName: companies.name,
+      })
+      .from(userCompanyMembership)
+      .innerJoin(companies, eq(userCompanyMembership.companyId, companies.id))
+      .where(
+        inArray(
+          userCompanyMembership.userId,
+          accounts.map((row) => row.id),
+        ),
+      );
+    for (const row of memberships) {
+      if (!isTheirCompanyStaffRole(row.role)) continue;
+      const name = String(row.companyName ?? "").trim();
+      if (!name) continue;
+      const userId = String(row.userId);
+      const list = membershipNames.get(userId) ?? [];
+      if (!list.some((existing) => existing.toLowerCase() === name.toLowerCase())) {
+        list.push(name);
+      }
+      membershipNames.set(userId, list);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('relation "user_company_membership" does not exist')) {
+      throw err;
+    }
+    return companyByEmail;
+  }
+
+  for (const account of accounts) {
+    const email = String(account.email ?? "").trim().toLowerCase();
+    const names = membershipNames.get(String(account.id)) ?? [];
+    if (email.includes("@") && names.length > 0) {
+      companyByEmail.set(email, names.join(", "));
+    }
+  }
+  return companyByEmail;
 }
 
 async function mapContactsToJsonWithNames(
@@ -582,9 +666,10 @@ async function mapContactsToJsonWithNames(
     }),
   );
 
-  const [orgNameById, addedByCompanyByUserId] = await Promise.all([
+  const [orgNameById, addedByCompanyByUserId, theirCompany] = await Promise.all([
     orgNameByIdPromise,
     loadAddedByCompanyNameByUserId(creatorById),
+    loadTheirCompanyNameByEmail(rows.map((row) => String(row.email ?? ""))),
   ]);
 
   const mapped = rows.map((row) => {
@@ -595,6 +680,8 @@ async function mapContactsToJsonWithNames(
     const organizationName =
       orgNameById.get(String(row.organizationId ?? "").trim().toLowerCase()) ||
       undefined;
+    const emailNorm = String(row.email ?? "").trim().toLowerCase();
+    const theirCompanyName = theirCompany.get(emailNorm);
     const display = resolveContactDisplayFields(
       row,
       creator,
@@ -619,6 +706,8 @@ async function mapContactsToJsonWithNames(
       owners: display.owners,
       organizationName,
       organization_name: organizationName,
+      theirCompanyName: theirCompanyName || undefined,
+      their_company_name: theirCompanyName || undefined,
       addedByCompanyName: addedByCompanyByUserId.get(row.createdBy) || undefined,
       added_by_company_name:
         addedByCompanyByUserId.get(row.createdBy) || undefined,

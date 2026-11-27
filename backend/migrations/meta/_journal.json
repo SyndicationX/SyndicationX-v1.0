@@ -834,6 +834,13 @@
       "when": 1896220000000,
       "tag": "0119_distribution_ach_debit",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1896230000000,
+      "tag": "0120_deal_distribution_bank_payment_method",
+      "breakpoints": true
     }
   ]
 }

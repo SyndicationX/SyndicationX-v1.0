@@ -1,5 +1,5 @@
 import Stripe from "stripe";
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "../../database/db.js";
 import {
@@ -26,7 +26,6 @@ import {
   v2RecipientWithMerchantConfiguration,
 } from "./connectV2AccountConfig.js";
 import {
-  debitDealFundingAccountForDistribution,
   handleDealDistributionFundingWebhookEvent,
   requireDealDistributionFundingSource,
   retrieveDealBankAchDebit,
@@ -37,6 +36,14 @@ import {
   isInvestorConnectBankArchived,
   recordInvestorBankAccountAudit,
 } from "../bankAccounts/index.js";
+import {
+  buildInvestorConnectBankPrefill,
+  buildInvestorConnectIdentity,
+  loadInvestorConnectPrefillSource,
+  prefillInvestorConnectBank,
+  prefillInvestorConnectIdentity,
+} from "./investorConnectOnboardingPrefill.js";
+import { linkProfilesSharingReadyConnectBank } from "../investing/linkSharedConnectBank.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -191,7 +198,7 @@ function connectFieldsFromAccount(account: ConnectRecipientAccount) {
   };
 }
 
-/** Attach a ready Connect bank to every other active profile that has no bank yet. */
+/** Attach a ready Connect bank to other profiles that store the same routing and account number. */
 async function shareConnectAccountToProfilesWithoutBank(params: {
   userId: string;
   account: ConnectRecipientAccount;
@@ -202,23 +209,7 @@ async function shareConnectAccountToProfilesWithoutBank(params: {
   ) {
     return 0;
   }
-  const fields = connectFieldsFromAccount(params.account);
-  const updated = await db
-    .update(userInvestorProfiles)
-    .set(fields)
-    .where(
-      and(
-        eq(userInvestorProfiles.userId, params.userId),
-        eq(userInvestorProfiles.archived, false),
-        eq(userInvestorProfiles.isDraft, false),
-        or(
-          isNull(userInvestorProfiles.stripeConnectAccountId),
-          eq(userInvestorProfiles.stripeConnectAccountId, ""),
-        ),
-      ),
-    )
-    .returning({ id: userInvestorProfiles.id });
-  return updated.length;
+  return linkProfilesSharingReadyConnectBank(params.userId);
 }
 
 export type InvestorSharedConnectBank = {
@@ -446,6 +437,8 @@ export type ConnectOnboardingResult =
       accountId: string;
       status: string;
       payoutsEnabled: boolean;
+      /** Same bank is already verified on another profile. No new Stripe onboarding. */
+      alreadyConnected?: boolean;
     }
   | { ok: false; status: number; message: string };
 
@@ -490,6 +483,34 @@ export async function createInvestorConnectOnboardingLink(params: {
   const frontend = redirect.origin;
 
   const stripe = getStripeClient();
+  if (!params.forceNew) {
+    await linkProfilesSharingReadyConnectBank(userId);
+    const [linked] = await db
+      .select({
+        accountId: userInvestorProfiles.stripeConnectAccountId,
+        status: userInvestorProfiles.stripeConnectStatus,
+        payoutsEnabled: userInvestorProfiles.stripeConnectPayoutsEnabled,
+      })
+      .from(userInvestorProfiles)
+      .where(eq(userInvestorProfiles.id, profileId))
+      .limit(1);
+    const linkedAccountId = linked?.accountId?.trim() || "";
+    if (linked?.payoutsEnabled && linkedAccountId) {
+      return {
+        ok: true,
+        url: "",
+        accountId: linkedAccountId,
+        status: linked.status || "ready",
+        payoutsEnabled: true,
+        alreadyConnected: true,
+      };
+    }
+  }
+  const prefill = await loadInvestorConnectPrefillSource({
+    profileId,
+    userId,
+  });
+  const savedBank = prefill ? buildInvestorConnectBankPrefill(prefill) : null;
   try {
     let accountId = params.forceNew
       ? ""
@@ -510,7 +531,9 @@ export async function createInvestorConnectOnboardingLink(params: {
         {
           contact_email: row.email,
           display_name: row.profileName?.trim() || "Investor",
-          dashboard: "express",
+          // A saved bank can be written by the platform only when the platform
+          // collects requirements. Express rejects that bank call.
+          dashboard: savedBank ? "none" : "express",
           identity: {
             country: "us",
           },
@@ -548,8 +571,24 @@ export async function createInvestorConnectOnboardingLink(params: {
           include: [...V2_ACCOUNT_INCLUDE],
         });
       }
-      await syncConnectAccount(account);
     }
+
+    if (prefill) {
+      await prefillInvestorConnectIdentity({
+        stripe,
+        accountId,
+        entityType: account.identity?.entity_type,
+        identity: buildInvestorConnectIdentity(prefill),
+      });
+      await prefillInvestorConnectBank({
+        stripe,
+        accountId,
+        dashboard: account.dashboard,
+        bank: savedBank,
+      });
+      account = await retrieveConnectRecipientAccount(accountId);
+    }
+    await syncConnectAccount(account);
 
     const encodedProfile = encodeURIComponent(profileId);
     const link = await stripe.v2.core.accountLinks.create({
@@ -561,8 +600,8 @@ export async function createInvestorConnectOnboardingLink(params: {
           refresh_url: `${frontend}/investing/profiles?stripe_connect=refresh&profile_id=${encodedProfile}`,
           return_url: `${frontend}/investing/profiles?stripe_connect=return&profile_id=${encodedProfile}`,
           collection_options: {
-            fields: "eventually_due",
-            future_requirements: "include",
+            fields: "currently_due",
+            future_requirements: "omit",
           },
         },
       },
@@ -739,28 +778,25 @@ async function payInvestorFromDealBalance(params: {
         ? ""
         : local.stripeTransferId?.trim() || "";
     if (!transferId) {
-      const debit = await debitDealFundingAccountForDistribution({
-        dealAccountId: params.fundingAccountId,
-        amountCents: local.amountCents,
-        dealId: local.dealId,
-        distributionId: local.distributionId,
-        idempotencyKey: isRetry
-          ? `deal_funding_debit_${local.id}_${local.updatedAt.getTime()}`
-          : `deal_funding_debit_${local.id}`,
-      });
-      if (!debit.ok) {
-        await db
-          .update(investorDistributionPayouts)
-          .set({
-            status: "failed",
-            failureCode: "deal_funding_debit_failed",
-            failureMessage: debit.message,
-            updatedAt: new Date(),
-          })
-          .where(eq(investorDistributionPayouts.id, local.id));
-        return { ok: false, message: debit.message };
-      }
-
+      await stripe.charges.create(
+        {
+          amount: local.amountCents,
+          currency: "usd",
+          source: params.fundingAccountId,
+          description: `Deal distribution funding · ${local.distributionId}`,
+          metadata: {
+            flow: "deal_distribution_funding_debit",
+            dealId: local.dealId,
+            distributionId: local.distributionId,
+            payoutRecordId: local.id,
+          },
+        },
+        {
+          idempotencyKey: isRetry
+            ? `deal_funding_debit_${local.id}_${local.updatedAt.getTime()}`
+            : `deal_funding_debit_${local.id}`,
+        },
+      );
       const transfer = await stripe.transfers.create(
         {
           amount: local.amountCents,
@@ -770,8 +806,6 @@ async function payInvestorFromDealBalance(params: {
           metadata: {
             flow: "investor_distribution",
             fundingSource: "deal_bank_ach",
-            dealFundingAccountId: params.fundingAccountId,
-            dealFundingChargeId: debit.chargeId,
             payoutRecordId: local.id,
             dealId: local.dealId,
             distributionId: local.distributionId,
@@ -876,8 +910,8 @@ export async function settleDistributionAchDebit(
   if (!funding.ok) return;
 
   const debit = await retrieveDealBankAchDebit({
+    debitId: topupId,
     dealAccountId: funding.accountId,
-    topupId,
   });
   if (!debit.ok || debit.status === "pending") return;
   if (debit.status !== "succeeded") {
@@ -1035,7 +1069,22 @@ export async function executeDistributionPayouts(params: {
 
     const profileId = uuid(investment?.userInvestorProfileId);
     const investorUserId = uuid(investment?.profileUserId);
-    let accountId = String(investment?.connectAccountId ?? "").trim();
+    if (investorUserId) {
+      await linkProfilesSharingReadyConnectBank(investorUserId);
+    }
+    const [profileBank] = profileId
+      ? await db
+          .select({
+            connectAccountId: userInvestorProfiles.stripeConnectAccountId,
+            payoutsEnabled: userInvestorProfiles.stripeConnectPayoutsEnabled,
+          })
+          .from(userInvestorProfiles)
+          .where(eq(userInvestorProfiles.id, profileId))
+          .limit(1)
+      : [];
+    let accountId = String(
+      profileBank?.connectAccountId ?? investment?.connectAccountId ?? "",
+    ).trim();
     if (
       accountId &&
       investorUserId &&
@@ -1043,7 +1092,9 @@ export async function executeDistributionPayouts(params: {
     ) {
       accountId = "";
     }
-    let payoutsEnabled = Boolean(investment?.payoutsEnabled);
+    let payoutsEnabled = Boolean(
+      profileBank?.payoutsEnabled ?? investment?.payoutsEnabled,
+    );
     // DB flags can lag Stripe (webhooks/local return). Refresh before skipping.
     if (accountId && !payoutsEnabled) {
       try {
@@ -1169,8 +1220,8 @@ export async function executeDistributionPayouts(params: {
       const existingTopup = local.stripeFundingTopupId?.trim() || "";
       if (existingTopup) {
         const debit = await retrieveDealBankAchDebit({
+          debitId: existingTopup,
           dealAccountId: funding.accountId,
-          topupId: existingTopup,
         });
         if (debit.ok && debit.status === "succeeded") {
           const paid = await payInvestorFromDealBalance({
@@ -1403,6 +1454,39 @@ function connectAccountIdFromWebhookEvent(event: Stripe.Event): string | null {
 export async function handleDistributionConnectWebhookEvent(
   event: Stripe.Event,
 ): Promise<boolean> {
+  if (
+    event.type === "payment_intent.succeeded" ||
+    event.type === "payment_intent.payment_failed" ||
+    event.type === "payment_intent.canceled"
+  ) {
+    const intent = event.data.object as Stripe.PaymentIntent;
+    if (intent.metadata?.flow !== "deal_distribution_ach_debit") return false;
+    const payoutRecordId = String(intent.metadata?.payoutRecordId ?? "").trim();
+    if (!payoutRecordId) return false;
+    const local = await loadPayoutRow(payoutRecordId);
+    if (!local || local.stripeFundingTopupId !== intent.id) return true;
+    if (event.type === "payment_intent.succeeded") {
+      if (local.status === ACH_DEBIT_PENDING) {
+        await settleDistributionAchDebit(payoutRecordId);
+      }
+      return true;
+    }
+    if (local.status === ACH_DEBIT_PENDING) {
+      await db
+        .update(investorDistributionPayouts)
+        .set({
+          status: "failed",
+          failureCode: intent.last_payment_error?.code ?? "deal_bank_ach_failed",
+          failureMessage:
+            intent.last_payment_error?.message?.trim() ||
+            "The ACH debit from the deal bank did not complete.",
+          updatedAt: new Date(),
+        })
+        .where(eq(investorDistributionPayouts.id, local.id));
+    }
+    return true;
+  }
+
   if (
     event.type === "topup.succeeded" ||
     event.type === "topup.failed" ||

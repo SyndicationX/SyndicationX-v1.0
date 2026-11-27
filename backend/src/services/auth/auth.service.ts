@@ -5,7 +5,10 @@ import { companies, users } from "../../schema/schema.js";
 import { isPlatformAdminRole } from "../../constants/roles.js";
 import { enrichUserRecordForDealParticipant } from "../deal/dealParticipantProfile.service.js";
 import { mergeLpInvestorFlagsIntoUserPayload } from "../investing/lpInvestorAccess.service.js";
-import { listUserCompanyMemberships } from "./userCompanyMembership.service.js";
+import {
+  hideFilingCompanyOnOwnProfile,
+  listUserCompanyMemberships,
+} from "./userCompanyMembership.service.js";
 import { issueAuthTokenPair } from "./token.service.js";
 import type { Request } from "express";
 
@@ -186,11 +189,14 @@ export async function signInWithPassword(
       String(user_table.id),
     );
     const userDetails = [
-      await mergeLpInvestorFlagsIntoUserPayload(enrichedDetail, {
-        email: user_table.email,
-        portalRole: user_table.role,
-        userId: String(user_table.id),
-      }),
+      await hideFilingCompanyOnOwnProfile(
+        String(user_table.id),
+        await mergeLpInvestorFlagsIntoUserPayload(enrichedDetail, {
+          email: user_table.email,
+          portalRole: user_table.role,
+          userId: String(user_table.id),
+        }),
+      ),
     ];
 
     return {

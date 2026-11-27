@@ -1454,7 +1454,7 @@
   margin-bottom: 0.45em;
 }
 
-/* Directory toolbar: status + actions | filters + search — one dense strip */
+/* Directory toolbar: actions on the first line, filters and search on the next. */
 .contacts_directory_toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1475,8 +1475,14 @@
   min-width: 0;
 }
 
+.contacts_directory_toolbar_start {
+  flex: 1 0 auto;
+}
+
 .contacts_directory_toolbar_end {
-  margin-left: auto;
+  flex: 1 0 100%;
+  width: 100%;
+  margin-left: 0;
   justify-content: flex-end;
 }
 
@@ -1568,12 +1574,15 @@
 }
 
 .contacts_directory_search.um_search_wrap {
-  flex: 0 1 14rem;
-  min-width: min(11rem, 100%);
-  max-width: 16rem;
+  flex: 0 1 18rem;
+  width: 18rem;
+  min-width: min(14rem, 100%);
+  max-width: 18rem;
+  margin-right: 0;
 }
 
 .contacts_directory_toolbar .contacts_directory_search .um_search_input {
+  width: 100%;
   height: 2rem;
   min-height: 2rem;
   font-size: 0.8125rem;
@@ -1603,12 +1612,13 @@
   .contacts_directory_toolbar_end {
     width: 100%;
     margin-left: 0;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .contacts_directory_search.um_search_wrap {
-    flex: 1 1 12rem;
-    max-width: none;
+    flex: 0 1 14rem;
+    width: 14rem;
+    max-width: 18rem;
   }
 }
 
@@ -3683,13 +3693,13 @@
 }
 
 .contacts_toolbar_filter_dropdown.contacts_visibility_filter_dropdown {
-  width: 16.25rem;
-  max-width: 18rem;
+  width: 9.25rem;
+  max-width: 10rem;
 }
 
 .contacts_toolbar_filter_dropdown.contacts_added_from_filter_dropdown {
-  width: 13.5rem;
-  max-width: 16rem;
+  width: 8.25rem;
+  max-width: 9rem;
 }
 
 .contacts_toolbar_filter_dropdown_trigger.portal_dropdown_select_trigger,

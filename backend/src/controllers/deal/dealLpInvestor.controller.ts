@@ -445,13 +445,9 @@ export async function patchDealLpInvestorMyCommitment(
 
   const b = req.body as Record<string, unknown>;
 
-  console.log("b =>",b);
-
   const raw =
     bodyString(b.committed_amount ?? b.committedAmount).trim() ||
     bodyString(b.amount).trim();
-    
-  console.log("raw amount data=>" ,raw);
 
   const n = Number(String(raw).replace(/[$,\s]/g, ""));
   if (!Number.isFinite(n) || n <= 0) {

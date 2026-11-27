@@ -1,6 +1,6 @@
 export type ToastVariant = "success" | "error" | "warning";
 
-export type ToastPlacement = "bottom-right" | "top-center";
+export type ToastPlacement = "top-right" | "top-center";
 
 export type ToastRecord = {
   id: string;
@@ -48,7 +48,7 @@ function pushToast(
   // Stay until the user closes the toast. A positive duration is an explicit
   // auto-dismiss override.
   const duration = partial.duration ?? 0;
-  const placement = partial.placement ?? "bottom-right";
+  const placement = partial.placement ?? "top-center";
   const { duration: _d, placement: _p, ...rest } = partial;
   toasts = [...toasts, { ...rest, id, duration, placement }];
   emit();
@@ -70,7 +70,7 @@ export const toast = {
       title,
       description,
       duration: durationMs,
-      placement: "bottom-right",
+      placement: "top-center",
     });
   },
   error(title: string, description?: string, durationMs?: number): string {
@@ -79,7 +79,7 @@ export const toast = {
       title,
       description,
       duration: durationMs,
-      placement: "bottom-right",
+      placement: "top-center",
     });
   },
   warning(title: string, description?: string, durationMs?: number): string {

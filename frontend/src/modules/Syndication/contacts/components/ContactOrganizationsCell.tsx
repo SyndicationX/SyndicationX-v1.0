@@ -15,7 +15,7 @@ function formatDealRole(role: string): string {
 }
 
 function fallbackCompanies(row: ContactRow): ContactOrganizationSummary[] {
-  const name = row.organizationName?.trim() || row.addedByCompanyName?.trim() || ""
+  const name = row.organizationName?.trim() || ""
   if (!name) return []
   return [
     {
@@ -177,9 +177,10 @@ function CompanyBadge({ name }: { name: string }) {
 export function ContactOrganizationsCell({ row }: { row: ContactRow }) {
   const [open, setOpen] = useState(false)
   const personName = contactPersonName(row)
-  const companies = Array.isArray(row.organizations)
-    ? row.organizations
-    : fallbackCompanies(row)
+  const companies =
+    Array.isArray(row.organizations) && row.organizations.length > 0
+      ? row.organizations
+      : fallbackCompanies(row)
 
   if (companies.length === 0) {
     return <span className="um_status_muted">—</span>

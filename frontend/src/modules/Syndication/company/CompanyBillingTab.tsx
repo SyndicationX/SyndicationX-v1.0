@@ -69,7 +69,11 @@ import { BillingPaymentElementModal } from "./BillingPaymentElementModal";
 import { BillingCouponModal } from "./BillingCouponModal";
 import { BillingPayMethodModal } from "./BillingPayMethodModal";
 import { PlatformComplimentaryNoticeModal } from "./PlatformComplimentaryNoticeModal";
-import { isCompanyAdmin, isPlatformAdmin } from "../../../common/auth/roleUtils";
+import {
+  getLeadSponsorCompanyIdsFromSession,
+  isCompanyAdmin,
+  isPlatformAdmin,
+} from "../../../common/auth/roleUtils";
 import { dealStageLabel } from "../dealsDashboardUtils";
 import { formatDealListDateDisplay } from "../Deals/dealsListDisplay";
 import { dealStageChipCompactClassName } from "../Deals/utils/dealStageChip";
@@ -1894,6 +1898,7 @@ function BillingPricingPanel({
   billingCycle,
   onBillingCycleChange,
   companyId,
+  companyIds,
   billingStatus,
   onStatusRefresh,
   initialDealId,
@@ -1904,6 +1909,8 @@ function BillingPricingPanel({
   billingCycle: "monthly" | "annually";
   onBillingCycleChange: (cycle: "monthly" | "annually") => void;
   companyId: string;
+  /** Other companies where this viewer leads a deal. */
+  companyIds?: string[];
   billingStatus: CompanyBillingStatus | null;
   onStatusRefresh: () => void;
   initialDealId?: string;
@@ -1918,6 +1925,10 @@ function BillingPricingPanel({
   const [wizardCycle, setWizardCycle] = useState<"monthly" | "annually" | null>(
     null,
   );
+  useEffect(() => {
+    if (!wizardMode) return;
+    setWizardCycle((current) => current ?? billingCycle);
+  }, [wizardMode, billingCycle]);
   const [busyPlanId, setBusyPlanId] = useState<string | null>(null);
   const [portalBusy, setPortalBusy] = useState(false);
   const [actionError, setActionError] = useState("");
@@ -1954,28 +1965,57 @@ function BillingPricingPanel({
     };
   }, []);
 
+  const companyIdsKey = (companyIds ?? [])
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .join(",");
+
   useEffect(() => {
     const platformAdmin = isPlatformAdmin();
-    if (!platformAdmin && !companyId) {
+    const preferred = (initialDealId ?? "").trim();
+    const lookupIds = [
+      ...new Set(
+        [companyId, ...companyIdsKey.split(",")]
+          .map((id) => id.trim())
+          .filter(Boolean),
+      ),
+    ];
+    if (!platformAdmin && lookupIds.length === 0) {
       setPayableDeals([]);
-      setSelectedDealId("");
+      if (preferred) setSelectedDealId(preferred);
+      else setSelectedDealId("");
       return;
     }
     let cancelled = false;
     void (platformAdmin
-      ? fetchPlatformBillingDeals()
-      : fetchCompanyBillingDeals(companyId)
-    ).then((result) => {
-      if (cancelled || !result.ok) return;
-      const preferred = (initialDealId ?? "").trim();
+      ? fetchPlatformBillingDeals().then((result) =>
+          result.ok ? [result] : [],
+        )
+      : Promise.all(lookupIds.map((id) => fetchCompanyBillingDeals(id)))
+    ).then((results) => {
+      if (cancelled) return;
+      const ok = results.filter((result) => result.ok);
+      if (ok.length === 0) {
+        if (preferred) setSelectedDealId(preferred);
+        return;
+      }
+      const seen = new Set<string>();
+      const deals = ok.flatMap((result) =>
+        result.deals.filter((row) => {
+          const key = row.id.trim().toLowerCase();
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }),
+      );
       const preferredLc = preferred.toLowerCase();
-      let payable = result.deals.filter(
+      let payable = deals.filter(
         (row) =>
           dealRowIsPayable(row) &&
           (!row.billed || row.needsCoGpUpgrade === true),
       );
       if (preferredLc) {
-        const focused = result.deals.find(
+        const focused = deals.find(
           (row) => row.id.trim().toLowerCase() === preferredLc,
         );
         if (
@@ -2001,9 +2041,12 @@ function BillingPricingPanel({
     return () => {
       cancelled = true;
     };
-  }, [companyId, billingStatus?.billedDealCount, initialDealId]);
+  }, [companyId, companyIdsKey, billingStatus?.billedDealCount, initialDealId]);
 
-  const selectedDeal = payableDeals.find((row) => row.id === selectedDealId);
+  const payDealId = (selectedDealId || initialDealId || "").trim();
+  const selectedDeal = payableDeals.find(
+    (row) => row.id.trim().toLowerCase() === payDealId.toLowerCase(),
+  );
   const payCompanyId = selectedDeal
     ? dealBillingCompanyId(selectedDeal, companyId)
     : companyId;
@@ -2015,7 +2058,7 @@ function BillingPricingPanel({
   const cycleSelected = wizardMode ? wizardCycle != null : true;
   const seatsSelected = seatBand != null;
   const membersEnabled = wizardMode
-    ? Boolean(selectedDealId) && cycleSelected
+    ? Boolean(payDealId) && cycleSelected
     : true;
   const planCardsEnabled = wizardMode
     ? membersEnabled && seatsSelected
@@ -2118,7 +2161,7 @@ function BillingPricingPanel({
       setActionError("No company workspace selected.");
       return;
     }
-    if (!selectedDealId) {
+    if (!payDealId) {
       setActionError(
         "Select a deal to pay monthly SaaS for. Billing starts when the deal is raising capital or asset managing.",
       );
@@ -2177,7 +2220,7 @@ function BillingPricingPanel({
       tierId,
       displayCycle,
       displaySeat,
-      selectedDealId,
+      payDealId,
       extraCompanyUsers,
       appliedCoupon?.code,
       voluntaryUpgrade ? "plan" : undefined,
@@ -2208,7 +2251,7 @@ function BillingPricingPanel({
       payModalPlanId,
       displayCycle,
       displaySeat,
-      selectedDealId,
+      payDealId,
       extraCompanyUsers,
       appliedCoupon?.code,
       voluntaryUpgrade ? "plan" : undefined,
@@ -5165,7 +5208,11 @@ export function CompanyBillingTab({
     billingQuery === "cancel" ||
     billingQuery === "payment_return";
   const showPricingTab =
-    platformAdmin || canPayBilling || showUpgradePricing || checkoutReturn;
+    platformAdmin ||
+    canPayBilling ||
+    showUpgradePricing ||
+    checkoutReturn ||
+    fromDealPayFlow;
 
   const refreshPaymentMethods = useCallback(() => {
     if (!companyId) {
@@ -5227,7 +5274,7 @@ export function CompanyBillingTab({
       setBillingSubTab("deals");
       return;
     }
-    if (billing === "upgrade" || canPayBilling) {
+    if (billing === "pay" || billing === "upgrade" || canPayBilling) {
       setBillingSubTab("pricing");
       return;
     }
@@ -5529,11 +5576,15 @@ export function CompanyBillingTab({
               billingCycle={billingCycle}
               onBillingCycleChange={setBillingCycle}
               companyId={companyId}
+              companyIds={[
+                ...(leadSponsorCompanyIds ?? []),
+                ...getLeadSponsorCompanyIdsFromSession(),
+              ]}
               billingStatus={billingStatus}
               onStatusRefresh={refreshStatus}
               initialDealId={fromDealPayFlow ? focusDealId : undefined}
               initialDealName={fromDealPayFlow ? focusDealName : undefined}
-              allowPayment={canCheckout && !platformAdmin}
+              allowPayment={canCheckout}
               voluntaryUpgrade={billingQuery === "upgrade"}
             />
           ) : null}

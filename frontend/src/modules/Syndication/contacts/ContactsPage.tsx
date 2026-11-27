@@ -3,6 +3,7 @@ import {
   AlignLeft,
   Archive,
   Ban,
+  Building2,
   Check,
   CheckCircle2,
   ClipboardList,
@@ -263,6 +264,58 @@ function toContactUpdatePayload(
   }
 }
 
+function theirCompanyNames(row: ContactRow): string[] {
+  const seen = new Set<string>()
+  const names: string[] = []
+  for (const part of (row.theirCompanyName ?? "").split(",")) {
+    const name = part.trim()
+    const key = name.toLowerCase()
+    if (!name || seen.has(key)) continue
+    seen.add(key)
+    names.push(name)
+  }
+  return names
+}
+
+function TheirCompanyCell({ row }: { row: ContactRow }) {
+  const names = theirCompanyNames(row)
+  if (names.length === 0) {
+    return <span className="um_status_muted">—</span>
+  }
+  const badges = names.map((name) => (
+    <span className="um_org_badge" title={name} key={name}>
+      <Building2 className="um_org_badge_icon" size={15} strokeWidth={2} aria-hidden />
+      <span className="um_org_badge_label">{name}</span>
+    </span>
+  ))
+  if (names.length <= 2) {
+    return <span className="contacts_org_cell">{badges}</span>
+  }
+  const extra = names.length - 1
+  return (
+    <span className="contacts_org_cell">
+      {badges[0]}
+      <span
+        className="contacts_org_more"
+        title={names.slice(1).join(", ")}
+      >
+        +{extra}
+      </span>
+    </span>
+  )
+}
+
+function theirCompanyColumn(): DataTableColumn<ContactRow> {
+  return {
+    id: "theirCompany",
+    header: "Their company",
+    sortValue: (row) => theirCompanyNames(row).join(" "),
+    thClassName: "contacts_th_organization",
+    tdClassName: "contacts_td_organization",
+    cell: (row) => <TheirCompanyCell row={row} />,
+  }
+}
+
 function contactOrganizationEntries(row: ContactRow): { key: string; name: string }[] {
   const fromOrgs = (row.organizations ?? [])
     .map((company) => {
@@ -274,8 +327,7 @@ function contactOrganizationEntries(row: ContactRow): { key: string; name: strin
     .filter((entry): entry is { key: string; name: string } => entry != null)
   if (fromOrgs.length > 0) return fromOrgs
   const organizationId = row.organizationId?.trim() ?? ""
-  const name =
-    row.organizationName?.trim() || row.addedByCompanyName?.trim() || ""
+  const name = row.organizationName?.trim() || ""
   if (!organizationId && !name) return []
   return [
     {
@@ -305,6 +357,7 @@ function contactRowMatchesSearch(row: ContactRow, query: string): boolean {
     row.invitedByOrganizationName ?? "",
     row.addedByCompanyName ?? "",
     row.organizationName ?? "",
+    row.theirCompanyName ?? "",
     ...(row.organizations ?? []).flatMap((company) => [
       company.companyName,
       ...company.deals.map((deal) => deal.dealName),
@@ -608,16 +661,18 @@ function ContactsPage({
 
   /**
    * Customers → company → All Contacts. Keep rows for that company even if a
-   * response also contains another organization's CRM.
+   * response also contains another organization's CRM. Platform admin keeps
+   * every row the company request returned, including company members whose
+   * contact is stored on another company.
    */
   const directoryRows = useMemo(() => {
-    if (!scopedOrganizationId) return rows
+    if (!scopedOrganizationId || platformAdmin) return rows
     const want = scopedOrganizationId.trim().toLowerCase()
     return rows.filter((row) => {
       const org = String(row.organizationId ?? "").trim().toLowerCase()
       return org === want
     })
-  }, [rows, scopedOrganizationId])
+  }, [rows, scopedOrganizationId, platformAdmin])
   const companyOutlet = useOutletContext<{
     reportContactDirectoryCount?: (count: number) => void
   } | null>()
@@ -2443,44 +2498,49 @@ function ContactsPage({
         cell: (row) => <TagsCell items={row.owners} />,
       },
       */
-      platformAdminCompanyFilter
-        ? {
-            id: "organization",
-            header: "Organization/Owners",
-            sortValue: (row) =>
-              (row.organizations ?? [])
-                .map((company) => company.companyName)
-                .filter(Boolean)
-                .join(" ") ||
-              row.organizationName ||
-              row.addedByCompanyName ||
-              "",
-            thClassName: "contacts_th_organization",
-            tdClassName: "contacts_td_organization",
-            cell: (row) =>
-              dealStatsReadyIds.has(row.id) ? (
-                <ContactOrganizationsCell row={row} />
-              ) : (
-                <span className="um_status_muted">…</span>
-              ),
-          }
-        : {
-            id: "owners",
-            header: "Owners",
-            sortValue: (row) => row.invitedByDisplayName ?? "",
-            thClassName: "contacts_th_organization",
-            tdClassName: "contacts_td_organization",
-            cell: (row) => {
-              const name = row.invitedByDisplayName?.trim()
-              return name ? (
-                <span className="contacts_invited_by" title={name}>
-                  {name}
-                </span>
-              ) : (
-                <span className="um_status_muted">—</span>
-              )
+      ...(platformAdminCompanyFilter
+        ? ([
+            {
+              id: "organization",
+              header: "Organization/Owners",
+              sortValue: (row) =>
+                (row.organizations ?? [])
+                  .map((company) => company.companyName)
+                  .filter(Boolean)
+                  .join(" ") ||
+                row.organizationName ||
+                "",
+              thClassName: "contacts_th_organization",
+              tdClassName: "contacts_td_organization",
+              cell: (row) =>
+                dealStatsReadyIds.has(row.id) ? (
+                  <ContactOrganizationsCell row={row} />
+                ) : (
+                  <span className="um_status_muted">…</span>
+                ),
             },
-          },
+            theirCompanyColumn(),
+          ] satisfies DataTableColumn<ContactRow>[])
+        : ([
+            {
+              id: "owners",
+              header: "Owners",
+              sortValue: (row) => row.invitedByDisplayName ?? "",
+              thClassName: "contacts_th_organization",
+              tdClassName: "contacts_td_organization",
+              cell: (row) => {
+                const name = row.invitedByDisplayName?.trim()
+                return name ? (
+                  <span className="contacts_invited_by" title={name}>
+                    {name}
+                  </span>
+                ) : (
+                  <span className="um_status_muted">—</span>
+                )
+              },
+            },
+            theirCompanyColumn(),
+          ] satisfies DataTableColumn<ContactRow>[])),
       ...(platformAdminCompanyFilter
         ? []
         : ([

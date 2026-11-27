@@ -7,6 +7,7 @@ import {
 import { getAddDealFormById } from "../../services/deal/dealForm.service.js";
 import { requestedOrganizationIdFromRequest } from "../../services/org/orgResolution.service.js";
 import {
+  confirmDealDistributionFundingBank,
   createDealDistributionFundingOnboardingLink,
   createDealDistributionFundingTopup,
   getDealDistributionFundingBalance,
@@ -188,6 +189,32 @@ export async function postDealDistributionFundingOnboarding(
     dealId,
     userId: access.userId,
     userRole: user?.userRole,
+  });
+  if (!result.ok) {
+    res.status(result.status).json({ message: result.message });
+    return;
+  }
+  res.status(200).json(result);
+}
+
+/** POST /deals/:dealId/distribution-funding/bank */
+export async function postDealDistributionFundingBank(
+  req: Request,
+  res: Response,
+): Promise<void> {
+  const dealId = param(req.params.dealId);
+  const access = await requireSyndicationDealAccess(req, dealId);
+  if (!access.ok) {
+    res.status(access.status).json({ message: access.message });
+    return;
+  }
+  const user = await getValidJwtUser(req);
+  const setupIntentId = String(req.body?.setupIntentId ?? "").trim();
+  const result = await confirmDealDistributionFundingBank({
+    dealId,
+    userId: access.userId,
+    userRole: user?.userRole,
+    setupIntentId,
   });
   if (!result.ok) {
     res.status(result.status).json({ message: result.message });

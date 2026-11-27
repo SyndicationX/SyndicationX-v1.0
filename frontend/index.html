@@ -10,6 +10,40 @@
     <script>
       (function () {
         try {
+          var mirrorKey = "portalSessionMirror";
+          var bearerKey = "bearerToken";
+          var keys = [
+            "bearerToken",
+            "refreshToken",
+            "userDetails",
+            "portalMode",
+            "activitySessionId",
+            "workspaceCompanyId",
+            "lastActivityAt",
+            "authReturnNext",
+          ];
+          var bearer = sessionStorage.getItem(bearerKey);
+          if (bearer && bearer.trim()) {
+            var snapshot = {};
+            for (var i = 0; i < keys.length; i++) {
+              var copied = sessionStorage.getItem(keys[i]);
+              if (copied) snapshot[keys[i]] = copied;
+            }
+            localStorage.setItem(mirrorKey, JSON.stringify(snapshot));
+          } else {
+            var raw = localStorage.getItem(mirrorKey);
+            if (raw) {
+              var parsed = JSON.parse(raw);
+              if (parsed && typeof parsed.bearerToken === "string" && parsed.bearerToken.trim()) {
+                for (var j = 0; j < keys.length; j++) {
+                  var value = parsed[keys[j]];
+                  if (typeof value === "string" && value) sessionStorage.setItem(keys[j], value);
+                }
+              }
+            }
+          }
+        } catch (e) {}
+        try {
           var stored = localStorage.getItem("portal-theme");
           var dark =
             stored === "dark" ||

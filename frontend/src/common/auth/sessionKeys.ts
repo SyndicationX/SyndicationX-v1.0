@@ -22,8 +22,12 @@ export const AUTH_RETURN_NEXT_KEY = "authReturnNext";
  */
 export const SESSION_WORKSPACE_COMPANY_ID_KEY = "workspaceCompanyId";
 
+/** localStorage copy so a new tab can open signed in. Cleared on logout. */
+export const PORTAL_SESSION_MIRROR_KEY = "portalSessionMirror";
+
 /** Clears sign-in token and cached user details. Call from client-only code (e.g. logout). */
 export function clearPortalSessionStorage(): void {
+  const mine = sessionStorage.getItem(SESSION_BEARER_KEY)
   sessionStorage.removeItem(SESSION_BEARER_KEY)
   sessionStorage.removeItem(SESSION_REFRESH_KEY)
   sessionStorage.removeItem(SESSION_USER_DETAILS_KEY)
@@ -31,4 +35,22 @@ export function clearPortalSessionStorage(): void {
   sessionStorage.removeItem(SESSION_PORTAL_MODE_KEY)
   sessionStorage.removeItem(SESSION_ACTIVITY_SESSION_ID_KEY)
   sessionStorage.removeItem(AUTH_RETURN_NEXT_KEY)
+  try {
+    const raw = localStorage.getItem(PORTAL_SESSION_MIRROR_KEY)
+    if (!raw) return
+    if (!mine) {
+      localStorage.removeItem(PORTAL_SESSION_MIRROR_KEY)
+      return
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const mirrorValue = parsed?.[SESSION_BEARER_KEY]
+    const mirrorToken = typeof mirrorValue === "string" ? mirrorValue : ""
+    // A duplicated tab can sign out on a stale token while another tab already
+    // published a newer sign-in. Leave that newer copy in place.
+    if (!mirrorToken || mirrorToken === mine) {
+      localStorage.removeItem(PORTAL_SESSION_MIRROR_KEY)
+    }
+  } catch {
+    /* private mode / blocked storage */
+  }
 }

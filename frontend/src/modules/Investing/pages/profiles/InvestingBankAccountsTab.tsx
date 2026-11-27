@@ -68,6 +68,12 @@ function maskAccountLast4(value: string): string {
   return `···· ${digits.slice(-4)}`
 }
 
+function maskRoutingLast4(value: string): string {
+  const digits = bankDigits(value)
+  if (!digits) return "—"
+  return `···· ${digits.slice(-4)}`
+}
+
 function accountTypeLabel(value: string): string {
   const raw = value.trim()
   if (!raw) return "—"
@@ -105,7 +111,8 @@ export function savedProfileBankTableRows(
     const bankName = bank.achBankName.trim()
     const accountType = bank.achBankAccountType.trim()
     if (!((bankName && (routing || account)) || (routing && account))) continue
-    const fingerprint = `${routing}|${account}|${bankName.toLowerCase()}`
+    const fingerprint =
+      routing && account ? `${routing}|${account}` : `${routing}|${account}|${bankName.toLowerCase()}`
     const existing = groups.get(fingerprint)
     const name = profile.profileName.trim() || "Profile"
     const stripeConnected = Boolean(profile.stripeBank?.payoutsEnabled)
@@ -158,7 +165,7 @@ export function savedProfileBankTableRows(
       serialNo: index + 1,
       bankLabel: bankName,
       accountLabel: maskAccountLast4(group.account),
-      routingLabel: group.routing || "—",
+      routingLabel: maskRoutingLast4(group.routing),
       accountTypeLabel: accountTypeLabel(group.accountType),
       holderLabel: "—",
       statusLabel,
@@ -184,7 +191,9 @@ export function buildBankAccountTableRows(
       accountLabel: bank.bankAccount?.last4
         ? `···· ${bank.bankAccount.last4}`
         : "—",
-      routingLabel: bank.bankAccount?.routingNumber?.trim() || "—",
+      routingLabel: maskRoutingLast4(
+        bank.bankAccount?.routingNumber?.trim() || "",
+      ),
       accountTypeLabel: "—",
       holderLabel: bank.bankAccount?.accountHolderName?.trim() || "—",
       statusLabel: bankStatusLabel(bank),

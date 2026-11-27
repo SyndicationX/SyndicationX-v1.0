@@ -23,7 +23,6 @@ import {
 import {
   V2_ACCOUNT_INCLUDE,
   V2_ONBOARDING_CONFIGURATIONS,
-  hasMerchantCardPayments,
   v2RecipientWithMerchantConfiguration,
 } from "./connectV2AccountConfig.js";
 
@@ -98,13 +97,6 @@ async function retrieveConnectAccount(
   });
 }
 
-async function listDealFundingBankAccounts(
-  accountId: string,
-  displayName?: string | null,
-): Promise<DealFundingBankAccountSummary | null> {
-  return resolveConnectBankAccountSummary({ accountId, displayName });
-}
-
 async function persistDealFundingFromAccount(
   dealId: string,
   account: ConnectRecipientAccount,
@@ -150,6 +142,29 @@ export type DealFundingOnboardingResult =
       fundingReady: boolean;
     }
   | { ok: false; status: number; message: string };
+
+/**
+ * Express Dashboard accounts block the platform from debiting their bank.
+ * The same connected account and bank stay in place; only dashboard access
+ * changes so Send payment can ACH-debit that bank.
+ */
+async function ensureDealBankDebitable(accountId: string): Promise<void> {
+  const stripe = getStripeClient();
+  const account = await stripe.v2.core.accounts.retrieve(accountId, {
+    include: ["defaults", ...V2_ACCOUNT_INCLUDE],
+  });
+  if (account.dashboard === "none") return;
+  await stripe.v2.core.accounts.update(accountId, {
+    dashboard: "none",
+    defaults: {
+      responsibilities: {
+        fees_collector: "application",
+        losses_collector: "application",
+      },
+    },
+    include: [...V2_ACCOUNT_INCLUDE],
+  });
+}
 
 async function resolveUserRole(
   userId: string,
@@ -203,7 +218,7 @@ async function assertCanManageDealFunding(params: {
   };
 }
 
-/** Hosted Stripe Connect onboarding for the deal's distribution funding bank. */
+/** Update the deal bank already on file. Does not create a second account. */
 export async function createDealDistributionFundingOnboardingLink(params: {
   dealId: string;
   userId: string;
@@ -254,7 +269,7 @@ export async function createDealDistributionFundingOnboardingLink(params: {
         {
           contact_email: sponsorUser?.email || undefined,
           display_name: `${deal.dealName} · Distributions`.slice(0, 150),
-          dashboard: "express",
+          dashboard: "none",
           identity: { country: "us" },
           defaults: {
             responsibilities: {
@@ -279,13 +294,8 @@ export async function createDealDistributionFundingOnboardingLink(params: {
       accountId = account.id;
       await persistDealFundingFromAccount(dealId, account, userId);
     } else {
+      await ensureDealBankDebitable(accountId);
       account = await retrieveConnectAccount(accountId);
-      if (!hasMerchantCardPayments(account)) {
-        account = await stripe.v2.core.accounts.update(accountId, {
-          configuration: v2RecipientWithMerchantConfiguration(),
-          include: [...V2_ACCOUNT_INCLUDE],
-        });
-      }
       await persistDealFundingFromAccount(dealId, account, userId);
     }
 
@@ -319,11 +329,100 @@ export async function createDealDistributionFundingOnboardingLink(params: {
       ok: false,
       status: 502,
       message:
-        err instanceof Error
-          ? err.message
-          : "Could not start deal bank setup",
+        err instanceof Error ? err.message : "Could not start deal bank setup",
     };
   }
+}
+
+/** Save the bank from a completed SetupIntent onto this deal. */
+export async function confirmDealDistributionFundingBank(params: {
+  dealId: string;
+  userId: string;
+  userRole?: string;
+  setupIntentId: string;
+}): Promise<DealFundingStatusResult> {
+  const dealId = uuid(params.dealId);
+  const userId = uuid(params.userId);
+  const setupIntentId = String(params.setupIntentId ?? "").trim();
+  if (!dealId || !userId) {
+    return { ok: false, status: 400, message: "Invalid deal or user." };
+  }
+  if (!setupIntentId.startsWith("seti_")) {
+    return { ok: false, status: 400, message: "Invalid bank setup." };
+  }
+
+  const access = await assertCanManageDealFunding({
+    dealId,
+    userId,
+    userRole: params.userRole,
+  });
+  if (!access.ok) return access;
+
+  try {
+    const setupIntent = await getStripeClient().setupIntents.retrieve(
+      setupIntentId,
+    );
+    if (
+      setupIntent.metadata?.flow !== "deal_distribution_bank" ||
+      setupIntent.metadata?.dealId !== dealId
+    ) {
+      return {
+        ok: false,
+        status: 400,
+        message: "This bank setup does not belong to this deal.",
+      };
+    }
+    if (setupIntent.status !== "succeeded") {
+      return {
+        ok: false,
+        status: 409,
+        message:
+          "The bank account is not verified yet. Finish verification, then try again.",
+      };
+    }
+    const paymentMethodId =
+      typeof setupIntent.payment_method === "string"
+        ? setupIntent.payment_method
+        : setupIntent.payment_method?.id || "";
+    const customerId =
+      typeof setupIntent.customer === "string"
+        ? setupIntent.customer
+        : setupIntent.customer?.id || "";
+    if (!paymentMethodId || !customerId) {
+      return {
+        ok: false,
+        status: 502,
+        message: "Stripe did not return the saved bank account.",
+      };
+    }
+
+    await db
+      .update(addDealForm)
+      .set({
+        stripeDistributionFundingCustomerId: customerId,
+        stripeDistributionFundingPaymentMethodId: paymentMethodId,
+        stripeDistributionFundingStatus: "ready",
+        stripeDistributionFundingDetailsSubmitted: true,
+        stripeDistributionFundingPayoutsEnabled: true,
+        stripeDistributionFundingSetupByUserId: userId,
+        stripeDistributionFundingUpdatedAt: new Date(),
+      })
+      .where(eq(addDealForm.id, dealId));
+  } catch (err) {
+    console.error("confirmDealDistributionFundingBank:", err);
+    return {
+      ok: false,
+      status: 502,
+      message:
+        err instanceof Error ? err.message : "Could not save the deal bank.",
+    };
+  }
+
+  return getDealDistributionFundingStatus({
+    dealId,
+    userId,
+    userRole: params.userRole,
+  });
 }
 
 export async function getDealDistributionFundingStatus(params: {
@@ -340,9 +439,6 @@ export async function getDealDistributionFundingStatus(params: {
   const [deal] = await db
     .select({
       accountId: addDealForm.stripeDistributionFundingAccountId,
-      status: addDealForm.stripeDistributionFundingStatus,
-      detailsSubmitted: addDealForm.stripeDistributionFundingDetailsSubmitted,
-      fundingReady: addDealForm.stripeDistributionFundingPayoutsEnabled,
     })
     .from(addDealForm)
     .where(eq(addDealForm.id, dealId))
@@ -358,7 +454,7 @@ export async function getDealDistributionFundingStatus(params: {
     isPortalUserLeadSponsorOnDeal(dealId, userId),
   ]);
 
-  const accountId = deal.accountId?.trim() || null;
+  const accountId = deal.accountId?.trim() || "";
   if (!accountId) {
     return {
       ok: true,
@@ -375,10 +471,10 @@ export async function getDealDistributionFundingStatus(params: {
   try {
     const account = await retrieveConnectAccount(accountId);
     await persistDealFundingFromAccount(dealId, account);
-    const bankAccount = await listDealFundingBankAccounts(
+    const bankAccount = await resolveConnectBankAccountSummary({
       accountId,
-      account.display_name,
-    );
+      displayName: account.display_name,
+    });
     return {
       ok: true,
       accountId,
@@ -525,6 +621,12 @@ export async function getDealDistributionFundingBalance(params: {
   }
 }
 
+function achDebitStatus(intentStatus: string): "succeeded" | "pending" | "failed" {
+  if (intentStatus === "succeeded") return "succeeded";
+  if (intentStatus === "processing") return "pending";
+  return "failed";
+}
+
 async function resolveDealFundingBankSource(
   accountId: string,
 ): Promise<string | null> {
@@ -543,9 +645,9 @@ async function resolveDealFundingBankSource(
 }
 
 /**
- * ACH-debit the deal's linked bank for one investor payment.
- * Stripe parks the debit on the deal balance until it settles; the investor
- * payout runs after that, with no separate top-up step.
+ * ACH-debit the bank already linked on this deal.
+ * The account is switched to platform-managed access first so Stripe allows
+ * the debit. The bank itself is not replaced.
  */
 export async function startDealBankAchDebit(params: {
   dealAccountId: string;
@@ -562,6 +664,18 @@ export async function startDealBankAchDebit(params: {
     return { ok: false, message: "Invalid ACH amount." };
   }
   const stripe = getStripeClient();
+  try {
+    await ensureDealBankDebitable(params.dealAccountId);
+  } catch (err) {
+    console.error("startDealBankAchDebit.ensure:", err);
+    return {
+      ok: false,
+      message:
+        err instanceof Error
+          ? err.message
+          : "Could not use the deal bank account for this payment.",
+    };
+  }
   let source: string | null = null;
   try {
     source = await resolveDealFundingBankSource(params.dealAccountId);
@@ -575,8 +689,7 @@ export async function startDealBankAchDebit(params: {
   if (!source) {
     return {
       ok: false,
-      message:
-        "Link this deal's bank account before sending an ACH payment.",
+      message: "Link this deal's bank account before sending an ACH payment.",
     };
   }
   try {
@@ -602,7 +715,8 @@ export async function startDealBankAchDebit(params: {
         idempotencyKey: params.idempotencyKey,
       },
     );
-    return { ok: true, topupId: topup.id, status: topup.status ?? "pending" };
+    const status = topup.status === "succeeded" ? "succeeded" : "pending";
+    return { ok: true, topupId: topup.id, status };
   } catch (err) {
     console.error("startDealBankAchDebit:", err);
     return {
@@ -616,22 +730,43 @@ export async function startDealBankAchDebit(params: {
 }
 
 export async function retrieveDealBankAchDebit(params: {
+  debitId: string;
   dealAccountId: string;
-  topupId: string;
 }): Promise<
   | { ok: true; status: string; failureMessage: string | null }
   | { ok: false; message: string }
 > {
+  const debitId = params.debitId.trim();
   try {
+    if (debitId.startsWith("pi_")) {
+      const intent = await getStripeClient().paymentIntents.retrieve(debitId);
+      const status = achDebitStatus(intent.status);
+      return {
+        ok: true,
+        status,
+        failureMessage:
+          status === "failed"
+            ? intent.last_payment_error?.message?.trim() ||
+              "The ACH debit from the deal bank did not complete."
+            : null,
+      };
+    }
     const topup = await getStripeClient().topups.retrieve(
-      params.topupId,
+      debitId,
       {},
       { stripeAccount: params.dealAccountId },
     );
+    const status =
+      topup.status === "succeeded"
+        ? "succeeded"
+        : topup.status === "pending"
+          ? "pending"
+          : "failed";
     return {
       ok: true,
-      status: topup.status ?? "pending",
-      failureMessage: topup.failure_message?.trim() || null,
+      status,
+      failureMessage:
+        status === "failed" ? topup.failure_message?.trim() || null : null,
     };
   } catch (err) {
     console.error("retrieveDealBankAchDebit:", err);
@@ -691,64 +826,12 @@ export async function createDealDistributionFundingTopup(params: {
     };
   }
 
-  const funding = await requireDealDistributionFundingSource(dealId);
-  if (!funding.ok) return funding;
-
-  const idempotencyKey = String(params.idempotencyKey ?? "").trim();
-  if (idempotencyKey && !/^[A-Za-z0-9_-]{8,80}$/.test(idempotencyKey)) {
-    return { ok: false, status: 400, message: "Invalid top-up request." };
-  }
-
-  const stripe = getStripeClient();
-  try {
-    let source: string | undefined;
-    try {
-      source = (await resolveDealFundingBankSource(funding.accountId)) ?? undefined;
-    } catch (err) {
-      console.error("createDealDistributionFundingTopup.bankSource:", err);
-    }
-    const topup = await stripe.topups.create(
-      {
-        amount: params.amountCents,
-        currency: "usd",
-        description: "Deal distribution balance top-up",
-        statement_descriptor: "Deal top-up",
-        ...(source ? { source } : {}),
-        metadata: {
-          flow: "deal_distribution_funding_topup",
-          dealId,
-          userId,
-        },
-      },
-      {
-        stripeAccount: funding.accountId,
-        ...(idempotencyKey
-          ? { idempotencyKey: `deal_funding_topup_${idempotencyKey}` }
-          : {}),
-      },
-    );
-    const balance = await stripe.balance.retrieve(
-      {},
-      { stripeAccount: funding.accountId },
-    );
-    return {
-      ok: true,
-      topup: summarizeTopup(topup),
-      availableCents: usdCents(balance.available),
-      pendingCents: usdCents(balance.pending),
-      currency: "usd",
-    };
-  } catch (err) {
-    console.error("createDealDistributionFundingTopup:", err);
-    return {
-      ok: false,
-      status: 502,
-      message:
-        err instanceof Error
-          ? err.message
-          : "Could not top up the deal Stripe balance.",
-    };
-  }
+  return {
+    ok: false,
+    status: 409,
+    message:
+      "Send payment debits the deal bank for that investor. A separate top-up is not used.",
+  };
 }
 
 export type DealFundingSource =
@@ -759,7 +842,7 @@ export type DealFundingSource =
     }
   | { ok: false; status: number; message: string };
 
-/** Fresh Stripe sync used by ACH payout execution. */
+/** The Connect bank already saved on this deal. */
 export async function requireDealDistributionFundingSource(
   dealIdRaw: string,
 ): Promise<DealFundingSource> {
@@ -782,7 +865,7 @@ export async function requireDealDistributionFundingSource(
       ok: false,
       status: 409,
       message:
-        "Add this deal's bank account first (lead sponsor). ACH payouts are sent from the deal bank account, not SyndicationX billing.",
+        "Add this deal's bank account first (lead sponsor). Send payment debits that bank.",
     };
   }
 
@@ -794,7 +877,7 @@ export async function requireDealDistributionFundingSource(
         ok: false,
         status: 409,
         message:
-          "Deal bank account is not ready. The lead sponsor must finish bank setup for this deal.",
+          "Deal bank account is not ready. Use Update bank account to finish setup.",
       };
     }
     return {
@@ -810,53 +893,6 @@ export async function requireDealDistributionFundingSource(
         err instanceof Error
           ? err.message
           : "Could not verify deal bank account.",
-    };
-  }
-}
-
-/**
- * Pull funds from the deal Connect balance onto the platform so investor
- * transfers can be funded from the deal account (not SaaS billing float).
- */
-export async function debitDealFundingAccountForDistribution(params: {
-  dealAccountId: string;
-  amountCents: number;
-  dealId: string;
-  distributionId: string;
-  idempotencyKey: string;
-}): Promise<{ ok: true; chargeId: string } | { ok: false; message: string }> {
-  if (!Number.isSafeInteger(params.amountCents) || params.amountCents <= 0) {
-    return { ok: false, message: "Invalid debit amount." };
-  }
-  const stripe = getStripeClient();
-  try {
-    // Account debit: charge the connected account's Stripe balance.
-    const charge = await stripe.charges.create(
-      {
-        amount: params.amountCents,
-        currency: "usd",
-        source: params.dealAccountId,
-        description: `Deal distribution funding · ${params.distributionId}`,
-        metadata: {
-          flow: "deal_distribution_funding_debit",
-          dealId: params.dealId,
-          distributionId: params.distributionId,
-          dealAccountId: params.dealAccountId,
-        },
-      },
-      { idempotencyKey: params.idempotencyKey },
-    );
-    return { ok: true, chargeId: charge.id };
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Could not debit deal bank account";
-    console.error("debitDealFundingAccountForDistribution:", err);
-    return {
-      ok: false,
-      message:
-        message.includes("insufficient") || message.includes("balance")
-          ? `${message} Fund this deal's distribution account balance before sending ACH payouts.`
-          : message,
     };
   }
 }

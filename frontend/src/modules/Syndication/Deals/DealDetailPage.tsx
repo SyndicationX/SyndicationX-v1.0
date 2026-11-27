@@ -1007,7 +1007,7 @@ export function DealDetailPage() {
             : "Investor removed",
           removal.action === "remove_investment"
             ? "That investment amount was removed. This row stays on the Investors tab."
-            : "This investor was removed from the Investors tab for that investment. Any other investment on the deal stays.",
+            : "This investor was removed from the Investors tab for that investment. Any other investment on the deal stays, and their General Partners record stays.",
         )
         setDealMembersRefreshKey((k) => k + 1)
         void dealInvestorsTabRef.current?.refetchInvestors()
@@ -1027,7 +1027,7 @@ export function DealDetailPage() {
               : "Member removed",
           subject === "team_member"
             ? "This team member was removed from the team members list."
-            : `This ${personWord} was removed from the deal.`,
+            : "This sponsor was removed from General Partners.",
         )
         setDealMembersRefreshKey((k) => k + 1)
         void dealInvestorsTabRef.current?.refetchInvestors()

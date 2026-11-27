@@ -13,6 +13,8 @@ import { mergeLpInvestorFlagsIntoUserPayload } from "../investing/lpInvestorAcce
 import { serializeUserForClient } from "../user/userAdmin.service.js";
 import { parseUsPhoneToE164 } from "../../utils/usPhone.js";
 import {
+  hideFilingCompanyOnOwnProfile,
+  isCompanyMembershipRole,
   listUserCompanyMemberships,
   upsertUserCompanyMembership,
 } from "./userCompanyMembership.service.js";
@@ -124,7 +126,10 @@ async function userDetailsShapeWithDealParticipant(
     portalRole: u.role as string | undefined,
     userId,
   });
-  return attachIndividualSignupVisibility(userId, withLp);
+  return hideFilingCompanyOnOwnProfile(
+    userId,
+    await attachIndividualSignupVisibility(userId, withLp),
+  );
 }
 
 export async function changePasswordForUser(
@@ -375,7 +380,16 @@ export async function updateOwnProfile(
     if (!name) {
       return { ok: false, status: 400, message: "Company name is required" };
     }
-    if (isInvestorPortalRole(row.role) || !row.organizationId) {
+    const filedOrgId = String(row.organizationId ?? "").trim();
+    const staffMemberships = await listUserCompanyMemberships(userId);
+    const belongsToFiledCompany =
+      filedOrgId !== "" &&
+      (isCompanyMembershipRole(row.role) ||
+        staffMemberships.some(
+          (membership) =>
+            membership.companyId.toLowerCase() === filedOrgId.toLowerCase(),
+        ));
+    if (isInvestorPortalRole(row.role) || !belongsToFiledCompany) {
       /**
        * First company name: create the company when it does not exist. Investors
        * may also join an existing company by name. They never rename a company
@@ -428,8 +442,10 @@ export async function updateOwnProfile(
         status: 403,
         message: "Only company administrators can update the company name",
       };
+    } else if (!filedOrgId) {
+      return { ok: false, status: 400, message: "Company name is required" };
     } else {
-      if (await isCompanyNameTaken(name, row.organizationId)) {
+      if (await isCompanyNameTaken(name, filedOrgId)) {
         return {
           ok: false,
           status: 409,
@@ -439,7 +455,7 @@ export async function updateOwnProfile(
       await db
         .update(companies)
         .set({ name, updatedAt: new Date() })
-        .where(eq(companies.id, row.organizationId));
+        .where(eq(companies.id, filedOrgId));
     }
   }
 

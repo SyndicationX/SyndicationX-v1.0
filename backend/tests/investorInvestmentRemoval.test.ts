@@ -5,6 +5,7 @@ import {
   blocksLastLeadSponsorRemoval,
   isSoftCommitmentStatus,
   parseRemovalRequest,
+  zeroCommitmentInviteShellStaysOffInvestorsTab,
   planInvestorRemoval,
   REMOVED_INVESTMENT_STATUS,
   runRemovalUnitOfWork,
@@ -56,6 +57,47 @@ function member(contactId: string, keep = false): RemovalMember {
     previous: { id: "member-1", contactId, dealMemberRole: "LP Investor" },
   };
 }
+
+describe("zeroCommitmentInviteShellStaysOffInvestorsTab", () => {
+  it("hides the empty invite row after that person's investment is removed", () => {
+    assert.equal(
+      zeroCommitmentInviteShellStaysOffInvestorsTab({
+        amountCleared: false,
+        committed: 0,
+        samePersonHasOpenInvestment: false,
+        samePersonRemovedInvestmentStays: true,
+        sponsorAlsoOnLpRoster: false,
+      }),
+      true,
+    );
+  });
+
+  it("keeps a removed investment itself on the Investors tab", () => {
+    assert.equal(
+      zeroCommitmentInviteShellStaysOffInvestorsTab({
+        amountCleared: true,
+        committed: 0,
+        samePersonHasOpenInvestment: false,
+        samePersonRemovedInvestmentStays: false,
+        sponsorAlsoOnLpRoster: true,
+      }),
+      false,
+    );
+  });
+
+  it("still lists an invited investor who has not invested", () => {
+    assert.equal(
+      zeroCommitmentInviteShellStaysOffInvestorsTab({
+        amountCleared: false,
+        committed: 0,
+        samePersonHasOpenInvestment: false,
+        samePersonRemovedInvestmentStays: false,
+        sponsorAlsoOnLpRoster: false,
+      }),
+      false,
+    );
+  });
+});
 
 describe("investor and investment removal", () => {
   it("requires a reason and a confirmation checkbox", () => {

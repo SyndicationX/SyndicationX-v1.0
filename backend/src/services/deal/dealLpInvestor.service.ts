@@ -36,6 +36,7 @@ import {
   rowIsGeneralPartnerForRoster,
 } from "./dealInvestment.service.js";
 import { listInvestorClassesByDealId } from "./dealInvestorClass.service.js";
+import { zeroCommitmentInviteShellStaysOffInvestorsTab } from "./investorInvestmentRemoval.plan.js";
 import type { DealViewerScope } from "./dealForm.service.js";
 import {
   listCoSponsorOnlyDealIdsForViewerAmong,
@@ -561,11 +562,38 @@ export async function listMergedLpInvestorsForDeal(
       ? 0
       : committedNumericFromDealInvestmentRow(inv);
     const invested = Boolean(canonical && positiveLpCanonical.has(canonical));
-    // The invite / sponsor shell stays off this list once the same person has invested.
-    const inviteShell =
-      !amountCleared &&
-      committed <= 0 &&
-      (invested || (sponsorRole && onLpRoster));
+    const removedSiblingStays =
+      Boolean(canonical) &&
+      investments.some((other) => {
+        if (other.id === inv.id || other.investorUnlinkedAt) return false;
+        if (!isRetiredDealInvestment(other)) return false;
+        const otherCanonical = canonicalOf(other.contactId ?? "");
+        if (otherCanonical !== canonical) return false;
+        const otherRole = other.investor_role ?? "";
+        if (
+          rowIsGeneralPartnerForRoster(
+            otherRole,
+            other.investorClass,
+            classes,
+          )
+        ) {
+          return false;
+        }
+        return (
+          isLpInvestorRole(otherRole) ||
+          rosterByCanonical.has(otherCanonical) ||
+          isDealMembersSponsorRole(otherRole)
+        );
+      });
+    // The invite shell stays off this list once this person has another row,
+    // including an investment whose amount was removed.
+    const inviteShell = zeroCommitmentInviteShellStaysOffInvestorsTab({
+      amountCleared,
+      committed,
+      samePersonHasOpenInvestment: invested,
+      samePersonRemovedInvestmentStays: removedSiblingStays,
+      sponsorAlsoOnLpRoster: sponsorRole && onLpRoster,
+    });
 
     // A removed investment stays, with its amount cleared. Lead/Admin/Co only when they are also investors.
     const include = amountCleared
@@ -1265,8 +1293,6 @@ export async function upsertDealLpInvestor(
 ): Promise<DealLpInvestorRow> {
   const cid = input.contactMemberId.trim();
 
-  console.log("contactmember id", cid);
-
   if (!cid) throw new Error("contact_member_id required");
 
   const existing = await findDealLpInvestorByDealAndContact(dealId, cid);
@@ -1368,7 +1394,6 @@ export async function updateDealLpInvestorById(
   input: UpsertDealLpInvestorInput,
 ): Promise<DealLpInvestorRow | null> {
   const cid = input.contactMemberId.trim();
-  console.log("contact member id 2", cid)
   if (!cid) return null;
   const send =
     String(input.sendInvitationMail ?? "").toLowerCase() === "yes"
@@ -1855,8 +1880,6 @@ export async function updateMyCommittedAmountForLpDeal(params: {
     .toLowerCase();
   if (!e.includes("@")) return { ok: false, message: "Invalid viewer email" };
 
-  console.log("committed amount", params.committedAmount);
-
   const incrementStr = normalizeCommittedAmountStored(params.committedAmount);
   if (!incrementStr) {
     return {
@@ -1947,8 +1970,6 @@ export async function updateMyCommittedAmountForLpDeal(params: {
   }
     const icRaw = target?.investorClass?.trim() ?? "";
 
-    console.log("icRaw =>", icRaw);
-
     const classRes = icRaw
       ? await resolveInvestorClassForDealInvestment(params.dealId, icRaw)
       : await resolveFirstInvestorClassForDeal(params.dealId);
@@ -2019,7 +2040,6 @@ export async function updateMyCommittedAmountForLpDeal(params: {
         emailFromClient: e,
         roleFromClient: LP_INVESTOR_TABLE_ROLE,
       });
-      console.log("inside target", incrementStr);
     }
     const syncedSum = await sumLpDealInvestmentCommittedForContact(
       params.dealId,

@@ -72,6 +72,26 @@ export type RemovalPlanResult =
   | { ok: true; plan: RemovalPlan }
   | { ok: false; status: number; message: string };
 
+/**
+ * A zero-commitment invite row is not a second investor. Keep it off the
+ * Investors tab when this person already has another row there, including an
+ * investment whose amount was removed.
+ */
+export function zeroCommitmentInviteShellStaysOffInvestorsTab(input: {
+  amountCleared: boolean;
+  committed: number;
+  samePersonHasOpenInvestment: boolean;
+  samePersonRemovedInvestmentStays: boolean;
+  sponsorAlsoOnLpRoster: boolean;
+}): boolean {
+  if (input.amountCleared || input.committed > 0) return false;
+  return (
+    input.samePersonHasOpenInvestment ||
+    input.samePersonRemovedInvestmentStays ||
+    input.sponsorAlsoOnLpRoster
+  );
+}
+
 export function isSoftCommitmentStatus(status: string | null | undefined): boolean {
   const s = String(status ?? "").trim().toLowerCase();
   return s === "soft committed" || s === "soft commitment";

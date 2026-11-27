@@ -95,11 +95,19 @@ export const addDealForm = pgTable("add_deal_form", {
    */
   distributionSetupJson: text("distribution_setup_json").notNull().default("{}"),
   /**
-   * Stripe Connect account (Accounts v2) that funds ACH distributions for this deal.
-   * Lead/admin sponsor onboards bank details; payouts debit this account, not platform SaaS billing.
+   * Legacy Stripe Connect account for this deal's distribution bank.
+   * New ACH debits use the platform customer and payment method below.
    */
   stripeDistributionFundingAccountId: text(
     "stripe_distribution_funding_account_id",
+  ),
+  /** Platform Customer that owns the deal bank used for ACH debits. */
+  stripeDistributionFundingCustomerId: text(
+    "stripe_distribution_funding_customer_id",
+  ),
+  /** us_bank_account PaymentMethod debited when an investor payment is sent. */
+  stripeDistributionFundingPaymentMethodId: text(
+    "stripe_distribution_funding_payment_method_id",
   ),
   stripeDistributionFundingStatus: text("stripe_distribution_funding_status")
     .notNull()
